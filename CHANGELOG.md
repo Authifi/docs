@@ -1,5 +1,11 @@
 # authifi-docs
 
+## 1.3.1
+
+### Patch Changes
+
+- 2655d60: Sync public documentation from auth-monorepo.
+
 ## 1.3.0
 
 ### Minor Changes
