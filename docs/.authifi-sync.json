@@ -1,0 +1,14 @@
+{
+  "$generatedBy": "auth-monorepo scripts/sync-authifi-docs",
+  "note": "Files listed here are synced from auth-monorepo. Edit them upstream, not in this repo.",
+  "files": [
+    {
+      "dest": "feature-list.html",
+      "source": "docs/auth-feature-list.html"
+    },
+    {
+      "dest": "guides/oidc-request-scopes.md",
+      "source": "packages/auth/docs/oidc/request-scopes.md"
+    }
+  ]
+}
