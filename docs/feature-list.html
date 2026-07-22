@@ -1,4 +1,5 @@
 <!DOCTYPE html>
+<!-- Generated from auth-monorepo: docs/auth-feature-list.html. Edit it there, not in authifi-docs. -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
@@ -270,7 +271,7 @@
           <tr><td>Multi-Tenancy</td><td><span class="tag">Isolated Collections</span><span class="tag">Shared Workspaces</span><span class="tag">Trusted Tenants</span><span class="tag">Per-Tenant Config</span></td></tr>
           <tr><td>Authorization &amp; RBAC</td><td><span class="tag">4-Tier Admin Model</span><span class="tag">Delegated Scopes</span><span class="tag">Step-Up Auth</span><span class="tag">Privileged Entity Protection</span></td></tr>
           <tr><td>Custom Attribute Mapping</td><td><span class="tag">SAML mapClaims</span><span class="tag">OIDC Claim Transform</span><span class="tag">NameID Formats</span><span class="tag">Secondary Unique Attrs</span></td></tr>
-          <tr><td>Secret Management</td><td><span class="tag">HashiCorp Vault</span><span class="tag">Passbolt</span><span class="tag">Local JWE</span><span class="tag">Key Rotation</span></td></tr>
+          <tr><td>Secret Management</td><td><span class="tag">HashiCorp Vault</span><span class="tag">OpenBao</span><span class="tag">Passbolt</span><span class="tag">Local JWE</span><span class="tag">Key Rotation</span></td></tr>
           <tr><td>Machine Identity &amp; Delegation</td><td><span class="tag">NHE Tokens</span><span class="tag">RFC 8693 Token Exchange</span><span class="tag">Scope Downscoping</span><span class="tag">Short-Lived Tokens</span><span class="tag">Audit Trail</span></td></tr>
           <tr><td>Research Identity</td><td><span class="tag">GA4GH Passport v1</span><span class="tag">Visa Issuance</span><span class="tag">ORCID Integration</span><span class="tag">Linked Identities</span></td></tr>
           <tr><td>User Self-Service</td><td><span class="tag">Password Reset</span><span class="tag">MFA Enrollment</span><span class="tag">Session Management</span><span class="tag">GDPR Erasure</span></td></tr>
@@ -491,7 +492,7 @@
       <div class="detail-card">
         <div class="detail-card-header">
           <div class="detail-card-icon hi-amber"><svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 5.25a3 3 0 013 3m3 0a6 6 0 01-7.029 5.912c-.563-.097-1.159.026-1.563.43L10.5 17.25H8.25v2.25H6v2.25H2.25v-2.818c0-.597.237-1.17.659-1.591l6.499-6.499c.404-.404.527-1 .43-1.563A6 6 0 1121.75 8.25z"/></svg></div>
-          <h2>Secret Management <span>— Vault · Passbolt · Local</span></h2>
+          <h2>Secret Management <span>— Vault · OpenBao · Passbolt · Local</span></h2>
         </div>
         <div class="detail-card-body">
           <div class="table-wrap" style="margin-bottom:16px;">
@@ -499,6 +500,7 @@
               <thead><tr><th>Backend</th><th>Description</th></tr></thead>
               <tbody>
                 <tr><td>HashiCorp Vault</td><td>Enterprise secret storage with transit encryption and key rotation</td></tr>
+                <tr><td>OpenBao</td><td>Open-source, Vault-API-compatible secret storage with KV v2 and Transit DEK wrapping; runs alongside Vault</td></tr>
                 <tr><td>Passbolt</td><td>Collaborative password manager with team secret sharing</td></tr>
                 <tr><td>Local (JWE)</td><td>Database-backed storage with JWE encryption and per-tenant/per-user keys</td></tr>
               </tbody>
@@ -746,6 +748,7 @@
               <li>Google / GSuite (with account-switch flow)</li>
               <li>ORCID researcher identity</li>
               <li>HashiCorp Vault</li>
+              <li>OpenBao</li>
               <li>Passbolt password manager</li>
               <li>Grafana (built-in reverse proxy + Authifi auth)</li>
               <li>UMRS account state synchronization</li>
