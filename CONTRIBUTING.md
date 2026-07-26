@@ -201,11 +201,17 @@ nav:
       - Your New Guide: guides/your-new-guide.md
 ```
 
-## Local Development (Optional)
+## Local Validation (Optional)
 
-If you want to preview changes locally before pushing, see the [Local Development](README.md#local-development) section in the README for setup instructions.
+After completing the [local setup](README.md#local-development), run:
 
-Changes to `.md` files will automatically reload in the browser when running `mkdocs serve`.
+```bash
+.venv/bin/python -m unittest discover -s tests -v
+.venv/bin/mkdocs build --strict
+```
+
+Use `.venv/bin/mkdocs serve` for a browser preview. Changes to Markdown files
+reload automatically.
 
 ## Need Help?
 

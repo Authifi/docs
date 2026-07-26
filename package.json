@@ -4,6 +4,9 @@
   "private": true,
   "description": "Public documentation for the Authifi identity and access management platform.",
   "scripts": {
+    "build": ".venv/bin/mkdocs build --strict",
+    "test": ".venv/bin/python -m unittest discover -s tests -v",
+    "validate": ".venv/bin/python -m unittest discover -s tests -v && .venv/bin/mkdocs build --strict",
     "changeset": "changeset",
     "changeset:add": "changeset add",
     "changeset:status": "changeset status",

@@ -62,7 +62,7 @@ def _iter_nav_pages(nav: Any, pages: list[str]) -> None:
             for child in nav.children:
                 _iter_nav_pages(child, pages)
         elif nav.is_page:
-            pages.append(nav.file.src_uri)
+            pages.append(nav.url)
         elif nav.is_link:
             pages.append(nav.url)
         return
@@ -83,14 +83,16 @@ def _iter_nav_pages(nav: Any, pages: list[str]) -> None:
 
 
 def _page_to_url(site_url: str, page: str) -> str:
-    if page == "index.md":
-        return site_url.rstrip("/") + "/"
-
-    if page.endswith(".html"):
-        return urljoin(site_url, page)
-
-    slug = page.removesuffix(".md")
-    return urljoin(site_url, f"{slug}/")
+    base_url = site_url.rstrip("/") + "/"
+    if page.startswith(("/", "#")) or "://" in page:
+        return urljoin(base_url, page)
+    if page in ("", "index.md", "README.md"):
+        return base_url
+    if page.endswith(("/index.md", "/README.md")):
+        page = page.rsplit("/", 1)[0] + "/"
+    elif page.endswith(".md"):
+        page = page.removesuffix(".md") + "/"
+    return urljoin(base_url, page)
 
 
 def _write_sitemap(site_dir: Path, site_url: str, nav: Any) -> None:
