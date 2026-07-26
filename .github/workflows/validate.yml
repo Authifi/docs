@@ -11,6 +11,7 @@ on:
       - "requirements.txt"
       - "tests/**"
   push:
+    branches: [main]
     paths:
       - ".github/workflows/validate.yml"
       - ".python-version"
