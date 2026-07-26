@@ -7,7 +7,7 @@ import json
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 from xml.dom import minidom
 
 SKILL_DEFINITIONS = (
@@ -50,6 +50,21 @@ def _sha256_digest(path: Path) -> str:
 
 
 def _iter_nav_pages(nav: Any, pages: list[str]) -> None:
+    # Raw mkdocs.yml nav config (fallback when no plugin rewrites the nav).
+    if isinstance(nav, str):
+        pages.append(nav)
+        return
+
+    if isinstance(nav, dict):
+        for value in nav.values():
+            _iter_nav_pages(value, pages)
+        return
+
+    if isinstance(nav, list):
+        for item in nav:
+            _iter_nav_pages(item, pages)
+        return
+
     # Resolved mkdocs Navigation object (from the awesome-nav plugin).
     if hasattr(nav, "items"):
         for item in nav.items:
@@ -67,32 +82,24 @@ def _iter_nav_pages(nav: Any, pages: list[str]) -> None:
             pages.append(nav.url)
         return
 
-    # Raw mkdocs.yml nav config (fallback when no plugin rewrites the nav).
-    if isinstance(nav, str):
-        pages.append(nav)
-        return
 
-    if isinstance(nav, dict):
-        for value in nav.values():
-            _iter_nav_pages(value, pages)
-        return
-
-    if isinstance(nav, list):
-        for item in nav:
-            _iter_nav_pages(item, pages)
-
-
-def _page_to_url(site_url: str, page: str) -> str:
+def _page_to_url(site_url: str, page: str) -> str | None:
     base_url = site_url.rstrip("/") + "/"
-    if page.startswith(("/", "#")) or "://" in page:
-        return urljoin(base_url, page)
     if page in ("", "index.md", "README.md"):
-        return base_url
-    if page.endswith(("/index.md", "/README.md")):
+        page = ""
+    elif page.endswith(("/index.md", "/README.md")):
         page = page.rsplit("/", 1)[0] + "/"
-    elif page.endswith(".md"):
+    elif not page.startswith(("/", "#")) and "://" not in page and page.endswith(
+        ".md"
+    ):
         page = page.removesuffix(".md") + "/"
-    return urljoin(base_url, page)
+
+    location = urljoin(base_url, page)
+    site = urlsplit(base_url)
+    target = urlsplit(location)
+    if (target.scheme, target.netloc) != (site.scheme, site.netloc):
+        return None
+    return location
 
 
 def _write_sitemap(site_dir: Path, site_url: str, nav: Any) -> None:
@@ -106,7 +113,7 @@ def _write_sitemap(site_dir: Path, site_url: str, nav: Any) -> None:
     seen: set[str] = set()
     for page in pages:
         loc = _page_to_url(site_url, page)
-        if loc in seen:
+        if loc is None or loc in seen:
             continue
         seen.add(loc)
         url = ET.SubElement(urlset, "url")

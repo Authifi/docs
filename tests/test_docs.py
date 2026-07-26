@@ -1,3 +1,4 @@
+import importlib.util
 import json
 import subprocess
 import sys
@@ -11,6 +12,13 @@ from pathlib import Path
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 SITE_URL = "https://docs.authifi.io"
 SITEMAP_NAMESPACE = "http://www.sitemaps.org/schemas/sitemap/0.9"
+HOOK_SPEC = importlib.util.spec_from_file_location(
+    "agent_assets", REPOSITORY_ROOT / "docs" / "hooks" / "agent_assets.py"
+)
+if HOOK_SPEC is None or HOOK_SPEC.loader is None:
+    raise RuntimeError("Could not load docs/hooks/agent_assets.py")
+agent_assets = importlib.util.module_from_spec(HOOK_SPEC)
+HOOK_SPEC.loader.exec_module(agent_assets)
 
 
 class GeneratedPageParser(HTMLParser):
@@ -37,6 +45,49 @@ class GeneratedPageParser(HTMLParser):
     def handle_data(self, data: str) -> None:
         if self._in_title:
             self.title += data
+
+
+class SitemapGenerationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._temporary_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self._temporary_directory.cleanup)
+        self.site_dir = Path(self._temporary_directory.name)
+
+    def _locations(self, nav: object) -> list[str]:
+        agent_assets._write_sitemap(self.site_dir, SITE_URL, nav)
+        namespace = f"{{{SITEMAP_NAMESPACE}}}"
+        sitemap_root = ET.parse(self.site_dir / "sitemap.xml").getroot()
+        return [
+            location.text or ""
+            for location in sitemap_root.findall(f"{namespace}url/{namespace}loc")
+        ]
+
+    def test_raw_dictionary_navigation_is_supported(self) -> None:
+        locations = self._locations(
+            {
+                "Home": "index.md",
+                "Security": {"Overview": "security/README.md"},
+            }
+        )
+
+        self.assertEqual(locations, [f"{SITE_URL}/", f"{SITE_URL}/security/"])
+
+    def test_external_navigation_links_are_excluded(self) -> None:
+        locations = self._locations(
+            [
+                "guides/tenant-admin-guide.md",
+                "https://example.com/docs/",
+                f"{SITE_URL}/security/",
+            ]
+        )
+
+        self.assertEqual(
+            locations,
+            [
+                f"{SITE_URL}/guides/tenant-admin-guide/",
+                f"{SITE_URL}/security/",
+            ],
+        )
 
 
 class DocsBuildTests(unittest.TestCase):
