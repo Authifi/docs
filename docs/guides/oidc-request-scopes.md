@@ -182,7 +182,7 @@ grant_type=client_credentials
 
 Only request scopes that make sense for a client-only token (typically resource / API scopes). Avoid `openid` and other user-identity scopes unless your deployment explicitly supports them for client credentials.
 
-**Scope narrowing for service tokens:** with the default `requireAuthorizationScopesInRequest=false`, the issuer may still auto-grant **all** scopes assigned to the client (via client roles), even if the token request listed only `mock:api:read`. To make the request `scope` actually narrow the issued token, enable **Require Resource Indicator scopes** (`requireAuthorizationScopesInRequest=true`) on that client.
+**Scope narrowing for service tokens:** with the default `requireAuthorizationScopesInRequest=false`, the issuer may still auto-grant **all** Resource Server Permission scopes assigned through the client's Access Roles marked for client credential use (`isClientRole: true`), even if the token request listed only `mock:api:read`. To make the request `scope` actually narrow the issued token, enable **Require Resource Indicator scopes** (`requireAuthorizationScopesInRequest=true`) on that client.
 
 ## Using `custom_claims`
 
