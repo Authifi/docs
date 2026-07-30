@@ -169,7 +169,7 @@ Use the canonical Access Role and Resource Server Permission APIs for new integr
 
 - **Create/update/delete privileged Resource Server Permissions**
     - `POST /auth/admin/tenants/{tenantId}/resource-servers/{resourceServerId}/permissions`
-    - `PUT /auth/admin/tenants/{tenantId}/resource-servers/{resourceServerId}/permissions/{id}`
+    - `PATCH /auth/admin/tenants/{tenantId}/resource-servers/{resourceServerId}/permissions/{id}`
     - `DELETE /auth/admin/tenants/{tenantId}/resource-servers/{resourceServerId}/permissions/{id}`
     - **UI**: Users and Groups > Permissions > + ADD PERMISSION / Edit / Delete
     - **SA-or-scope** (`admin::admin-permissions:edit`)

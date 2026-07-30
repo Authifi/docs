@@ -378,26 +378,28 @@ When creating or editing a user via **Users > Settings icon**, you'll encounter 
 
 ### Roles Tab
 
-**Purpose**: Assign application-level roles directly to the user.
+**Purpose**: Assign Access Roles (also called **API Roles** in some UI labels) directly to the user.
 
 #### Managing Role Assignments
 
-- **Current Roles**: Table displays roles currently assigned to user
+- **Current Roles**: Table displays Access Roles currently assigned to the user
   - Shows roles assigned directly (not through groups)
 - **Add Roles**:
-  - Autocomplete search for available roles
+  - Autocomplete search for available Access Roles
   - Click **Add** to assign role
-  - User gains all permissions associated with the role
+  - User gains the Resource Server Permissions associated with the role
 - **Remove Roles**:
   - Click remove icon next to role name
-  - User loses role's associated permissions
+  - User loses the role's associated permissions
+
+**Best practice**: Prefer group-assigned Access Roles over direct user assignments for easier management at scale.
 
 **Role columns**:
 
 - **Name**: Role identifier
 - **Description**: Role purpose
-- **Client**: Application this role belongs to
-- **Permissions**: Number of permissions in this role
+- **Resource Server / API**: Authorization context for the role
+- **Permissions**: Number of Resource Server Permissions in this role
 - **Remove**: Unassign role from user
 
 **Security note**: Direct role assignments should be exceptions. Prefer group-based role assignment for maintainability.

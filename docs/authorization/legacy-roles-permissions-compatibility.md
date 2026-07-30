@@ -70,7 +70,7 @@ These implemented routes expose legacy application-role names or shapes over the
 | `GET /groups/{groupId}/roles`                                | `GET /groups/{groupId}/access-roles`                             |
 | `GET /clients/{id}/roles`                                    | `GET /access-roles` filtered by `clientId`                       |
 | `GET /users/{userId}/permissions`                            | `GET /users/{userId}/resource-server-permissions`                |
-| `GET /users/{userId}/roles`                                  | Get the user's groups, then `GET /groups/{groupId}/access-roles` |
+| `GET /users/{userId}/roles`                                  | Group-inherited Access Roles: get the user's groups, then `GET /groups/{groupId}/access-roles`. Direct user-role assignments have no separate canonical list endpoint; prefer group-assigned Access Roles for new integrations, or retain the deprecated route until those assignments are migrated. |
 | `GET /users/{userId}/app-and-api-roles`                      | Get group Access Roles, then their Resource Server Permissions   |
 | `POST /client/{clientId}/users-with-set-of-app-permissions`  | No resource-scoped canonical set-query; see below                |
 | `GET /users-with-app-permissions/{permissionId}`             | `GET /users-with-api-permissions/{permissionId}`                 |
