@@ -8,11 +8,9 @@ This guide provides comprehensive instructions for tenant administrators on mana
 - [SSO Integration Menu Options](#sso-integration-menu-options)
   - [App Dashboard](#app-dashboard)
   - [Contacts](#contacts)
-  - [App Roles (Client Roles)](#app-roles-client-roles)
-  - [App Permissions](#app-permissions)
+  - [Access Roles (API Roles)](#access-roles-api-roles)
+  - [Resource Server Permissions](#resource-server-permissions)
   - [API Dashboard](#api-dashboard)
-  - [API Roles (Access Roles)](#api-roles-access-roles)
-  - [API Permissions](#api-permissions)
   - [Providers](#providers)
   - [Issuers](#issuers)
   - [Namespaces](#namespaces)
@@ -38,7 +36,7 @@ The **SSO Integration** section enables you to:
 - Configure applications (clients) that use your tenant for authentication
 - Manage APIs (resource servers) and their access control
 - Set up identity providers for user authentication
-- Control fine-grained permissions and roles for apps and APIs
+- Manage **Access Roles** and **Resource Server Permissions** for client-linked and standalone resource servers
 - Manage multi-tenancy and namespace isolation
 
 **Security context**: Proper SSO configuration is critical for security. Misconfigured clients can lead to token theft, unauthorized access, or data leakage.
@@ -118,26 +116,31 @@ The **SSO Integration** section enables you to:
 
 ---
 
-### App Roles (Client Roles)
+### Access Roles (API Roles)
 
-**Location**: SSO Integration > App Roles
+**Location**: SSO Integration > Access Roles (some screens still label these **API Roles**)
 
-**Purpose**: Define authorization roles scoped to a specific client application. App Roles (also called **Client Roles**) are used by the application for its own internal authorization decisions (e.g., controlling UI features, enabling functionality).
+**Purpose**: Define authorization roles that bundle Resource Server Permissions within a resource-server authorization context. Authifi uses one Access Role model for both:
+
+- **Client-linked resource servers** — including the auto-generated placeholder resource server associated with an OAuth client (application authorization context)
+- **Standalone API resource servers** — registered APIs (API authorization context)
+
+**Client permissions** means Resource Server Permissions on an OAuth client's auto-generated placeholder resource server. Define and assign those permissions (and Access Roles that include them) when the application needs its own authorization context.
+
+**Client credential roles and permissions** means Access Roles marked for client credential grants, their Resource Server Permissions, and the associated client — authorization assigned to applications rather than users.
 
 #### What you can do
 
-- **Create roles**: Define roles like "viewer", "editor", "admin" for a specific app
-- **Assign permissions**: Group multiple app permissions into a role
-- **Assign to users/groups**: Grant roles to users or groups (via Users and Groups section)
-- **View role assignments**: See which users have which roles
+- **Create Access Roles**: Define roles like "viewer", "editor", "admin" for a resource server context
+- **Assign permissions**: Group Resource Server Permissions into a role
+- **Assign to users/groups**: Grant roles to groups (via Users and Groups); group members inherit the roles
+- **View role assignments**: See which groups have which roles
 - **Delete unused roles**: Clean up role definitions
-
-> **Note**: App Roles (Client Roles) are distinct from API Roles (Access Roles). Use App Roles for client-side authorization decisions. Use [API Roles](#api-roles-access-roles) for controlling access to API resources.
 
 #### Role vs. Permission
 
-- **Permission**: Fine-grained access right (e.g., "read:users", "write:documents")
-- **Role**: Collection of permissions (e.g., "admin" might include read:_, write:_, delete:\*)
+- **Resource Server Permission**: Fine-grained access right (e.g., `read:users`, `write:documents`) scoped to a resource server
+- **Access Role**: Collection of Resource Server Permissions within one resource-server context
 
 **Example role structure**:
 
@@ -158,6 +161,32 @@ admin:
   - manage:users
 ```
 
+#### Retrieving Access Roles via UserInfo
+
+For new integrations, request `profile` and read `resource_roles` from trusted UserInfo or server-side session data. Roles are keyed by resource server identifier. Ordinary API access tokens are authorized with permission `scope`; do not treat `resource_roles` or `groups` as ordinary access-token claims.
+
+```
+GET /authorize?
+  response_type=code&
+  client_id=YOUR_CLIENT_ID&
+  scope=openid profile&
+  redirect_uri=YOUR_REDIRECT_URI
+```
+
+Example UserInfo / session claim shape:
+
+```json
+{
+  "sub": "user-id",
+  "name": "Jane Doe",
+  "resource_roles": {
+    "https://api.example.com": ["editor", "reviewer"]
+  }
+}
+```
+
+> **Compatibility**: Flat `roles` / `access_roles` claims and deprecated `/roles` admin routes are legacy-only. See [Roles and Permissions Compatibility](../authorization/legacy-roles-permissions-compatibility.md).
+
 **Security recommendations**:
 
 - Follow principle of least privilege
@@ -167,19 +196,17 @@ admin:
 
 ---
 
-### App Permissions
+### Resource Server Permissions
 
-**Location**: SSO Integration > App Permissions
+**Location**: SSO Integration > Permissions (or the Permissions tab on a resource server / API)
 
-**Purpose**: Define fine-grained permissions that can be requested by applications and assigned to users.
+**Purpose**: Define fine-grained permissions bound to a resource server. These map to OAuth 2.0 scopes that appear in API access tokens.
 
 #### What you can do
 
-- **Create permissions**: Define granular access rights
-- **Scope permissions to apps**: Control which apps can request which permissions
-- **Assign to roles**: Build roles from individual permissions
-- **Assign to users directly**: Grant specific permissions outside of roles
-- **Manage permission requests**: Review and approve permission grant requests
+- **Create permissions**: Define granular access rights for a resource server
+- **Assign to Access Roles**: Build roles from individual permissions
+- **Control access tokens**: Granted permissions appear in the space-separated `scope` claim on ordinary API access tokens
 
 #### Permission Naming Convention
 
@@ -194,13 +221,13 @@ Use a consistent naming scheme:
 
 #### OAuth 2.0 Scopes
 
-Permissions in the Authifi system map to OAuth 2.0 scopes. When a client requests scopes, the Authifi checks if the user has the corresponding permissions.
+Resource Server Permissions map to OAuth 2.0 scopes. When authorizing API calls, validate the access token and enforce the required permission from its `scope` claim.
 
 **Security recommendations**:
 
 - Use descriptive, clear permission names
 - Avoid overly broad permissions (e.g., `admin:*`)
-- Require explicit consent for sensitive permissions
+- Prefer separate permission sets per resource server to avoid name collisions across APIs
 - Audit permission grants regularly
 
 ---
@@ -216,7 +243,7 @@ Permissions in the Authifi system map to OAuth 2.0 scopes. When a client request
 - **Create APIs**: Register new resource servers
 - **Configure access tokens**: Set token lifetime and claims
 - **Assign clients**: Control which apps can access the API
-- **Define API-specific roles and permissions**: Create RBAC for each API
+- **Define Access Roles and Resource Server Permissions**: Create RBAC for each API resource server
 - **Add custom claims**: Include additional data in access tokens
 - **Export configuration**: Backup or migrate API settings
 
@@ -226,11 +253,11 @@ Permissions in the Authifi system map to OAuth 2.0 scopes. When a client request
 - Enter API details:
     - **Name**: Human-readable name (e.g., "User Management API")
     - **Identifier**: Unique URI (e.g., "https://api.example.com/users")
-        - **Important**: This becomes the `aud` (audience) claim in tokens
+        - **Important**: This becomes the `aud` (audience) claim in tokens and the key for `resource_roles`
     - **Access Token Duration**: Token lifetime in seconds (default: 86400 = 24 hours)
 - Assign client applications that should have access
 - Configure custom claims (optional, super admin only)
-- Create API-specific roles and permissions (see tabs)
+- Create Access Roles and Resource Server Permissions for this API (see [Access Roles](#access-roles-api-roles) and [Resource Server Permissions](#resource-server-permissions))
 - Click **Save**
 
 **Security recommendations**:
@@ -238,90 +265,7 @@ Permissions in the Authifi system map to OAuth 2.0 scopes. When a client request
 - Use HTTPS URIs for identifiers
 - Set token lifetime based on API sensitivity (shorter for high-risk APIs)
 - Implement token validation in your API (verify signature, audience, expiration)
-- Use API-specific permissions rather than reusing app permissions
-
----
-
-### API Roles (Access Roles)
-
-**Location**: SSO Integration > API Roles
-
-**Purpose**: Define authorization roles specific to individual APIs (separate from app-level roles). API Roles are also referred to as **Access Roles** in some contexts (e.g., user management screens).
-
-#### What you can do
-
-- **Create API-specific roles**: Define roles scoped to one API (resource server)
-- **Assign permissions**: Group API permissions into roles
-- **Assign to users/groups**: Grant API roles to users via groups. Users receive roles that are assigned to groups that they belong to.
-- **Separate concerns**: Use different role sets for different APIs
-
-#### API Roles vs. App Roles
-
-- **App Roles** (Client Roles): Scoped to a specific client application. Used by the app for its own internal authorization logic (e.g., controlling UI features or local functionality).
-- **API Roles** (Access Roles): Scoped to an API resource server. Used for controlling access to API endpoints and resources.
-
-**When to use each**:
-
-- Use **App Roles** when the client application needs to make authorization decisions locally (e.g., showing/hiding UI elements, enabling features)
-- Use **API Roles** when the API needs to authorize requests from clients (e.g., determining what data a user can access)
-
-**Example**: A user might have an "editor" App Role in a document editing app (controlling what UI features they see). If an app uses an API for managing the documents, a user may have a "read-only" API Role for the Documents API (controlling what API operations they can perform).
-
-#### Retrieving API Roles via UserInfo
-
-To include a user's API Roles (Access Roles) in the UserInfo endpoint response, request the `access_roles` scope when initiating the authorization flow:
-
-```
-GET /authorize?
-  response_type=code&
-  client_id=YOUR_CLIENT_ID&
-  scope=openid profile access_roles&
-  redirect_uri=YOUR_REDIRECT_URI
-```
-
-The UserInfo response will then include the user's API roles:
-
-```json
-{
-  "sub": "user-id",
-  "name": "Jane Doe",
-    ...
-  "access_roles": [
-    "editor", 
-    "reviewer"
-  ]
-}
-```
-
----
-
-### API Permissions
-
-**Location**: SSO Integration > API Permissions
-
-**Purpose**: Define fine-grained permissions specific to individual APIs.
-
-#### What you can do
-
-- **Create API-specific permissions**: Define granular access rights for each API
-- **Scope to API**: Permissions are bound to specific resource servers
-- **Assign to API roles**: Build API-specific roles from permissions
-- **Control access tokens**: Permissions appear as scopes in API access tokens
-
-#### Permission Lifecycle
-
-- **Define** API permissions (e.g., `read:orders`, `write:orders`)
-- **Group** into API roles (e.g., "order-manager" = read + write)
-- **Assign** roles to users
-- **Request** permissions when client obtains access token
-- **Validate** permissions in API when processing requests
-
-**Security recommendations**:
-
-- Create separate permission sets for each API
-- Use API identifiers in permission names to avoid collisions
-- Require explicit user consent for sensitive API access
-- Log all permission grants and accesses
+- Enforce required permissions from the access token `scope` claim
 
 ---
 

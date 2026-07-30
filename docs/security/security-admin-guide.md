@@ -252,17 +252,17 @@ Delegated Admins have elevated permissions for specific resource types without f
 
 #### User-Managed Role System (UMRS)
 
-UMRS enables resource-level delegation where designated managers can grant specific application roles.
+UMRS enables resource-server-scoped delegation where designated managers can grant specific Access Roles.
 
-> **Note**: UMRS roles are application-specific and are not enforced by Authifi. Authifi securely manages the roles (policy) for the client applications, but the interpretation and enforcement of these roles is application dependent.
+> **Note**: UMRS grants Access Roles in a resource-server context. Authifi securely manages the role policy; interpretation and enforcement of those roles in the application or API is application-dependent.
 
-| Component               | Description                        |
-| ----------------------- | ---------------------------------- |
-| **UMRS Role**           | Defines what access is granted     |
-| **Manager Group**       | Who can grant this role            |
-| **Resource Server**     | What API/resource this controls    |
-| **Time-Limited Grants** | Supports expiration dates          |
-| **Extension Requests**  | Users can request grant extensions |
+| Component               | Description                                              |
+| ----------------------- | -------------------------------------------------------- |
+| **UMRS Role**           | Access Role defining what access is granted              |
+| **Manager Group**       | Who can grant this Access Role                           |
+| **Resource Server**     | Authorization context (client-linked or standalone API)  |
+| **Time-Limited Grants** | Supports expiration dates                                |
+| **Extension Requests**  | Users can request grant extensions                       |
 
 ---
 
@@ -442,7 +442,7 @@ UMRS enables resource-level delegation where designated managers can grant speci
 
 | Step | Action                              | Result              |
 | ---- | ----------------------------------- | ------------------- |
-| 1    | Create UMRS role scoped to resource | Role exists         |
+| 1    | Create UMRS Access Role scoped to a resource server | Role exists         |
 | 2    | Designate manager group             | Managers identified |
 | 3    | Manager grants role to user         | Access granted      |
 | 4    | Set expiration date (optional)      | Time-limited access |
