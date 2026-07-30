@@ -8,6 +8,7 @@ hooks:
 exclude_docs: |
   auth.md
   .well-known/**/SKILL.md
+  superpowers/**
 
 extra_javascript:
   - javascripts/webmcp.js
