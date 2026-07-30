@@ -94,13 +94,13 @@ An entity is privileged when it has `isPrivileged: true` set. This flag is the a
 
 ### Privileged Entity Types
 
-| Entity Type                 | Indicator            | Examples                                 |
-| --------------------------- | -------------------- | ---------------------------------------- |
-| Groups                      | `isPrivileged: true` | `systemAdmins`, `admins`                 |
-| Roles (Client Roles)        | `isPrivileged: true` | `Auth System Admin`, `Auth Tenant Admin` |
-| Access Roles                | `isPrivileged: true` | Roles containing admin scopes            |
-| Permissions                 | `isPrivileged: true` | Permissions granting elevated access     |
-| Resource Server Permissions | `isPrivileged: true` | API-level admin permissions              |
+| Entity Type                 | Indicator            | Examples                                    |
+| --------------------------- | -------------------- | ------------------------------------------- |
+| Groups                      | `isPrivileged: true` | `systemAdmins`, `admins`                    |
+| Access Roles                | `isPrivileged: true` | Roles containing `admin::` permissions      |
+| Resource Server Permissions | `isPrivileged: true` | Permissions granting elevated or API access |
+
+Access Roles and Resource Server Permissions cover both client-linked and standalone API authorization contexts. Deprecated role and permission interfaces are documented in [Roles and Permissions Compatibility](./legacy-roles-permissions-compatibility.md).
 
 ### Required Access for Privileged Entities
 
@@ -134,21 +134,17 @@ Users within groups can have different membership roles that grant varying level
 
 ---
 
-## Role Types
+## Access Role Contexts
 
-Authifi supports multiple role types for different use cases:
+Authifi uses one Access Role model (some UI labels still say **API Roles**):
 
-### Client Roles
+- Every Access Role belongs to a Resource Server and Tenant.
+- Every Access Role contains Resource Server Permissions.
+- Group-assigned Access Roles authorize users.
+- **Client credential roles and permissions** authorize an app acting through the client credentials grant.
+- A client-linked resource server provides an application authorization context; a standalone resource server provides an API authorization context.
 
-- Belong to a specific OAuth Client and Tenant
-- Contain Permissions (fine-grained access control)
-- Assigned to Groups
-
-### Access Roles
-
-- Belong to a Resource Server (API) and Tenant
-- Contain Resource Server Permissions
-- Assigned to Groups
+See [Roles and Permissions Compatibility](./legacy-roles-permissions-compatibility.md) for deprecated client-role terminology and interfaces.
 
 ---
 
@@ -188,6 +184,7 @@ User Request
 - [Admin Roles and Privileged Access](./admin-roles.md) - Detailed explanation of admin role enforcement
 - [Super Administrator Access Requirements](./super-admin-access.md) - Complete inventory of SA-only operations
 - [OAuth Client Authorization](./authorization.md) - User groups, AD groups, and RBAC
+- [Roles and Permissions Compatibility](./legacy-roles-permissions-compatibility.md) - Deprecated routes and flat claims
 - [Default Application User Groups](./default-application-user-groups.md) - Auto-assigning users to groups
 
 ---

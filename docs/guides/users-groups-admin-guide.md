@@ -24,8 +24,7 @@ This guide provides comprehensive instructions for tenant administrators on mana
   - [Creating a User Group](#creating-a-user-group)
   - [Group Settings Tab](#group-settings-tab)
   - [Members Tab](#members-tab)
-  - [Client Roles Tab](#client-roles-tab)
-  - [API Roles Tab](#api-roles-tab)
+  - [Access Roles Tab](#access-roles-tab)
   - [UMRS Grants Tab](#umrs-grants-tab)
 - [Security Best Practices](#security-best-practices)
 
@@ -151,8 +150,7 @@ Groups display the following information in the table:
 - **Description**: Purpose or scope of the group
 - **Namespace**: Logical isolation boundary
 - **Users**: Number of members
-- **Client Roles**: Number of app-level roles assigned
-- **API Roles**: Number of API-specific roles assigned
+- **Access Roles**: Number of Access Roles assigned (some UI labels still say **API Roles**)
 - **isPrivileged**: Whether this is a privileged group (elevated permissions)
 
 #### Creating a User Group
@@ -652,61 +650,34 @@ When creating or editing a user group via **User Groups > Settings icon**, you'l
 
 ---
 
-### Client Roles Tab
+### Access Roles Tab
 
-**Purpose**: Assign application-level roles to all group members.
+**Purpose**: Assign **Access Roles** (also called **API Roles** in some UI labels) to all group members. Access Roles are scoped to a resource server — either a standalone API resource server or a client-linked / auto-generated resource server associated with an OAuth client.
 
-#### Managing Client Roles
+#### Managing Access Roles
 
-- **Current Roles**: Table of roles assigned to this group
-- **Add Roles**:
-  - Autocomplete search for available app roles
+- **Current Access Roles**: Table of Access Roles assigned to this group
+- **Add Access Roles**:
+  - Autocomplete search for available Access Roles
   - Select role and click **Add**
   - All group members inherit this role
-- **Remove Roles**:
+- **Remove Access Roles**:
   - Click remove icon next to role
   - All group members lose this role
 
 **Role columns**:
 
 - **Role Name**: Role identifier
-- **Client**: Application this role belongs to
+- **Resource Server / API**: Authorization context for the role
 - **Description**: Role purpose
-- **Permissions**: Number of permissions in role
+- **Permissions**: Number of Resource Server Permissions in the role
 - **Remove**: Unassign role from group
 
-**Use case**: Grant "editor" role in "Document Management App" to entire "editors" group.
+**Use case**: Grant an "order-manager" Access Role for the Order Management API to the entire "order-managers" group.
 
-**Security benefit**: When you add a user to the group, they automatically get all group roles without additional configuration.
+**Security benefit**: When you add a user to the group, they automatically get all group Access Roles without additional configuration.
 
----
-
-### API Roles Tab
-
-**Purpose**: Assign API-specific roles to all group members.
-
-#### Managing API Roles
-
-- **Current API Roles**: Table of API-specific roles assigned to this group
-- **Add API Roles**:
-  - Autocomplete search for available API roles
-  - Select role and click **Add**
-  - All group members inherit this API role
-- **Remove API Roles**:
-  - Click remove icon next to role
-  - All group members lose this API role
-
-**API Role columns**:
-
-- **Role Name**: Role identifier
-- **API**: Resource server this role belongs to
-- **Description**: Role purpose
-- **Permissions**: API permissions in role
-- **Remove**: Unassign role from group
-
-**Use case**: Grant "api:orders:admin" role in "Order Management API" to entire "order-managers" group.
-
-**Security benefit**: API access is controlled at group level; adding/removing users is simple.
+> **Compatibility**: Deprecated group `/roles` relation routes and flat role claims are documented in [Roles and Permissions Compatibility](../authorization/legacy-roles-permissions-compatibility.md).
 
 ---
 
@@ -718,7 +689,7 @@ When creating or editing a user group via **User Groups > Settings icon**, you'l
 
 #### What is UMRS?
 
-UMRS (User-Managed Role System) allows designated users to grant/revoke specific roles without being full admins. It's useful for:
+UMRS (User-Managed Role System) allows designated users to grant/revoke specific resource-server-scoped Access Roles without being full admins. It's useful for:
 
 - Project leads managing project access
 - Team managers controlling team resources
