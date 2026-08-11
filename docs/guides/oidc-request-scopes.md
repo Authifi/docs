@@ -2,7 +2,7 @@
 title: OIDC Request Scopes
 ---
 
-<!-- Generated from auth-monorepo: packages/auth/docs/oidc/request-scopes.md. Edit it there, not in authifi-docs. -->
+<!-- Generated from idbroker: packages/auth/docs/oidc/request-scopes.md. Edit it there, not in Authifi/docs. -->
 
 # Request Scopes
 
