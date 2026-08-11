@@ -1,6 +1,6 @@
 {
   "name": "authifi-docs",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "private": true,
   "description": "Public documentation for the Authifi identity and access management platform.",
   "scripts": {

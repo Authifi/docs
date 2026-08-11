@@ -1,5 +1,11 @@
 # authifi-docs
 
+## 1.4.1
+
+### Patch Changes
+
+- 16f68f4: Sync public documentation from idbroker.
+
 ## 1.4.0
 
 ### Minor Changes
