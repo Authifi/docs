@@ -1,6 +1,6 @@
 {
-  "$generatedBy": "auth-monorepo scripts/sync-authifi-docs",
-  "note": "Files listed here are synced from auth-monorepo. Edit them upstream, not in this repo.",
+  "$generatedBy": "idbroker scripts/sync-authifi-docs",
+  "note": "Files listed here are synced from idbroker. Edit them upstream, not in this repo.",
   "files": [
     {
       "dest": "feature-list.html",
