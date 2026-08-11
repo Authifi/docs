@@ -12,13 +12,13 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/AxleResearch/authifi-docs.git"
+    "url": "git+https://github.com/Authifi/docs.git"
   },
   "license": "ISC",
   "bugs": {
-    "url": "https://github.com/AxleResearch/authifi-docs/issues"
+    "url": "https://github.com/Authifi/docs/issues"
   },
-  "homepage": "https://github.com/AxleResearch/authifi-docs#readme",
+  "homepage": "https://github.com/Authifi/docs#readme",
   "devDependencies": {
     "@changesets/cli": "^2.29.8"
   }
