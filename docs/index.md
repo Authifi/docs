@@ -39,7 +39,7 @@ Security configuration and best practices:
 
 ## Feature Overview
 
-For a complete list of Authifi capabilities — authentication protocols, MFA, RBAC, secret management, AI agent delegation, GA4GH Passport support, FedRAMP High compliance, and more — see the **[Authifi Identity Broker Feature List](feature-list.html)**.
+See the **[Authifi Identity Broker Feature List](feature-list.html)** for a complete list of Authifi capabilities, including authentication protocols, MFA, RBAC, secret management, AI agent delegation, GA4GH Passport support, and FedRAMP High compliance.
 
 ## FedRAMP
 

@@ -1,6 +1,6 @@
 # Monitoring and Logging Guide
 
-This guide provides comprehensive instructions for tenant administrators on monitoring authentication activity, viewing audit trails, and analyzing system behavior through the Authifi UI.
+This guide explains how tenant administrators monitor authentication activity, view audit trails, and analyze system behavior through the Authifi UI.
 
 ## Table of Contents
 
@@ -23,12 +23,12 @@ This guide provides comprehensive instructions for tenant administrators on moni
 The **Monitoring** section provides visibility into all authentication and administrative activity within your tenant:
 
 - **Security monitoring**: Track login attempts, failures, and suspicious activity
-- **Compliance and audit**: Complete audit trail of all administrative actions
+- **Compliance and audit**: Audit trail of all administrative actions
 - **Operational insights**: Monitor system jobs, email delivery, and active sessions
 - **Troubleshooting**: Investigate authentication issues and configuration changes
 - **User activity**: Track individual user actions and access patterns
 
-**Security philosophy**: Comprehensive logging enables:
+Logging enables:
 
 - Detection of unauthorized access attempts
 - Forensic investigation of security incidents
@@ -44,7 +44,7 @@ The **Monitoring** section provides visibility into all authentication and admin
 
 **Location**: Monitoring > Audit Logs
 
-**Purpose**: Comprehensive audit trail of all administrative actions and configuration changes within the tenant.
+**Purpose**: Audit trail of all administrative actions and configuration changes within the tenant.
 
 #### What is Logged
 
@@ -695,7 +695,7 @@ See [Natural Language Queries](#natural-language-queries) for more examples.
 
 ## Natural Language Queries
 
-**All log dashboards** support natural language queries (NLQ) for intuitive filtering.
+**All log dashboards** support natural language queries (NLQ) for filtering in plain English.
 
 ### How to Use
 
@@ -853,7 +853,7 @@ See [Natural Language Queries](#natural-language-queries) for more examples.
 
 **Monthly tasks**:
 
-- Comprehensive Audit Log review
+- Review Audit Logs
 - Review all Grants for unused applications
 - Revoke old Sessions (> 30 days)
 - Verify email delivery health (Notification Logs)

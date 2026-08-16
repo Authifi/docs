@@ -1,6 +1,6 @@
 # Resources and Tools Guide
 
-This guide provides comprehensive instructions for tenant administrators on managing templates, images, secrets, and scheduled jobs through the Authifi UI.
+This guide explains how tenant administrators manage templates, images, secrets, and scheduled jobs through the Authifi UI.
 
 ## Table of Contents
 
@@ -20,7 +20,7 @@ This guide provides comprehensive instructions for tenant administrators on mana
 
 ## Overview
 
-The **Resources and Tools** section provides centralized management of reusable resources:
+The **Resources and Tools** section lets you manage reusable resources:
 
 - **Templates**: Customize email and HTML templates for branding and user experience
 - **Images**: Centralized image storage with CDN delivery
@@ -1017,7 +1017,7 @@ Expiration: Never
 - **Notifications**:
     - Send success notification for critical jobs
     - Always send failure notifications
-    - Include actionable error information
+    - Include error details
     - Set appropriate recipient groups
 
 ### Example Generic Job

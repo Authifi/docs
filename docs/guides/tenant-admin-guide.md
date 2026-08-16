@@ -1,6 +1,6 @@
 # Tenant Administrator Guide: Managing Tenant Settings
 
-This guide provides comprehensive instructions for tenant administrators on managing tenant settings through the Authifi UI.
+This guide explains how tenant administrators manage tenant settings through the Authifi UI.
 
 ## Table of Contents
 
@@ -31,7 +31,7 @@ This guide provides comprehensive instructions for tenant administrators on mana
 
 ## Overview
 
-As a **tenant administrator**, you have comprehensive control over your tenant's authentication and authorization settings, branding, and user experience. This guide covers all configuration options available through the Authifi UI.
+As a **tenant administrator**, you can manage your tenant's authentication and authorization settings, branding, and user experience. This guide covers the configuration options available through the Authifi UI.
 
 **Note**: Some features may be restricted to super administrators only, or may require elevated admin scopes. These restrictions are noted throughout this guide.
 
@@ -91,7 +91,7 @@ The **Tenant** menu includes:
 
 **Location**: Tenant > Settings
 
-**Purpose**: Comprehensive tenant configuration via a multi-tab dialog.
+**Purpose**: Configure tenant settings through a multi-tab dialog.
 
 Click the **Edit** button on the Tenant Details page to open the tenant settings dialog, which contains 11 configuration tabs (detailed below).
 
@@ -834,7 +834,7 @@ Available when "Use Default Email Settings" is disabled:
 **Annually**:
 
 - Review and update all branding and communications for accuracy
-- Comprehensive security audit of tenant configuration
+- Audit the tenant's security configuration
 - Review and update cookie consent messaging for regulatory changes
 
 ---

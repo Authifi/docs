@@ -1,6 +1,6 @@
 # License Management Guide (Super Admins)
 
-This guide provides comprehensive instructions for super administrators on managing platform licenses through the Authifi UI.
+This guide explains how super administrators manage platform licenses through the Authifi UI.
 
 ## Table of Contents
 
@@ -69,7 +69,7 @@ The Licenses dashboard displays all configured license tiers in a table format.
 
 - Cannot be edited
 - Cannot be deleted
-- Serves as the fallback when no other license is assigned
+- Is the fallback when no other license is assigned
 - Typically configured with platform-wide default limits
 
 ---
@@ -321,7 +321,7 @@ Trial-14-Day:
 - Set user expiration or automate license change after 14 days
 - Monitor trial usage in analytics
 
-**Best practice**: Combine license limits with tenant-level expiration dates for complete trial control.
+**Best practice**: Combine license limits with tenant-level expiration dates to control trial quotas and duration.
 
 ### 3. Department or Business Unit Quotas
 
@@ -513,7 +513,7 @@ Production:
 - Review audit logs for recent license changes
 - Confirm no system-admin bypass in place
 
-**Resolution**: Contact development team if enforcement is truly broken.
+**Resolution**: Contact development team if enforcement is broken.
 
 ### Cannot Delete License
 

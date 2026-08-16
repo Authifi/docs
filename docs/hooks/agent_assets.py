@@ -1,7 +1,5 @@
 """MkDocs hook: agent-readiness assets (sitemap, skill digests, static copies)."""
 
-from __future__ import annotations
-
 import hashlib
 import json
 import xml.etree.ElementTree as ET
@@ -112,9 +110,8 @@ def _write_sitemap(site_dir: Path, site_url: str, nav: Any) -> None:
 
     xml_body = ET.tostring(urlset, encoding="unicode")
     pretty = minidom.parseString(xml_body).toprettyxml(indent="  ")
-    lines = [line for line in pretty.splitlines() if line.strip()]
     sitemap_path = site_dir / "sitemap.xml"
-    sitemap_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    sitemap_path.write_text(pretty, encoding="utf-8")
 
 
 def _write_agent_skills_index(site_dir: Path, site_url: str, docs_dir: Path) -> None:

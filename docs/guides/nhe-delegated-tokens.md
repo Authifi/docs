@@ -6,7 +6,7 @@ NHE Delegation allows authorized users to issue short-lived, tightly scoped acce
 
 ## Standards
 
-This feature builds on established and emerging standards:
+This feature uses the following standards and drafts:
 
 - **RFC 8693 (OAuth 2.0 Token Exchange)** — The `actor_token` parameter and `act` JWT claim provide delegation semantics within the existing token exchange grant type.
 - **IETF Agent Authorization Profile (AAP) draft (Feb 2026)** — The `agent` structured claim provides agent identity, type, and operator metadata.
@@ -247,8 +247,8 @@ const actorSub = req.user.act?.sub; // "nhe:agent-researcher-01"
 ### Security Considerations
 
 - NHE tokens have the same signature and validation as regular access tokens.
-- The `sub` claim is the human user — authorization decisions based on `sub` work normally.
-- The `act` claim identifies the NHE actor — use this for audit logging and agent-specific restrictions.
+- The `sub` claim is the human user; authorization decisions based on `sub` work normally.
+- The `act` claim identifies the NHE actor; use this for audit logging and agent-specific restrictions.
 - NHE tokens are short-lived (typically 5 minutes) and cannot be refreshed.
 - Scopes are always a subset of what the delegating user has.
 

@@ -38,7 +38,7 @@ _Note: New `Users` will only display an email address in the `Users` dashboard c
 
 #### How to restrict OAuth Client access by AD Group membership
 
-One or more Active Directory groups can be assigned to `OAuth Clients` in order to restrict access to members of the AD Group(s).
+One or more Active Directory groups can be assigned to `OAuth Clients` to restrict access to members of the AD Group(s).
 Currently, it is only possible to obtain AD Group information when logging in with specific Identity Providers. For example, the `Google OAuth` and `Azure OIDC` IdP does not provide AD Group information.
 
 ##### Assigning AD Groups to SAML2 OAuth Clients
@@ -100,7 +100,7 @@ The list of supported `acr_values` can also be viewed at the OIDC Discovery URL 
 
 `/_api/auth/<tenant>/authorize?acr_values=mod-mf&...`
 
-When providing the `mod-mf` query parameter, the user will be prompted for multi-factor authentication even if the application or identity provider does not already require it. This functionally can be used to provide an additional layer of security for more sensitive sections in an application.
+When providing the `mod-mf` query parameter, the user will be prompted for multi-factor authentication even if the application or identity provider does not already require it. This adds another layer of security for more sensitive sections in an application.
 
 Note:
 If the user is already authenticated, use the "prompt" query parameter with a value of "login" to request MFA. For details on the "prompt" query parameter, refer to the [OIDC Specification](https://openid.net/specs/openid-connect-core-1_0.html). For example: `/_api/auth/<tenant>/authorize?acr_values=mod-mf&prompt=login...`.

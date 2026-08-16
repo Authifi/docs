@@ -1,6 +1,6 @@
 # Authifi Service - Security Admin Guide
 
-This document provides comprehensive guidance for securely setting up, configuring, operating, and decommissioning administrative accounts within the Authifi service. It is intended for security administrators, tenant administrators, and delegated admins who manage authentication and authorization functions.
+This document covers secure setup, configuration, operation, and decommissioning of administrative accounts in the Authifi service. It is for security administrators, tenant administrators, and delegated admins who manage authentication and authorization functions.
 
 **Compliance**: FedRAMP Rev5 Recommended Secure Configuration
 
@@ -248,7 +248,7 @@ Delegated Admins have elevated permissions for specific resource types without f
 | `admin::clients:edit`            | Update client applications                                 | Application administrators  |
 | `admin::user-ssh-secret:edit`    | Create/update SSH access requests                          | DevOps team                 |
 
-> **Naming Convention:** By convention, delegated admin permissions use the `admin::` prefix. However, this naming convention alone does not make an entity privileged—the `isPrivileged` flag must be set on the permission, role, or group.
+> **Naming Convention:** By convention, delegated admin permissions use the `admin::` prefix. However, this naming convention alone does not make an entity privileged; the `isPrivileged` flag must be set on the permission, role, or group.
 
 #### User-Managed Role System (UMRS)
 

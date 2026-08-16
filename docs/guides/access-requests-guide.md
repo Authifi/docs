@@ -1,6 +1,6 @@
 # Access Requests and Delegated Administration Guide
 
-This guide provides comprehensive instructions for tenant administrators on managing access requests, self-service workflows, and delegated administration through the Authifi UI.
+This guide explains how tenant administrators manage access requests, self-service workflows, and delegated administration through the Authifi UI.
 
 ## Table of Contents
 
@@ -27,12 +27,12 @@ This guide provides comprehensive instructions for tenant administrators on mana
 The **Access Requests** section enables self-service and delegated access management:
 
 - **Self-service access**: Users request access; approvers grant or deny
-- **Delegated administration**: Empower non-admins to manage specific resources
+- **Delegated administration**: Let non-admins manage specific resources
 - **Time-limited access**: Automatic expiration for temporary permissions
-- **Audit trail**: Complete record of access grants and approvals
-- **Bulk operations**: Efficiently onboard groups of users
+- **Audit trail**: Record of access grants and approvals
+- **Bulk operations**: Onboard groups of users in bulk
 
-**Security philosophy**: Access Requests implements the principle of least standing privilege by enabling:
+Access Requests uses the principle of least standing privilege by enabling:
 
 - Just-in-time access (request when needed, not granted permanently)
 - Time-limited grants (automatic expiration)
@@ -283,7 +283,7 @@ Allow Grant Extension Requests: Yes
 **Security benefits**:
 
 - Reduces admin workload for routine access grants
-- Empowers domain experts to manage their resources
+- Lets domain experts manage their resources
 - Maintains audit trail of who granted what
 - Enables fine-grained, resource-level access control
 
@@ -940,7 +940,7 @@ Result: Members of "project-beta-leads" can grant "project-beta-contributor" rol
     - Weekly: Review pending requests (avoid backlog)
     - Monthly: Audit approved access grants
     - Quarterly: Review template configurations
-    - Annually: Comprehensive access audit
+    - Annually: Audit access requests and grants
 
 - **Automate where safe**
     - Low-risk access can be auto-approved

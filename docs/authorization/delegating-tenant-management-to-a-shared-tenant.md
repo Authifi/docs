@@ -3,7 +3,7 @@
 Each Authifi tenant has an "admins" group that grants elevated privileges to each member. The elevated privileges allow management of the tenant's resources without requiring an access token with scope(s) for each API operation (for example: "auth.clients.list"). In addition,
 if a user belongs to the "admins" group across multiple tenants, they can manage the resources from any of those tenants without requiring a new access token. Tenant creators are automatically added to the "admins" group and can add new members.
 
-To avoid the constraint of having to be assigned to each tenant's "admins" group for cross-tenant access, Authifi supports "delegating" access to a shared tenant via "Trusted Tenant" assignment.
+To avoid assigning users to each tenant's "admins" group for cross-tenant access, Authifi supports "delegating" access to a shared tenant via "Trusted Tenant" assignment.
 
 ### Steps
 

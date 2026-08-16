@@ -1,6 +1,6 @@
 # Users and Groups Management Guide
 
-This guide provides comprehensive instructions for tenant administrators on managing users and groups through the Authifi UI.
+This guide explains how tenant administrators manage users and groups through the Authifi UI.
 
 ## Table of Contents
 
@@ -48,7 +48,7 @@ The **Users and Groups** section enables you to:
 
 ## Users and Groups Menu
 
-The **Users and Groups** menu provides comprehensive user and group management capabilities.
+The **Users and Groups** menu lets you manage users, groups, roles, and permissions.
 
 ### Users
 
@@ -718,7 +718,7 @@ When creating or editing a user group via **User Groups > Settings icon**, you'l
 
 #### What is UMRS?
 
-UMRS (User-Managed Role System) allows designated users to grant/revoke specific roles without being full admins. It's useful for:
+UMRS (User-Managed Role System) allows designated users to grant/revoke specific roles without being full admins. Use cases include:
 
 - Project leads managing project access
 - Team managers controlling team resources
@@ -777,7 +777,7 @@ UMRS (User-Managed Role System) allows designated users to grant/revoke specific
     - Avoid overlapping group responsibilities
 
 - **Limit privileged groups**
-    - Only mark groups as privileged when truly necessary
+    - Only mark groups as privileged when necessary
     - Audit privileged group membership frequently
     - Require justification for privileged group access
 
@@ -823,7 +823,7 @@ UMRS (User-Managed Role System) allows designated users to grant/revoke specific
 - **Access reviews**
     - Quarterly access reviews for all users
     - Immediate review when users change roles
-   - Annual comprehensive privilege audit
+   - Annual privilege audit
    - Remove access for terminated employees immediately
 
 ---

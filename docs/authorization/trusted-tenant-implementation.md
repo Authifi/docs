@@ -6,7 +6,7 @@ The Trusted Tenant feature enables cross-tenant resource management without requ
 
 ## Use Cases
 
-Trusted tenant relationships are useful when:
+Use cases for trusted tenant relationships include:
 
 - **Centralized Administration**: A central IT team needs to manage multiple organizational tenants from a single admin account
 - **Managed Service Providers**: External administrators manage client tenants without needing separate credentials

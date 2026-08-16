@@ -1,6 +1,6 @@
 # SSO Integration Guide: Managing Applications and Identity Providers
 
-This guide provides comprehensive instructions for tenant administrators on managing SSO integrations, applications, APIs, and identity providers through the Authifi UI.
+This guide explains how tenant administrators manage SSO integrations, applications, APIs, and identity providers through the Authifi UI.
 
 ## Table of Contents
 
@@ -818,7 +818,7 @@ _(This section would cover the detailed IdP configuration dialog with all provid
 ### Identity Provider Security
 
 - **Vet providers carefully**
-    - Only mark truly trustworthy IdPs as "Is Trusted"
+    - Only mark IdPs as "Is Trusted" when they are enterprise-managed and secured
     - Prefer enterprise IdPs over social for sensitive applications
     - Validate IdP certificates (SAML)
     - Test thoroughly before production

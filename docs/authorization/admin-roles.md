@@ -42,7 +42,7 @@ In user-facing documentation, the platform-wide admin role is called **"Super Ad
 
 - Super Administrators can perform platform-wide privileged operations and are often treated as a bypass for limits and checks.
 - Some actions are **still blocked even for Super Administrators** (e.g., certain protections around config-defined Super Administrators).
-- See [Super Admin Access](super-admin-access.md) for a comprehensive list of SA-only/SA-or-scope operations.
+- See [Super Admin Access](super-admin-access.md) for the full list of SA-only/SA-or-scope operations.
 
 ---
 
@@ -74,7 +74,7 @@ In user-facing documentation, the platform-wide admin role is called **"Super Ad
 - Scopes come from the user's permissions/roles and are evaluated at request time.
 - These scopes are assigned through role-based access control (RBAC) configuration.
 
-> **Naming Convention:** By convention, delegated admin permissions use the `admin::` prefix (e.g., `admin::mfa:reset`). However, this naming convention alone does not make an entity privileged—the `isPrivileged` flag must be set on the permission, role, or group. See [Privileged Access Summary](privileged-access-summary.md#privileged-entities) for details.
+> **Naming Convention:** By convention, delegated admin permissions use the `admin::` prefix (e.g., `admin::mfa:reset`). However, this naming convention alone does not make an entity privileged; the `isPrivileged` flag must be set on the permission, role, or group. See [Privileged Access Summary](privileged-access-summary.md#privileged-entities) for details.
 
 **What it enables**
 

@@ -10,7 +10,7 @@ This directory contains security documentation for the Authifi service, includin
 
 **Document**: [Security Admin Guide](./security-admin-guide.md)
 
-The Security Admin Guide provides comprehensive guidance for setting up, configuring, operating, and decommissioning administrative accounts within the Authifi service.
+The Security Admin Guide covers setup, configuration, operation, and decommissioning of administrative accounts in the Authifi service.
 
 ### Administrative Account Types Covered
 

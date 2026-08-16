@@ -9,7 +9,7 @@ To support logout confirmation in your application, you have two options:
 1. **Frontend confirmation** — Show your own dialog before calling `signoutRedirect()` (or equivalent). No server-side setup needed.
 2. **Authifi's `/logout/confirm` endpoint** — Override your client library's default logout to redirect to Authifi's pre-logout confirmation page instead. This preserves the user's session until they confirm.
 
-This guide covers **Option 2** — using Authifi's server-side confirmation endpoint.
+This guide covers **Option 2**, using Authifi's server-side confirmation endpoint.
 
 !!! tip "Option 1: Frontend confirmation"
     If you prefer to handle confirmation entirely in your app, simply show a dialog before calling your OIDC library's logout method. If the user confirms, call `signoutRedirect()` (or equivalent). If they cancel, do nothing. No server-side setup is required.

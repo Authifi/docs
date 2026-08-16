@@ -1,7 +1,6 @@
 ## Automatically Assigning Users to Groups after Login
 
-When a user logs in, they can be automatically assigned to one or more **default application user groups** configured for an application. This can be useful
-for scenarios such as new user signups. Instead of having to manually assign new users to groups after they log in for the first time, this feature will automatically assign them to the designated default groups.
+When a user logs in, Authifi can automatically assign them to one or more **default application user groups** configured for an application. This removes the need to manually assign new users to groups after their first login.
 
 ### Steps
 

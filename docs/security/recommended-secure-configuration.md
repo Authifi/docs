@@ -1,6 +1,6 @@
 # Authifi Service - Recommended Secure Configuration
 
-This document provides comprehensive security guidance for configuring and operating the Authifi service in accordance with FedRAMP Recommended Secure Configuration requirements and security best practices.
+This document describes how to configure and operate the Authifi service in accordance with FedRAMP Recommended Secure Configuration requirements and security best practices.
 
 > **See Also**: For a structured guide covering administrative account lifecycle (setup, configuration, operation, decommissioning) and security settings reference tables, refer to the [Security Admin Guide](./security-admin-guide.md).
 
@@ -79,7 +79,7 @@ The Authifi service provides enterprise identity and access management with a hi
 
 - Multi-factor authentication (MFA) enforcement for administrative accounts
 - Role-based access control (RBAC) with least privilege
-- Comprehensive audit logging of all administrative actions
+- Audit logging of all administrative actions
 - Session management with configurable lifetimes
 - Encryption at rest and in transit
 - API-based configuration management
@@ -312,7 +312,7 @@ Super administrator assignment is controlled through system configuration, not t
     - Authentication credentials (hashed)
     - Audit logs and activity
     - Application configurations
-- **Mitigation**: Enforce least privilege, limit number of super admins, comprehensive logging
+- **Mitigation**: Enforce least privilege, limit number of super admins, log all super admin actions
 
 **Configuration Changes**:
 
@@ -394,7 +394,7 @@ Delegated Admins have permissions limited to specific resources:
 - `admin::clients:*`: Application management only
 - `admin::providers:*`: Identity provider management only
 
-> **Naming Convention:** By convention, delegated admin permissions use the `admin::` prefix. However, this naming convention alone does not make an entity privileged—the `isPrivileged` flag must be set.
+> **Naming Convention:** By convention, delegated admin permissions use the `admin::` prefix. However, this naming convention alone does not make an entity privileged; the `isPrivileged` flag must be set.
 
 **Delegated Administration (UMRS)**:
 
@@ -576,7 +576,7 @@ Tenant administrators can configure these security settings within their tenant:
 
 **Security Implications**:
 
-- MFA significantly reduces account compromise risk
+- MFA reduces account compromise risk
 - WebAuthn/FIDO2 provides strongest protection (phishing-resistant)
 - TOTP is acceptable minimum, SMS/Email not recommended
 - Strike count balances security with usability (too low = lockouts, too high = brute force risk)
@@ -961,7 +961,7 @@ Returns the tenant configuration including security-relevant settings:
 
 All security settings are accessible via REST API and the Authifi UI:
 
-**Tenant Settings** — UI: Tenant > Settings
+**Tenant Settings**: UI: Tenant > Settings
 
 ```
 GET    /auth/admin/tenants/{tenantId}
@@ -969,7 +969,7 @@ PUT    /auth/admin/tenants/{tenantId}
 PATCH  /auth/admin/tenants/{tenantId}
 ```
 
-**Identity Providers** — UI: SSO Integration > Identity Provider Dashboard
+**Identity Providers**: UI: SSO Integration > Identity Provider Dashboard
 
 ```
 GET    /auth/admin/tenants/{tenantId}/identity-providers
@@ -978,7 +978,7 @@ PUT    /auth/admin/tenants/{tenantId}/identity-providers/{idpId}
 DELETE /auth/admin/tenants/{tenantId}/identity-providers/{idpId}
 ```
 
-**Applications** — UI: SSO Integration > App Dashboard
+**Applications**: UI: SSO Integration > App Dashboard
 
 ```
 GET    /auth/admin/tenants/{tenantId}/clients
@@ -987,7 +987,7 @@ PUT    /auth/admin/tenants/{tenantId}/clients/{clientId}
 DELETE /auth/admin/tenants/{tenantId}/clients/{clientId}
 ```
 
-**Users and Groups** — UI: Users and Groups > Users / Groups
+**Users and Groups**: UI: Users and Groups > Users / Groups
 
 ```
 GET    /auth/admin/tenants/{tenantId}/users
@@ -1076,7 +1076,7 @@ DELETE /auth/admin/tenants/{tenantId}/users/{userId}
     - Only mark IdPs as "trusted" if:
         - IdP is enterprise-managed and secured
         - IdP enforces strong authentication
-        - IdP has comprehensive audit logging
+        - IdP has audit logging
         - IdP vendor is reputable
     - Never trust public IdPs (Google, Facebook) for admin access
 
@@ -1174,7 +1174,7 @@ DELETE /auth/admin/tenants/{tenantId}/users/{userId}
     - **Daily**: Failed login monitoring
     - **Weekly**: Admin action audit
     - **Monthly**: Application and IdP configuration review
-    - **Quarterly**: Comprehensive access review (all admins, roles, permissions)
+    - **Quarterly**: Access review covering all admins, roles, and permissions
     - **Annually**: Security posture assessment
 
 - **Audit Log Protection**:
@@ -1314,7 +1314,7 @@ This document addresses the following FedRAMP Recommended Secure Configuration r
     - Least privilege evidence
 
 - **Audit and Accountability** (AU):
-    - Audit log exports (comprehensive)
+    - Audit log exports
     - Event log exports (login activity)
     - Admin action reviews
     - Incident investigation logs
@@ -1344,7 +1344,7 @@ This document addresses the following FedRAMP Recommended Secure Configuration r
 **Review Schedule**:
 
 - Quarterly: Technical accuracy review
-- Annually: Comprehensive security review
+- Annually: Full security review
 - As needed: After major product changes or security incidents
 
 **Change History**:

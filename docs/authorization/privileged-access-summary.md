@@ -1,6 +1,6 @@
 # Privileged Permissions, Roles, and Groups
 
-This document provides a consolidated summary of privileged access in Authifi. For detailed information, see the linked documentation.
+This document summarizes privileged access in Authifi. For details, see the linked documentation.
 
 ## Table of Contents
 
@@ -35,7 +35,7 @@ Authifi implements a multi-layered authorization model:
 
 ### Delegated Admins
 
-Delegated Admins are users who have been granted specific `admin::*` permissions, allowing them to perform targeted administrative tasks without full Super Administrator or Tenant Administrator access. This enables organizations to delegate specific responsibilities (such as resetting MFA, editing identity provider settings, or managing templates) to trusted users while maintaining strict control over who can grant these elevated permissions.
+Delegated Admins are users who have been granted specific `admin::*` permissions, allowing them to perform targeted administrative tasks without full Super Administrator or Tenant Administrator access. Organizations can delegate tasks such as resetting MFA, editing identity provider settings, and managing templates to trusted users while limiting who can grant the permissions.
 
 ### Assigning Privileged Permissions
 
@@ -90,7 +90,7 @@ Certain entities are marked as "privileged" and require **Super Administrator** 
 
 An entity is privileged when it has `isPrivileged: true` set. This flag is the authoritative indicator that determines whether Super Administrator access is required to manage the entity.
 
-> **Naming Convention:** By convention, privileged permissions use the `admin::` prefix (e.g., `admin::mfa:reset`). However, this naming convention alone does not make an entity privileged—the `isPrivileged` flag must be set.
+> **Naming Convention:** By convention, privileged permissions use the `admin::` prefix (e.g., `admin::mfa:reset`). However, this naming convention alone does not make an entity privileged; the `isPrivileged` flag must be set.
 
 ### Privileged Entity Types
 
