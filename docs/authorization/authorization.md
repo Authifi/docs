@@ -1,45 +1,45 @@
-## Authifi OAuth Client Authorization
+# Authifi OAuth Client Authorization
 
-As an [Authorization Server](https://tools.ietf.org/html/rfc6749#section-1.1), Authifi provides layered authorization options for [OAuth Clients](https://tools.ietf.org/html/rfc6749#section-2), [Resource Servers](https://tools.ietf.org/html/rfc6749#section-1.1) (APIs), and `Users` registered to the system.
+Authifi acts as an [authorization server](https://tools.ietf.org/html/rfc6749#section-1.1) for [OAuth clients](https://tools.ietf.org/html/rfc6749#section-2), [resource servers](https://tools.ietf.org/html/rfc6749#section-1.1) (APIs), and registered `Users`.
 
 ### User Groups and AD Groups
 
-Each Authifi `Tenant` can define `User Groups` and assign/remove `Users` and/or `OAuth2 Clients` to each one. When a `User Group` is assigned to an `OAuth Client`, access to the `OAuth Client` will be restricted to the `User(s)` within the `User Group(s)` assigned to the `Client(s)`.
+Each Authifi `Tenant` can define `User Groups` and assign or remove `Users` and `OAuth2 Clients` from them. Assigning a `User Group` to an `OAuth Client` restricts access to the assigned `OAuth Client`'s `User(s)` within the assigned `User Group(s)` for the `Client(s)`.
 
 #### How to restrict Client access with User Groups configured via the Authifi UI
 
 Initial steps
 
-- Login to the Authifi UI
-- View/create a `Tenant`
+- Log in to the Authifi UI.
+- View or create a `Tenant`.
 
 ##### Adding Users to a Tenant
 
-`Users` assigned to a Authifi `Tenant` can be added to the `Tenant`'s `User Groups`.
+`Users` assigned to an Authifi `Tenant` can be added to the `Tenant`'s `User Groups`.
 
 - Go to the `Users` dashboard via the left navigation menu
 - Click the `Add User` button
 - Add `Users` to the `Tenant` by email address
 
-_Note: New `Users` will only display an email address in the `Users` dashboard columns until they login for the first time. This is due to Authifi brokering identities from third parties like Google rather than storing them in its own database._
+_Note: New `Users` show only an email address in the `Users` dashboard until they log in for the first time. Authifi brokers identities from third parties such as Google instead of storing them in its own database._
 
 ##### Creating a User Group
 
 - Go to the `User Groups` dashboard via the left navigation menu
 - Click the `Add Group` button
-- Specify the group name and description. Existing users can be assigned to the group before it is created.
+- Specify the group name and description. You can assign existing users before creating the group.
 
 ##### Assigning/removing User Groups to OAuth Clients
 
 - Go to the `Applications Dashboard` via the left navigation menu
 - Select an existing `OAuth Client`
 - In the edit dialog for the `OAuth Client`, go to the `Groups` tab
-- Assign/remove `User Groups` to the `OAuth Client`
+- Assign or remove `User Groups` for the `OAuth Client`.
 
 #### How to restrict OAuth Client access by AD Group membership
 
-One or more Active Directory groups can be assigned to `OAuth Clients` to restrict access to members of the AD Group(s).
-Currently, it is only possible to obtain AD Group information when logging in with specific Identity Providers. For example, the `Google OAuth` and `Azure OIDC` IdP does not provide AD Group information.
+Assign one or more Active Directory groups to `OAuth Clients` to restrict access to group members.
+Only some identity providers return AD group information. The `Google OAuth` and `Azure OIDC` identity providers do not.
 
 ##### Assigning AD Groups to SAML2 OAuth Clients
 
@@ -59,7 +59,7 @@ Example
 
 - Go to the `Applications Dashboard` via the left navigation menu
 - Select an existing `web` or `native` application or create a new one
-- In the configuration editor, fill in the AD Group text box a list of one or more AD Groups separated by commas or newlines.
+- In the configuration editor, enter one or more AD Groups in the AD Group field, separated by commas or newlines.
 
 ### API Authorization
 
@@ -67,7 +67,7 @@ Example
 
 - Go to the `APIs Dashboard` via the left navigation menu
 - Click the "Add API" button
-- Specify the `name` and unique `identifier` (the `API`'s audience)
+- Specify the `name` and unique `identifier` (the `API` audience).
 - Optionally authorize `Clients` to access the `API`. The list of `Clients` authorized to access the `API` can be changed after the `API` is registered.
 
 #### Resource Server Client Grants
@@ -81,36 +81,35 @@ Authorize `OAuth Clients` to access a specific `API` (Resource Server).
 
 ### Role Based Access Control
 
-An **Access Role** (also called an **API Role** in some UI labels) groups **Resource Server Permissions** within a resource-server authorization context. Access Roles can be assigned to `User Groups`. Resource Server Permissions define granular access control for a resource server, such as `facility.users.createFacility`. Granted permissions appear in ordinary API access tokens under the `scope` claim; APIs should verify that claim.
+An **Access Role** (also labeled an **API Role** in some UI screens) groups **Resource Server Permissions** within a resource-server authorization context. Assign Access Roles to `User Groups`. Resource Server Permissions provide granular access to a resource server, such as `facility.users.createFacility`. Granted permissions appear in API access tokens in the `scope` claim; APIs should verify that claim.
 
-Use Access Roles to group Resource Server Permissions into reusable mappings. Use `User Groups` to assign Access Roles to sets of users. Client-linked (including auto-generated) resource servers and standalone API resource servers use the same Access Role and Resource Server Permission model.
+Use Access Roles to reuse permission mappings and assign them to `User Groups`. Client-linked, including auto-generated, resource servers and standalone API resource servers use the same Access Role and Resource Server Permission model.
 
-For application role checks from trusted UserInfo or session data, request `profile` and read `resource_roles` keyed by resource server identifier. Deprecated flat claims and legacy admin routes are documented in [Roles and Permissions Compatibility](./legacy-roles-permissions-compatibility.md).
+For application role checks from trusted UserInfo or session data, request `profile` and read `resource_roles`, keyed by resource server identifier. See [Roles and Permissions Compatibility](./legacy-roles-permissions-compatibility.md) for deprecated flat claims and legacy admin routes.
 
 ### Identity Assurance Levels
 
-When authorizing, the `acr_values` query parameter can be used to request additional levels of identity assurance when authenticating the user. Currently, Authifi supports the following ACR values:
+Use the `acr_values` query parameter to request additional identity assurance during authentication. Authifi currently supports this ACR value:
 
 | ACR Value                                              | Short Name | Details                               |
 | :----------------------------------------------------- | :--------: | :------------------------------------ |
 | http://schemas.openid.net/policies/modrna/multi-factor |   mod-mf   | Requests multi-factor authentication. |
 
-The list of supported `acr_values` can also be viewed at the OIDC Discovery URL for each tenant under the `acr_values_supported` attribute.
+The supported `acr_values` are listed in each tenant's OIDC Discovery URL under `acr_values_supported`.
 
 ## Example
 
 `/_api/auth/<tenant>/authorize?acr_values=mod-mf&...`
 
-When providing the `mod-mf` query parameter, the user will be prompted for multi-factor authentication even if the application or identity provider does not already require it. Use it to require MFA for more sensitive sections of an application.
+With `mod-mf`, the user is prompted for multi-factor authentication even if the application or identity provider does not require it. Use this value for more sensitive application areas.
 
-Note:
-If the user is already authenticated, use the "prompt" query parameter with a value of "login" to request MFA. For details on the "prompt" query parameter, refer to the [OIDC Specification](https://openid.net/specs/openid-connect-core-1_0.html). For example: `/_api/auth/<tenant>/authorize?acr_values=mod-mf&prompt=login...`.
+If the user is already authenticated, add the "prompt" query parameter with the value "login" to request MFA. See the [OIDC Specification](https://openid.net/specs/openid-connect-core-1_0.html) for details. Example: `/_api/auth/<tenant>/authorize?acr_values=mod-mf&prompt=login...`.
 
-After successfully authenticating with MFA, the user's `id_token` and user profile will contain additional claims specifying the type of authentication used (AMR values). See: [AMR specification](https://tools.ietf.org/html/rfc8176).
+After MFA succeeds, the user's `id_token` and profile contain AMR claims that identify the authentication method. See the [AMR specification](https://tools.ietf.org/html/rfc8176).
 
 | AMR Value | Details                                          |
 | :-------- | :----------------------------------------------- |
 | pwd       | Denotes username/password authentication.        |
 | mfa       | Represents the use of MFA during authentication. |
 
-For example, if the user used both a username and password and MFA during authentication, then the `amr` claim would be `['pwd', 'mfa']`.
+For example, a user who authenticates with a username, password, and MFA receives an `amr` claim of `['pwd', 'mfa']`.

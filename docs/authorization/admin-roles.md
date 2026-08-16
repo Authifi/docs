@@ -1,12 +1,12 @@
-## Admin roles and privileged access (Authifi service)
+# Admin roles and privileged access (Authifi service)
 
-This document describes the Authifi service's admin privilege model and its sources:
+Authifi's admin privilege model has three sources:
 
 - **Super Administrators** (platform-wide)
 - **Tenant Administrators** (tenant-wide)
 - **Delegated Admins** (users granted elevated `admin::*` permissions)
 
-It complements the detailed operation inventory in [Super Admin Access](super-admin-access.md) and the reference in [Privileged Access Summary](privileged-access-summary.md).
+See [Super Admin Access](super-admin-access.md) for the operation inventory and [Privileged Access Summary](privileged-access-summary.md) for the privileged-access reference.
 
 ---
 
@@ -29,64 +29,41 @@ In user-facing documentation, the platform-wide admin role is called **"Super Ad
 
 ## Super Administrators
 
-**What it means**
+Super Administrators have platform-wide privileged access across all tenants.
 
-- Super Administrators have platform-wide privileged access across all tenants.
+Authifi determines Super Administrator status from membership in the designated Super Administrator group, configured through `auth.defaults.systemAdminGroup`. When a user authenticates, Authifi checks group membership and sets an internal authorization flag.
 
-**How it is determined**
-
-- Super Administrator status is determined by membership in the designated Super Administrator group (configured via `auth.defaults.systemAdminGroup`).
-- When a user authenticates, the system checks their group membership and sets an internal authorization flag accordingly.
-
-**What it enables**
-
-- Super Administrators can perform platform-wide privileged operations and are often treated as a bypass for limits and checks.
-- Some actions are **still blocked even for Super Administrators** (e.g., certain protections around config-defined Super Administrators).
-- See [Super Admin Access](super-admin-access.md) for the full list of SA-only/SA-or-scope operations.
+Super Administrators can perform platform-wide privileged operations. Some operations still block them, including protections for config-defined Super Administrators. See [Super Admin Access](super-admin-access.md) for the full list of SA-only and SA-or-scope operations.
 
 ---
 
 ## Tenant Administrators
 
-**What it means**
+Tenant Administrators have full administrative access within a tenant for most tenant-scoped APIs.
 
-- Tenant Administrators are treated as "full admin within a tenant" for most tenant-scoped APIs.
+Authifi determines Tenant Administrator status from membership in the tenant's admin group, configured through `auth.defaults.adminGroup`.
 
-**How it is determined**
-
-- Tenant Administrator status is determined by membership in the tenant's admin group (configured via `auth.defaults.adminGroup`).
-
-**What it enables**
-
-- **Within a tenant**, Tenant Administrators are generally able to perform tenant admin actions, except where an operation is explicitly restricted to Super Administrators or to an elevated admin scope.
-- Tenant Administrators are also used in **cross-tenant authorization** via "trusted tenants" delegation (see below).
+Within a tenant, Tenant Administrators can perform tenant admin actions unless an operation is restricted to Super Administrators or an elevated admin scope. Tenant Administrator status also supports **cross-tenant authorization** through "trusted tenants" delegation (see below).
 
 ---
 
 ## Delegated Admins (admin scopes)
 
-**What it means**
+Delegated Admins are users who are not Super Administrators but have elevated permissions through `admin::*` scopes.
 
-- "Delegated Admins" are users who are not Super Administrators, but have elevated permissions via `admin::*` scopes.
-
-**How it is determined**
-
-- Scopes come from the user's permissions/roles and are evaluated at request time.
-- These scopes are assigned through role-based access control (RBAC) configuration.
+Authifi reads these scopes from the user's permissions and roles at request time. RBAC configuration assigns the scopes.
 
 > **Naming Convention:** By convention, delegated admin permissions use the `admin::` prefix (e.g., `admin::mfa:reset`). However, this naming convention alone does not make an entity privileged; the `isPrivileged` flag must be set on the permission, role, or group. See [Privileged Access Summary](privileged-access-summary.md#privileged-entities) for details.
 
-**What it enables**
+These scopes commonly grant access to operations that would otherwise be **Super-Administrator-only** or to edits on privileged entities. Examples include:
 
-- These scopes commonly grant access to operations that would otherwise be **Super-Administrator-only** (or allow edits on "privileged" entities).
-- Examples of elevated admin scopes used in Authifi:
-    - `admin::admin-permissions:edit` (privileged RBAC entities: admin groups/roles/permissions)
-    - `admin::system-templates:edit` (system templates)
-    - `admin::trusted-provider:edit` (trusted/verified IdP restrictions, some IdP type restrictions)
-    - `admin::provider-scripts:edit` (IdP claims mapping scripting)
-    - `admin::access-scripts:edit` / `admin::clients:edit` (client scripting / client updates)
-    - `admin::view:idp-secrets` (unmask IdP secrets in responses)
-    - `admin::user-ssh-secret:edit` (SSH key operations)
+- `admin::admin-permissions:edit` (privileged RBAC entities: admin groups, roles, and permissions)
+- `admin::system-templates:edit` (system templates)
+- `admin::trusted-provider:edit` (trusted or verified IdP restrictions and some IdP type restrictions)
+- `admin::provider-scripts:edit` (IdP claims mapping scripts)
+- `admin::access-scripts:edit` and `admin::clients:edit` (client scripts and updates)
+- `admin::view:idp-secrets` (unmask IdP secrets in responses)
+- `admin::user-ssh-secret:edit` (SSH key operations)
 
 For the exact places these are enforced, see the relevant sections in [Super Admin Access](super-admin-access.md).
 

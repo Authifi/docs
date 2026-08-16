@@ -32,14 +32,14 @@ Tenant administrators manage users and groups through the Authifi UI.
 
 ## Overview
 
-In **Users and Groups**, you can:
+Use **Users and Groups** to:
 
 - Create and manage user accounts
 - Organize users into groups for access control
 - Assign roles and permissions to users and groups
 - Monitor and audit user access
 
-User and group management controls access. Assign only the permissions users need, and use groups to simplify administration.
+Use groups to simplify administration, and assign users only the permissions they need.
 
 **Note**: For platform license management (super admins only), see the **[License Management Guide](license-management-guide.md)**.
 
@@ -53,7 +53,7 @@ The **Users and Groups** menu lets you manage users, groups, roles, and permissi
 
 **Location**: Users and Groups > Users
 
-**Purpose**: Manage individual user accounts within the tenant.
+Manage individual user accounts within the tenant.
 
 #### What you can do
 
@@ -131,7 +131,7 @@ Users are categorized based on their privileges:
 
 **Location**: Users and Groups > User Groups
 
-**Purpose**: Organize users into groups for simplified access control and role management.
+Organize users into groups for access control and role management.
 
 #### What you can do
 
@@ -187,7 +187,7 @@ Groups display the following information in the table:
 
 **Location**: Users and Groups > Assigned Roles
 
-**Purpose**: View and manage all role assignments (user-to-role mappings) across the tenant.
+View and manage role assignments across the tenant.
 
 **Availability**: Tenant admins and super admins only (hidden from regular users).
 
@@ -205,7 +205,7 @@ Groups display the following information in the table:
 - **Cleanup**: Identify and remove unused role assignments
 - **Troubleshooting**: Verify user has expected role access
 
-**Security note**: This is a read-only view for auditing purposes. To modify role assignments, edit the user or group directly.
+This view is read-only. To modify role assignments, edit the user or group directly.
 
 ---
 
@@ -213,7 +213,7 @@ Groups display the following information in the table:
 
 **Location**: Users and Groups > Assigned Permissions
 
-**Purpose**: View and manage all permission assignments (user-to-permission mappings) across the tenant.
+View and manage permission assignments across the tenant.
 
 **Availability**: Tenant admins and super admins only (hidden from regular users).
 
@@ -231,9 +231,9 @@ Groups display the following information in the table:
 - **Compliance reporting**: Document permission grants
 - **Troubleshooting**: Verify user has expected permissions
 
-**Security note**: This is a read-only view for auditing purposes. To modify permissions, edit the user or group directly, or adjust role definitions.
+This view is read-only. To modify permissions, edit the user or group directly, or adjust role definitions.
 
-**Best practice**: Prefer role-based permission assignment over direct grants. Direct permissions should be exceptions, not the norm.
+Prefer role-based permission assignment over direct grants. Use direct permissions only as exceptions.
 
 ---
 
@@ -256,7 +256,7 @@ When creating or editing a user via **Users > Settings icon**, you'll encounter 
 
 ### User Settings Tab
 
-**Purpose**: Core user profile information and authentication settings.
+Configure core user profile information and authentication settings.
 
 #### Identity Configuration
 
@@ -352,7 +352,7 @@ When creating or editing a user via **Users > Settings icon**, you'll encounter 
 
 ### Groups Tab
 
-**Purpose**: Assign the user to user groups.
+Assign the user to user groups.
 
 #### Managing Group Membership
 
@@ -378,7 +378,7 @@ When creating or editing a user via **Users > Settings icon**, you'll encounter 
 
 ### Roles Tab
 
-**Purpose**: Assign Access Roles (also called **API Roles** in some UI labels) directly to the user.
+Assign Access Roles (also called **API Roles** in some UI labels) directly to the user.
 
 #### Managing Role Assignments
 
@@ -408,7 +408,7 @@ Prefer group-assigned Access Roles when the same access applies to multiple user
 
 ### Permissions Tab
 
-**Purpose**: Assign individual permissions directly to the user.
+Assign individual permissions directly to the user.
 
 #### Managing Permission Assignments
 
@@ -437,7 +437,7 @@ Prefer group-assigned Access Roles when the same access applies to multiple user
 
 ### Profile Data Tab
 
-**Purpose**: View and manage additional user profile attributes.
+View and manage additional user profile attributes.
 
 #### Profile Attributes
 
@@ -457,7 +457,7 @@ Prefer group-assigned Access Roles when the same access applies to multiple user
 
 ### TOTP Tab
 
-**Purpose**: Manage Time-based One-Time Password (TOTP) multi-factor authentication for the user.
+Manage the user's Time-based One-Time Password (TOTP) multi-factor authentication.
 
 #### TOTP Management
 
@@ -483,7 +483,7 @@ Prefer group-assigned Access Roles when the same access applies to multiple user
 
 ### Passkeys Tab
 
-**Purpose**: Manage WebAuthn/FIDO2 passkeys for phishing-resistant authentication.
+Manage WebAuthn/FIDO2 passkeys for phishing-resistant authentication.
 
 #### Passkey Management
 
@@ -516,7 +516,7 @@ Prefer group-assigned Access Roles when the same access applies to multiple user
 
 ### SSH Keys Tab
 
-**Purpose**: Manage SSH public keys for terminal/CLI access.
+Manage SSH public keys for terminal and CLI access.
 
 **Availability**: Only visible if SSH access features are enabled.
 
@@ -562,7 +562,7 @@ When creating or editing a user group via **User Groups > Settings icon**, you'l
 
 ### Group Settings Tab
 
-**Purpose**: Core group properties and configuration.
+Configure core group properties.
 
 #### Group Identity
 
@@ -607,7 +607,7 @@ When creating or editing a user group via **User Groups > Settings icon**, you'l
 
 ### Members Tab
 
-**Purpose**: Manage user membership in the group.
+Manage user membership in the group.
 
 #### Member Management
 
@@ -654,7 +654,7 @@ When creating or editing a user group via **User Groups > Settings icon**, you'l
 
 ### Access Roles Tab
 
-**Purpose**: Assign **Access Roles** (also called **API Roles** in some UI labels) to all group members. Access Roles are scoped to a resource server, either a standalone API resource server or a client-linked / auto-generated resource server associated with an OAuth client.
+Assign **Access Roles** (also called **API Roles** in some UI labels) to all group members. Roles are scoped to a resource server, either a standalone API resource server or a client-linked or auto-generated resource server associated with an OAuth client.
 
 #### Managing Access Roles
 
@@ -685,7 +685,7 @@ When creating or editing a user group via **User Groups > Settings icon**, you'l
 
 ### UMRS Grants Tab
 
-**Purpose**: Assign User-Managed Role System (UMRS) grants to the group.
+Assign User-Managed Role System (UMRS) grants to the group.
 
 **Note**: UMRS is an advanced feature for delegated role management. This tab may not be visible if UMRS is not configured for your tenant.
 

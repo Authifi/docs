@@ -1,6 +1,6 @@
 # Authifi Service - Security Admin Guide
 
-Security administrators, tenant administrators, and delegated admins can use this document to securely set up, configure, operate, and decommission administrative accounts in the Authifi service.
+This guide covers how security administrators, tenant administrators, and delegated admins set up, configure, operate, and decommission Authifi administrative accounts.
 
 **Compliance**: FedRAMP Rev5 Recommended Secure Configuration
 
@@ -50,12 +50,12 @@ Security administrators, tenant administrators, and delegated admins can use thi
 
 ## Purpose and Scope
 
-This Security Admin Guide documents all administrative profiles within the Authifi service that are accessible to:
+This guide covers administrative profiles available to:
 
 - **Authifi internal users** (platform operators and support personnel)
 - **End customers** (tenant administrators and delegated administrators)
 
-The guide covers any user profile with elevated permissions and action privileges that can affect the security posture of other users and the application as a whole.
+It covers profiles with elevated permissions that can affect other users or the application's security posture.
 
 ### Terminology
 
@@ -113,7 +113,7 @@ The guide covers any user profile with elevated permissions and action privilege
 
 ### Super Administrators (Top-Level Administrative Accounts)
 
-Super Administrators have unrestricted access to the Authifi platform. This is the highest level of administrative privilege that can be assumed by end customers.
+Super Administrators have platform-wide access. They are the highest privilege level available to end customers.
 
 #### Role Definition
 
@@ -233,7 +233,7 @@ Tenant Administrators have full administrative control within a single tenant. T
 
 ### Delegated Admins
 
-Delegated Admins have elevated permissions for specific resource types without full tenant admin access. This enables delegated administration following the principle of least privilege.
+Delegated Admins have elevated permissions for specific resource types without full tenant admin access. This supports least-privilege delegation.
 
 #### Admin Scope Permissions
 

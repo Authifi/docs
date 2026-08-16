@@ -1,6 +1,6 @@
 # Authifi Service - Recommended Secure Configuration
 
-This document covers configuration and operation of the Authifi service in accordance with FedRAMP Recommended Secure Configuration requirements and security best practices.
+This guide defines secure Authifi configuration and operation in accordance with FedRAMP Recommended Secure Configuration requirements.
 
 > **See also**: The [Security Admin Guide](./security-admin-guide.md) covers the administrative account lifecycle and includes security settings reference tables.
 
@@ -39,7 +39,7 @@ This document covers configuration and operation of the Authifi service in accor
 
 ## Terminology
 
-**Important Distinction:** This document uses specific terminology to distinguish between infrastructure and application administration:
+The terminology below distinguishes infrastructure administration from Authifi application administration:
 
 ### Super Administrator
 
@@ -69,13 +69,13 @@ This document covers configuration and operation of the Authifi service in accor
 
 ## Executive Summary
 
-The Authifi service provides enterprise identity and access management with a hierarchical administrative model. This document describes:
+Authifi uses a hierarchical administrative model:
 
 - **Top-level administrative accounts** (Super Administrators): Full platform control, cross-tenant management
 - **Privileged accounts** (Tenant Administrators): Tenant-scoped administrative access
 - **Delegated admin accounts**: Scoped permissions for specific resources
 
-**Key Security Features**:
+The baseline includes:
 
 - Multi-factor authentication (MFA) enforcement for administrative accounts
 - Role-based access control (RBAC) with least privilege
@@ -84,7 +84,7 @@ The Authifi service provides enterprise identity and access management with a hi
 - Encryption at rest and in transit
 - API-based configuration management
 
-**Secure Defaults**:
+Recommended defaults:
 
 - MFA required for all administrative functions
 - Short session lifetimes for privileged contexts
@@ -97,7 +97,7 @@ The Authifi service provides enterprise identity and access management with a hi
 
 ### Account Hierarchy
 
-The Authifi service implements three levels of administrative access:
+Authifi has three levels of administrative access:
 
 ```
 ┌─────────────────────────────────────┐
@@ -186,7 +186,7 @@ Super Administrators have unrestricted access to the Authifi platform and can:
 
 ### Creating Temporary Super Administrators
 
-Super administrator assignment is controlled through system configuration, not through the standard UI workflow. However, in exceptional circumstances a user may be granted temporay super admin access.
+Super administrator assignment is controlled through system configuration, not the standard UI workflow. In exceptional circumstances, a user may receive temporary super admin access.
 
 **Prerequisites**:
 
@@ -202,7 +202,7 @@ Super administrator assignment is controlled through system configuration, not t
 **Process**:
 
 - Existing super admin accesses system configuration
-- Adds target user account to the `systemAdmins` group with and expiration date/time. This action automatically:
+- Adds the target user account to the `systemAdmins` group with an expiration date/time. This action automatically:
 
    - Grants `Auth System Admin` role
    - Triggers security alerts to all existing super admins

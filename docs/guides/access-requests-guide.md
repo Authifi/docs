@@ -1,6 +1,6 @@
 # Access Requests and Delegated Administration Guide
 
-Tenant administrators use the Authifi UI to manage access requests, self-service workflows, and delegated administration.
+Tenant administrators manage access requests, self-service workflows, and delegated administration in the Authifi UI.
 
 ## Table of Contents
 
@@ -24,7 +24,7 @@ Tenant administrators use the Authifi UI to manage access requests, self-service
 
 ## Overview
 
-The **Access Requests** section enables self-service and delegated access management:
+**Access Requests** supports:
 
 - **Self-service access**: Users request access; approvers grant or deny
 - **Delegated administration**: Let non-admins manage specific resources
@@ -32,7 +32,7 @@ The **Access Requests** section enables self-service and delegated access manage
 - **Audit trail**: Record of access grants and approvals
 - **Bulk operations**: Onboard groups of users
 
-Access Requests applies the principle of least standing privilege through:
+It applies least-standing-privilege controls through:
 
 - Just-in-time access (request when needed, not granted permanently)
 - Time-limited grants (automatic expiration)
@@ -47,7 +47,7 @@ Access Requests applies the principle of least standing privilege through:
 
 **Location**: Access Requests > View Access Requests
 
-**Purpose**: Central dashboard for viewing, creating, approving, and rejecting access requests.
+Use this dashboard to view, create, approve, and reject access requests.
 
 #### What you can do
 
@@ -115,7 +115,7 @@ Access Requests applies the principle of least standing privilege through:
 - Submit request
 - Request appears in pending state for approvers
 
-**Use case**: Admin creates request on behalf of user who doesn't have self-service access.
+Use case: An admin creates a request for a user without self-service access.
 
 #### Approving/Rejecting Requests
 
@@ -143,7 +143,7 @@ Access Requests applies the principle of least standing privilege through:
 
 **Location**: Access Requests > Request Templates
 
-**Purpose**: Define pre-configured access request templates that users can self-service request.
+Use request templates to define access patterns that users can request.
 
 #### What you can do
 
@@ -213,11 +213,11 @@ Access Requests applies the principle of least standing privilege through:
 
 **Location**: Access Requests > User-Managed Roles
 
-**Purpose**: Define roles that designated managers can grant without being full admins.
+Define roles that designated managers can grant without full admin access.
 
 **What is UMRS?**
 
-User-Managed Role System (UMRS) enables **delegated administration**:
+User-Managed Role System (UMRS) supports **delegated administration**:
 
 - Project leads can grant project-specific access
 - Team managers can control team resource access
@@ -261,7 +261,7 @@ Resource Server: Project Management API
 Allow Grant Extension Requests: Yes
 ```
 
-**Result**: Members of "project-alpha-leads" group can grant "project-alpha-viewer" role to users without needing full admin privileges.
+Result: Members of the "project-alpha-leads" group can grant the "project-alpha-viewer" role to users without full admin privileges.
 
 #### UMRS vs. Regular Roles
 
@@ -280,7 +280,7 @@ Allow Grant Extension Requests: Yes
 - **Departmental apps**: Department heads grant access to department resources
 - **Customer resources**: Account managers control customer data access
 
-**Security benefits**:
+UMRS provides:
 
 - Reduces admin workload for routine access grants
 - Lets domain experts manage their resources
@@ -293,9 +293,9 @@ Allow Grant Extension Requests: Yes
 
 **Location**: Access Requests > Access Grants
 
-**Purpose**: View and manage all UMRS role grants (user-to-role and group-to-role assignments for UMRS roles).
+View and manage UMRS role grants for users and groups.
 
-**Dashboard structure**: Two tabs:
+The dashboard has two tabs:
 
 - **User Grants**: Individual user assignments to UMRS roles
 - **Group Grants**: Group assignments to UMRS roles
@@ -380,7 +380,7 @@ Allow Grant Extension Requests: Yes
 
 **Location**: Access Requests > Group Invitations
 
-**Purpose**: Send email invitations to users to join groups, with optional confirmation workflow.
+Send email invitations for group membership, with optional confirmation.
 
 #### What you can do
 
@@ -467,7 +467,7 @@ Allow Grant Extension Requests: Yes
 
 **Location**: Access Requests > SSH Secrets
 
-**Purpose**: Generate SSH access credentials for users to access remote servers or command-line interfaces.
+Generate SSH credentials for users who need access to remote servers or command-line interfaces.
 
 **Availability**: Requires `auth.admin.usersshsecret` scope (elevated permission).
 
@@ -523,11 +523,11 @@ chmod 600 /home/ubuntu/.ssh/authorized_keys
 
 **Security warnings**:
 
-⚠️ **Critical**: The downloaded private key cannot be retrieved again. If lost, generate new credentials.
+**Critical**: The downloaded private key cannot be retrieved again. If it is lost, generate new credentials.
 
-⚠️ **Secret material**: Treat downloaded JSON as highly sensitive (contains private key)
+**Secret material**: Treat the downloaded JSON as highly sensitive because it contains a private key.
 
-⚠️ **One-time download**: Securely transmit to user or have user generate in self-service portal
+**One-time download**: Transmit the file securely, or have the user generate credentials in the self-service portal.
 
 **Security recommendations**:
 
@@ -546,7 +546,7 @@ chmod 600 /home/ubuntu/.ssh/authorized_keys
 
 **Location**: Access Requests > Batch Invite
 
-**Purpose**: Bulk invite multiple users to a group in a single operation, ideal for onboarding teams or classes of users.
+Invite multiple users to a group in one operation for team or class onboarding.
 
 #### What you can do
 
@@ -620,7 +620,7 @@ chmod 600 /home/ubuntu/.ssh/authorized_keys
 ]
 ```
 
-**Validation**: JSON must be an array of strings (email addresses).
+Validation: The JSON value must be an array of email-address strings.
 
 **Use cases**:
 
@@ -757,7 +757,7 @@ Similar to RBAC template, plus:
 
 ### Creating a UMRS Role
 
-Detailed explanation of each field in UMRS role creation dialog:
+The UMRS role creation dialog contains these fields:
 
 #### Name\*
 
@@ -781,7 +781,7 @@ Detailed explanation of each field in UMRS role creation dialog:
 #### Managers Group\*
 
 - Group whose members can grant this role
-- **Critical choice**: This delegates admin power to non-admins
+- This delegates admin power to non-admins.
 - Autocomplete search with filtering
 - **Security note**: Only assign manager rights to trusted groups
 
@@ -807,7 +807,7 @@ Result: Members of "project-beta-leads" can grant "project-beta-contributor" rol
 - Managers receive extension requests for approval
 - **Use case**: Project-based access where timelines may extend
 
-**Security consideration**: Extensions should also require approval; don't allow automatic extensions.
+Extensions should require approval; do not allow automatic extensions.
 
 ---
 

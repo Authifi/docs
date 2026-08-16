@@ -2,7 +2,7 @@
 
 ## Overview
 
-This directory contains security documentation for the Authifi service, including guidance for securely configuring and operating administrative accounts in accordance with FedRAMP Recommended Secure Configuration requirements.
+This directory contains guidance for configuring and operating Authifi administrative accounts in accordance with FedRAMP Recommended Secure Configuration requirements.
 
 ---
 
@@ -10,7 +10,7 @@ This directory contains security documentation for the Authifi service, includin
 
 **Document**: [Security Admin Guide](./security-admin-guide.md)
 
-The Security Admin Guide covers setup, configuration, operation, and decommissioning of administrative accounts in the Authifi service.
+The Security Admin Guide covers administrative account setup, configuration, operation, and decommissioning.
 
 ### Administrative Account Types Covered
 
@@ -33,14 +33,14 @@ The Security Admin Guide covers setup, configuration, operation, and decommissio
 
 **Document**: [Recommended Secure Configuration](./recommended-secure-configuration.md)
 
-Detailed security configuration guidance covering:
+The Recommended Secure Configuration guide covers:
 
 - Authentication and session management settings
 - Identity provider security configuration
 - Role-based access control (RBAC) settings
 - Data protection and encryption
 - Monitoring and audit configuration
-- Security best practices
+- Recommended security practices
 - Compliance checklists
 
 ---

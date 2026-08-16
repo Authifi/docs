@@ -1,12 +1,12 @@
-## Super Administrator access requirements (Authifi service)
+# Super Administrator access requirements (Authifi service)
 
-This document lists places in the Authifi service where **Super Administrator** privileges are required **or treated as a privileged bypass**.
+This page lists operations that require **Super Administrator** privileges or allow a **privileged bypass**.
 
 ### How Super Administrator status is determined
 
-Super Administrator privileges are determined by membership in the designated Super Administrator group (configured via `auth.defaults.systemAdminGroup`). When a user authenticates, the system checks their group membership and sets an internal authorization flag accordingly.
+Authifi determines Super Administrator status from membership in the designated Super Administrator group, configured through `auth.defaults.systemAdminGroup`. During authentication, Authifi checks group membership and sets an internal authorization flag.
 
-Throughout this document, "system admin" in legacy contexts refers to what is now called "Super Administrator" in user-facing documentation to avoid confusion with infrastructure system administrators.
+In legacy contexts, "system admin" refers to "Super Administrator" in user-facing documentation. This avoids confusion with infrastructure system administrators.
 
 For a consolidated overview of privileged permissions, roles, and groups, see [Privileged Access Summary](privileged-access-summary.md).
 

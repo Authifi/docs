@@ -1,6 +1,6 @@
 # License Management Guide (Super Admins)
 
-Super administrators manage platform licenses through the Authifi UI.
+Super Administrators manage platform licenses through the Authifi UI.
 
 ## Table of Contents
 
@@ -20,14 +20,14 @@ Super administrators manage platform licenses through the Authifi UI.
 
 ## Overview
 
-**License management** is a **super administrator-only** feature that controls tenant and application quotas across the Authifi platform. Licenses define resource limits that can be assigned to tenants, enabling:
+License management is a **Super Administrator-only** feature that controls tenant and application quotas across Authifi. Licenses support:
 
 - Multi-tier SaaS offerings (Free, Pro, Enterprise)
 - Department or business unit quotas
 - Trial period limitations
 - Resource allocation and billing control
 
-**Access restriction**: The Admins > Licenses menu option is **completely hidden** for non-Super-Administrator users. Only users with Super Administrator privileges can view or manage licenses.
+The **Admins > Licenses** menu is hidden for non-Super-Administrator users. Only Super Administrators can view or manage licenses.
 
 ---
 
@@ -53,7 +53,7 @@ Super administrators manage platform licenses through the Authifi UI.
 
 ### Viewing Licenses
 
-The Licenses dashboard displays all configured license tiers in a table format.
+The Licenses dashboard lists all configured license tiers.
 
 **Table columns**:
 
@@ -63,9 +63,9 @@ The Licenses dashboard displays all configured license tiers in a table format.
 - **Settings**: Edit license (hidden for default license)
 - **Delete**: Remove license (hidden for default license)
 
-**Search functionality**: Use the search box to filter licenses by name.
+Use the search box to filter licenses by name.
 
-**Default License**: Every platform has a "Default License" that:
+Every platform has a "Default License" that:
 
 - Cannot be edited
 - Cannot be deleted
@@ -76,7 +76,7 @@ The Licenses dashboard displays all configured license tiers in a table format.
 
 ### Creating a License
 
-**Purpose**: Define a new license tier with specific resource quotas.
+Create a license tier with resource quotas.
 
 **Steps**:
 
@@ -111,7 +111,7 @@ Max Clients: 50 (each tenant can have up to 50 applications)
 
 ### Editing a License
 
-**Purpose**: Update quota limits for an existing license tier.
+Update quota limits for an existing license tier.
 
 **Restrictions**:
 
@@ -126,7 +126,7 @@ Max Clients: 50 (each tenant can have up to 50 applications)
     - **Max Clients**: Update application quota
 - Click **Save**
 
-**Impact of changes**:
+Changes behave as follows:
 
 - **Increasing limits**: Takes effect immediately; tenants can create additional resources
 - **Decreasing limits**:
@@ -134,7 +134,7 @@ Max Clients: 50 (each tenant can have up to 50 applications)
   - Prevents creation of new resources beyond the new limit
   - Consider communicating with affected tenants before reducing limits
 
-**Warning**: Reducing limits does not trigger automatic cleanup. If a tenant has 100 clients and you reduce Max Clients to 50, they will retain all 100 existing clients but cannot create new ones until they're below the limit.
+Reducing limits does not trigger automatic cleanup. A tenant with 100 clients keeps them after Max Clients is reduced to 50, but cannot create more until its count is below the limit.
 
 **Best practices**:
 
@@ -147,7 +147,7 @@ Max Clients: 50 (each tenant can have up to 50 applications)
 
 ### Deleting a License
 
-**Purpose**: Remove an unused license tier.
+Remove an unused license tier.
 
 **Restrictions**:
 
@@ -159,7 +159,7 @@ Max Clients: 50 (each tenant can have up to 50 applications)
 
 - Click the **Delete** icon (trash) next to the license
 - Confirm deletion in the dialog
-- License is permanently removed
+- The license is permanently removed.
 
 **Pre-deletion checklist**:
 
@@ -255,7 +255,7 @@ Licenses are assigned to tenants via **Tenant Settings**.
 - In **License Assignment** dropdown, select the license
 - Click **Save**
 
-**Note**: License assignment is available in the tenant edit dialog's Metadata section. Only super administrators can change tenant license assignments.
+License assignment is available in the tenant edit dialog's Metadata section. Only Super Administrators can change tenant license assignments.
 
 ### Viewing Tenant's Current License
 
@@ -265,13 +265,13 @@ Licenses are assigned to tenants via **Tenant Settings**.
 
 ### Enforcement
 
-License limits are enforced by the Authifi service:
+Authifi enforces license limits:
 
 - **Client creation**: Blocked when Max Clients limit is reached
 - **Tenant creation**: Blocked when Max Tenants limit is reached (at platform level)
 - **API responses**: Return error with quota exceeded message
 
-**Error handling**: Applications should gracefully handle quota errors and inform users to upgrade their license tier.
+Applications should handle quota errors and tell users when they need a license upgrade.
 
 ---
 
@@ -321,7 +321,7 @@ Trial-14-Day:
 - Set user expiration or automate license change after 14 days
 - Monitor trial usage in analytics
 
-**Best practice**: Combine license limits with tenant-level expiration dates to control trial quotas and duration.
+Combine license limits with tenant-level expiration dates to control trial quotas and duration.
 
 ### 3. Department or Business Unit Quotas
 

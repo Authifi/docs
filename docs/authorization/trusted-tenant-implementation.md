@@ -6,16 +6,16 @@ The Trusted Tenant feature enables cross-tenant resource management without requ
 
 ## Use Cases
 
-Trusted tenant relationships support:
+Use trusted tenant relationships for:
 
-- **Centralized Administration**: A central IT team needs to manage multiple organizational tenants from a single admin account
-- **Managed Service Providers**: External administrators manage client tenants without needing separate credentials
-- **Hierarchical Organizations**: Parent organizations oversee subsidiary tenants while maintaining separation
-- **Shared Services**: A shared services tenant manages resources across multiple business unit tenants
+- **Centralized administration**: A central IT team manages multiple organizational tenants from one admin account.
+- **Managed service providers**: External administrators manage client tenants without separate credentials.
+- **Hierarchical organizations**: Parent organizations oversee subsidiary tenants while maintaining separation.
+- **Shared services**: A shared services tenant manages resources across multiple business units.
 
 ## How It Works
 
-When a trust relationship is established:
+When trust is established:
 
 1. **Tenant B trusts Tenant A**: Administrators of Tenant A can manage Tenant B's resources
 2. **Single Authentication**: Admins use their Tenant A credentials—no re-authentication needed
@@ -26,7 +26,7 @@ When a trust relationship is established:
 Trust relationships are **unidirectional**:
 
 - If Tenant B trusts Tenant A, then Tenant A admins can manage Tenant B
-- This does NOT mean Tenant B admins can manage Tenant A
+- Tenant B admins cannot manage Tenant A.
 - To enable bidirectional management, create trust relationships in both directions
 
 ## Managing Trust Relationships
@@ -89,10 +89,10 @@ Authorization: Bearer <token>
 
 ### Best Practices
 
-1. **Principle of Least Privilege**: Only grant trust to tenants that require cross-tenant management
-2. **Regular Review**: Periodically audit trust relationships and remove those no longer needed
-3. **Document Relationships**: Maintain records of why each trust relationship exists
-4. **Monitor Access**: Use audit logs to track cross-tenant administrative actions
+1. Grant trust only to tenants that require cross-tenant management.
+2. Audit trust relationships regularly and remove those no longer needed.
+3. Record why each trust relationship exists.
+4. Use audit logs to track cross-tenant administrative actions.
 
 ## Limitations
 
@@ -103,11 +103,7 @@ Authorization: Bearer <token>
 
 ## Configuration
 
-The Trusted Tenant feature requires no additional configuration:
-
-- Enabled by default in all Authifi deployments
-- No environment variables or settings changes needed
-- Works with existing authentication infrastructure
+The Trusted Tenant feature is enabled by default, requires no environment variables or setting changes, and uses the existing authentication infrastructure.
 
 ## Related Documentation
 
