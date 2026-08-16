@@ -1,6 +1,6 @@
 # SSO Integration Guide: Managing Applications and Identity Providers
 
-This guide explains how tenant administrators manage SSO integrations, applications, APIs, and identity providers through the Authifi UI.
+Tenant administrators use the Authifi UI to manage SSO integrations, applications, APIs, and identity providers.
 
 ## Table of Contents
 
@@ -31,7 +31,7 @@ This guide explains how tenant administrators manage SSO integrations, applicati
 
 ## Overview
 
-The **SSO Integration** section enables you to:
+In **SSO Integration**, you can:
 
 - Configure applications (clients) that use your tenant for authentication
 - Manage APIs (resource servers) and their access control
@@ -39,7 +39,7 @@ The **SSO Integration** section enables you to:
 - Manage **Access Roles** and **Resource Server Permissions** for client-linked and standalone resource servers
 - Manage multi-tenancy and namespace isolation
 
-**Security context**: Proper SSO configuration is critical for security. Misconfigured clients can lead to token theft, unauthorized access, or data leakage.
+Misconfigured clients can lead to token theft, unauthorized access, or data leakage.
 
 ---
 
@@ -125,9 +125,9 @@ The **SSO Integration** section enables you to:
 - **Client-linked resource servers** — including the auto-generated placeholder resource server associated with an OAuth client (application authorization context)
 - **Standalone API resource servers** — registered APIs (API authorization context)
 
-**Client permissions** means Resource Server Permissions on an OAuth client's auto-generated placeholder resource server. Define and assign those permissions (and Access Roles that include them) when the application needs its own authorization context.
+**Client permissions** are Resource Server Permissions on an OAuth client's auto-generated placeholder resource server. Define and assign those permissions (and Access Roles that include them) when the application needs its own authorization context.
 
-**Client credential roles and permissions** means Access Roles marked for client credential grants, their Resource Server Permissions, and the associated client — authorization assigned to applications rather than users.
+**Client credential roles and permissions** mean Access Roles marked for client credential grants, their Resource Server Permissions, and the associated client. This authorization is assigned to applications rather than users.
 
 #### What you can do
 
@@ -225,7 +225,7 @@ Resource Server Permissions map to OAuth 2.0 scopes. When authorizing API calls,
 
 **Security recommendations**:
 
-- Use descriptive, clear permission names
+- Use clear, descriptive permission names
 - Avoid overly broad permissions (e.g., `admin:*`)
 - Prefer separate permission sets per resource server to avoid name collisions across APIs
 - Audit permission grants regularly
@@ -245,7 +245,7 @@ Resource Server Permissions map to OAuth 2.0 scopes. When authorizing API calls,
 - **Assign clients**: Control which apps can access the API
 - **Define Access Roles and Resource Server Permissions**: Create RBAC for each API resource server
 - **Add custom claims**: Include additional data in access tokens
-- **Export configuration**: Backup or migrate API settings
+- **Export configuration**: Back up or migrate API settings
 
 #### Creating a New API
 

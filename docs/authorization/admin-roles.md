@@ -1,12 +1,12 @@
 ## Admin roles and privileged access (Authifi service)
 
-This document describes how the Authifi service models "admin" privileges and where those privileges come from:
+This document describes the Authifi service's admin privilege model and its sources:
 
 - **Super Administrators** (platform-wide)
 - **Tenant Administrators** (tenant-wide)
 - **Delegated Admins** (users granted elevated `admin::*` permissions)
 
-It complements the detailed operation inventory in [Super Admin Access](super-admin-access.md) and the consolidated reference in [Privileged Access Summary](privileged-access-summary.md).
+It complements the detailed operation inventory in [Super Admin Access](super-admin-access.md) and the reference in [Privileged Access Summary](privileged-access-summary.md).
 
 ---
 

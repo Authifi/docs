@@ -1,6 +1,6 @@
 # Access Requests and Delegated Administration Guide
 
-This guide explains how tenant administrators manage access requests, self-service workflows, and delegated administration through the Authifi UI.
+Tenant administrators use the Authifi UI to manage access requests, self-service workflows, and delegated administration.
 
 ## Table of Contents
 
@@ -30,9 +30,9 @@ The **Access Requests** section enables self-service and delegated access manage
 - **Delegated administration**: Let non-admins manage specific resources
 - **Time-limited access**: Automatic expiration for temporary permissions
 - **Audit trail**: Record of access grants and approvals
-- **Bulk operations**: Onboard groups of users in bulk
+- **Bulk operations**: Onboard groups of users
 
-Access Requests uses the principle of least standing privilege by enabling:
+Access Requests applies the principle of least standing privilege through:
 
 - Just-in-time access (request when needed, not granted permanently)
 - Time-limited grants (automatic expiration)

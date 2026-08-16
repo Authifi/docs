@@ -1,6 +1,6 @@
 # License Management Guide (Super Admins)
 
-This guide explains how super administrators manage platform licenses through the Authifi UI.
+Super administrators manage platform licenses through the Authifi UI.
 
 ## Table of Contents
 

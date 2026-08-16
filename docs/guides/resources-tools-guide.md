@@ -1,6 +1,6 @@
 # Resources and Tools Guide
 
-This guide explains how tenant administrators manage templates, images, secrets, and scheduled jobs through the Authifi UI.
+Tenant administrators use the Authifi UI to manage templates, images, secrets, and scheduled jobs.
 
 ## Table of Contents
 

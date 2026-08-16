@@ -1,6 +1,6 @@
 # Users and Groups Management Guide
 
-This guide explains how tenant administrators manage users and groups through the Authifi UI.
+Tenant administrators manage users and groups through the Authifi UI.
 
 ## Table of Contents
 
@@ -32,14 +32,14 @@ This guide explains how tenant administrators manage users and groups through th
 
 ## Overview
 
-The **Users and Groups** section enables you to:
+In **Users and Groups**, you can:
 
 - Create and manage user accounts
 - Organize users into groups for access control
 - Assign roles and permissions to users and groups
 - Monitor and audit user access
 
-**Security context**: User and group management is critical for maintaining least privilege access. Proper configuration ensures users have only the permissions they need while simplifying administration through group-based access control.
+User and group management controls access. Assign only the permissions users need, and use groups to simplify administration.
 
 **Note**: For platform license management (super admins only), see the **[License Management Guide](license-management-guide.md)**.
 
@@ -372,7 +372,7 @@ When creating or editing a user via **Users > Settings icon**, you'll encounter 
 - **Namespace**: Logical boundary
 - **Remove**: Remove user from group
 
-**Best practice**: Use groups rather than individual role/permission assignments for easier management at scale.
+**Best practice**: Use groups rather than individual role/permission assignments so access changes apply consistently to group members.
 
 ---
 
@@ -392,7 +392,7 @@ When creating or editing a user via **Users > Settings icon**, you'll encounter 
   - Click remove icon next to role name
   - User loses the role's associated permissions
 
-**Best practice**: Prefer group-assigned Access Roles over direct user assignments for easier management at scale.
+Prefer group-assigned Access Roles when the same access applies to multiple users.
 
 **Role columns**:
 
@@ -654,7 +654,7 @@ When creating or editing a user group via **User Groups > Settings icon**, you'l
 
 ### Access Roles Tab
 
-**Purpose**: Assign **Access Roles** (also called **API Roles** in some UI labels) to all group members. Access Roles are scoped to a resource server — either a standalone API resource server or a client-linked / auto-generated resource server associated with an OAuth client.
+**Purpose**: Assign **Access Roles** (also called **API Roles** in some UI labels) to all group members. Access Roles are scoped to a resource server, either a standalone API resource server or a client-linked / auto-generated resource server associated with an OAuth client.
 
 #### Managing Access Roles
 
@@ -691,7 +691,7 @@ When creating or editing a user group via **User Groups > Settings icon**, you'l
 
 #### What is UMRS?
 
-UMRS (User-Managed Role System) allows designated users to grant/revoke specific resource-server-scoped Access Roles without being full admins. Use cases include:
+UMRS (User-Managed Role System) allows designated users to grant and revoke specific resource-server-scoped Access Roles without full administrator access. UMRS supports:
 
 - Project leads managing project access
 - Team managers controlling team resources
@@ -708,7 +708,7 @@ UMRS (User-Managed Role System) allows designated users to grant/revoke specific
   - Revoke delegation permission
   - Group members can no longer grant that role
 
-**Security warning**: UMRS grants are powerful. Only assign to trusted groups/users who need delegation capabilities.
+**Security warning**: UMRS grants let group members delegate Access Roles to other users. Assign them only to groups or users that need this capability.
 
 ---
 

@@ -1,6 +1,6 @@
 # Monitoring and Logging Guide
 
-This guide explains how tenant administrators monitor authentication activity, view audit trails, and analyze system behavior through the Authifi UI.
+Tenant administrators use the Authifi UI to monitor authentication activity, view audit trails, and analyze system behavior.
 
 ## Table of Contents
 
@@ -20,7 +20,7 @@ This guide explains how tenant administrators monitor authentication activity, v
 
 ## Overview
 
-The **Monitoring** section provides visibility into all authentication and administrative activity within your tenant:
+The **Monitoring** section shows authentication and administrative activity within your tenant:
 
 - **Security monitoring**: Track login attempts, failures, and suspicious activity
 - **Compliance and audit**: Audit trail of all administrative actions

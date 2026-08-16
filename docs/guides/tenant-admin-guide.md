@@ -1,6 +1,6 @@
 # Tenant Administrator Guide: Managing Tenant Settings
 
-This guide explains how tenant administrators manage tenant settings through the Authifi UI.
+Tenant administrators manage tenant settings through the Authifi UI.
 
 ## Table of Contents
 
@@ -31,7 +31,7 @@ This guide explains how tenant administrators manage tenant settings through the
 
 ## Overview
 
-As a **tenant administrator**, you can manage your tenant's authentication and authorization settings, branding, and user experience. This guide covers the configuration options available through the Authifi UI.
+As a **tenant administrator**, you can manage your tenant's authentication and authorization settings, branding, and user experience through the Authifi UI.
 
 **Note**: Some features may be restricted to super administrators only, or may require elevated admin scopes. These restrictions are noted throughout this guide.
 

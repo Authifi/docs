@@ -1,6 +1,6 @@
 # Authifi Service - Security Admin Guide
 
-This document covers secure setup, configuration, operation, and decommissioning of administrative accounts in the Authifi service. It is for security administrators, tenant administrators, and delegated admins who manage authentication and authorization functions.
+Security administrators, tenant administrators, and delegated admins can use this document to securely set up, configure, operate, and decommission administrative accounts in the Authifi service.
 
 **Compliance**: FedRAMP Rev5 Recommended Secure Configuration
 

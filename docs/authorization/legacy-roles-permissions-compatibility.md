@@ -11,9 +11,9 @@ Authifi uses one authorization model for current integrations:
 
 An OAuth client can have a linked or auto-generated resource server, so application-assigned authorization and standalone API authorization use the same Access Role and Resource Server Permission entities.
 
-**Client permissions** means Resource Server Permissions on an OAuth client's auto-generated placeholder resource server.
+**Client permissions** are Resource Server Permissions on an OAuth client's auto-generated placeholder resource server.
 
-**Client credential roles and permissions** means Access Roles marked for client credential grants, their Resource Server Permissions, and the associated client — authorization assigned to applications rather than users.
+**Client credential roles and permissions** mean Access Roles marked for client credential grants, their Resource Server Permissions, and the associated client. This authorization is assigned to applications rather than users.
 
 For current configuration guidance, see the [SSO Integration Guide](../guides/sso-integration-guide.md) and [OIDC Request Scopes](../guides/oidc-request-scopes.md).
 
@@ -21,11 +21,11 @@ All routes below are relative to `/auth/admin/tenants/{tenantId}` unless the ful
 
 ## Deprecated role route family
 
-The `/roles` controller is a deprecated wrapper over `AccessRole` that maps legacy role shapes to the unified store. `POST /roles` requires a client and creates the Access Role on that client's linked or auto-generated resource server. The remaining wrapper is broader than an application-only view:
+The `/roles` controller is a deprecated wrapper over `AccessRole` that maps legacy role shapes to the unified store. `POST /roles` requires a client and creates the Access Role on that client's linked or auto-generated resource server. The wrapper can return more than application-scoped roles:
 
 - `GET /roles` returns tenant Access Roles across client-linked and standalone resource servers unless the caller supplies a `clientId` filter.
 - `GET /roles/count` and the read, update, replace, and delete routes keyed by role ID constrain by tenant, but do not require the Access Role to be client-associated.
-- Role-permission relation routes likewise operate on the unified tenant `AccessRole` and `ResourceServerPermission` records while returning legacy shapes.
+- Role-permission relation routes also operate on the unified tenant `AccessRole` and `ResourceServerPermission` records while returning legacy shapes.
 
 Use the canonical routes for new integrations so the resource-server context is explicit. Do not rely on `/roles` to enforce an application-only boundary.
 
@@ -61,7 +61,7 @@ The `/permissions` controller is a deprecated wrapper over `ResourceServerPermis
 
 ## Deprecated relation and legacy views
 
-These implemented routes expose legacy application-role names or shapes over the unified stores:
+These routes expose legacy application-role names or shapes over the unified stores:
 
 | Deprecated route                                             | Canonical replacement                                            |
 | ------------------------------------------------------------ | ---------------------------------------------------------------- |
@@ -82,7 +82,7 @@ Do not use the deprecated wrappers or flat claims for new integrations.
 
 The deprecated `POST /client/{clientId}/users-with-set-of-app-permissions` route is not equivalent to `POST /users-with-set-of-api-permissions`. The deprecated route constrains Access Roles by `clientId`. The canonical API permission-name query aggregates matches across the tenant and has no resource server filter. Because permission names are unique only within a resource server, it can combine same-named permissions from different APIs.
 
-Until a canonical resource-scoped set-query exists, existing consumers that need the exact client-specific result may retain the deprecated route. New integrations should resolve the client's linked Resource Server, resolve every permission by exact name within that Resource Server, list Access Roles for that resource context, and traverse their group and user assignments. Include a user only when that one resource context grants the complete requested permission set. Do not substitute the tenant-wide permission-name query.
+Until a resource-scoped set query is available, existing consumers that need the exact client-specific result may retain the deprecated route. New integrations should resolve the client's linked Resource Server, resolve every permission by exact name within that Resource Server, list Access Roles for that resource context, and traverse their group and user assignments. Include a user only when that one resource context grants the complete requested permission set. Do not substitute the tenant-wide permission-name query.
 
 ## Deprecated claim compatibility
 

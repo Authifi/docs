@@ -1,8 +1,8 @@
 # Authifi Service - Recommended Secure Configuration
 
-This document describes how to configure and operate the Authifi service in accordance with FedRAMP Recommended Secure Configuration requirements and security best practices.
+This document covers configuration and operation of the Authifi service in accordance with FedRAMP Recommended Secure Configuration requirements and security best practices.
 
-> **See Also**: For a structured guide covering administrative account lifecycle (setup, configuration, operation, decommissioning) and security settings reference tables, refer to the [Security Admin Guide](./security-admin-guide.md).
+> **See also**: The [Security Admin Guide](./security-admin-guide.md) covers the administrative account lifecycle and includes security settings reference tables.
 
 ## Table of Contents
 
@@ -659,7 +659,7 @@ Tenant administrators can configure these security settings within their tenant:
 
 **Scope-Based Access Control**:
 
-- Ordinary API access tokens carry granted permissions in the `scope` claim — enforce API access from that claim
+- Ordinary API access tokens carry granted permissions in the `scope` claim. Enforce API access from that claim
 - For application role checks, request `profile` and read `resource_roles` from trusted UserInfo or server-side session data
 - Do not treat `groups` or `resource_roles` as ordinary access-token claims
 

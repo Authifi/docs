@@ -1,6 +1,6 @@
 # Contributing to Authifi Documentation
 
-Thank you for contributing to the Authifi documentation! This guide explains how to make changes to the documentation.
+Use this guide to make changes to the Authifi documentation.
 
 ## Quick Start (No Setup Required)
 

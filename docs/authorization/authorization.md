@@ -81,7 +81,7 @@ Authorize `OAuth Clients` to access a specific `API` (Resource Server).
 
 ### Role Based Access Control
 
-An **Access Role** (also called an **API Role** in some UI labels) groups **Resource Server Permissions** within a resource-server authorization context. Access Roles can be assigned to `User Groups`. Resource Server Permissions define granular access control for a resource server — for example `facility.users.createFacility`. Granted permissions appear in ordinary API access tokens under the `scope` claim; APIs should verify that claim.
+An **Access Role** (also called an **API Role** in some UI labels) groups **Resource Server Permissions** within a resource-server authorization context. Access Roles can be assigned to `User Groups`. Resource Server Permissions define granular access control for a resource server, such as `facility.users.createFacility`. Granted permissions appear in ordinary API access tokens under the `scope` claim; APIs should verify that claim.
 
 Use Access Roles to group Resource Server Permissions into reusable mappings. Use `User Groups` to assign Access Roles to sets of users. Client-linked (including auto-generated) resource servers and standalone API resource servers use the same Access Role and Resource Server Permission model.
 
@@ -101,7 +101,7 @@ The list of supported `acr_values` can also be viewed at the OIDC Discovery URL 
 
 `/_api/auth/<tenant>/authorize?acr_values=mod-mf&...`
 
-When providing the `mod-mf` query parameter, the user will be prompted for multi-factor authentication even if the application or identity provider does not already require it. This adds another layer of security for more sensitive sections in an application.
+When providing the `mod-mf` query parameter, the user will be prompted for multi-factor authentication even if the application or identity provider does not already require it. Use it to require MFA for more sensitive sections of an application.
 
 Note:
 If the user is already authenticated, use the "prompt" query parameter with a value of "login" to request MFA. For details on the "prompt" query parameter, refer to the [OIDC Specification](https://openid.net/specs/openid-connect-core-1_0.html). For example: `/_api/auth/<tenant>/authorize?acr_values=mod-mf&prompt=login...`.
