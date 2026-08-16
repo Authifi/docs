@@ -1,5 +1,21 @@
 # authifi-docs
 
+## 1.4.1
+
+### Patch Changes
+
+- 16f68f4: Sync public documentation from idbroker.
+
+## 1.4.0
+
+### Minor Changes
+
+- 06cbc3e: Document the unified Access Roles and Resource Server Permissions model, and add a roles/permissions compatibility appendix (LSA-9677).
+
+### Patch Changes
+
+- a9309ac: Sync public documentation from auth-monorepo.
+
 ## 1.3.1
 
 ### Patch Changes

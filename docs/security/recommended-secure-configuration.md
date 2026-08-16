@@ -638,45 +638,46 @@ Tenant administrators can configure these security settings within their tenant:
 
 #### Role-Based Access Control (RBAC)
 
-**Client Roles** (Application-specific):
+**Access Roles** (also called **API Roles** in some UI labels):
 
-- Assigned to users or groups
-- Included in access tokens for application consumption
-- Can be hierarchical (role inheritance)
+- One role model for client-linked and standalone API resource servers
+- Belong to a Resource Server + Tenant
+- Contain **Resource Server Permissions**
+- Assigned to groups for user authorization
+- **Client credential roles and permissions** authorize applications (not users) via the client credentials grant
 
-**API Roles** (Resource server-specific):
+**Client-linked resource servers**:
 
-- Control access to API resources
-- Support fine-grained permissions
-- Composable (user can have multiple API roles)
+- An OAuth client can use a linked or auto-generated resource server as its application authorization context
+- **Client permissions** means Resource Server Permissions on that auto-generated placeholder resource server
 
 **Permission Model**:
 
-- Permissions are granular capabilities (e.g., `users.create`, `clients.update`)
-- Roles are collections of permissions
-- Users/groups can have roles or direct permission assignments
+- Resource Server Permissions are granular capabilities (e.g., `users.create`, `clients.update`) scoped to a resource server
+- Access Roles are collections of those permissions within one resource-server context
+- Users inherit Access Roles through group membership
 
 **Scope-Based Access Control**:
 
-- OAuth scopes control API access
-- Applications request scopes, users grant consent
-- Scope enforcement at API gateway layer
+- Ordinary API access tokens carry granted permissions in the `scope` claim — enforce API access from that claim
+- For application role checks, request `profile` and read `resource_roles` from trusted UserInfo or server-side session data
+- Do not treat `groups` or `resource_roles` as ordinary access-token claims
 
 **Security Implications**:
 
 - Least privilege: Grant minimum necessary roles/permissions
 - Regular review: Audit role assignments quarterly
 - Separation of duties: Prevent conflicting role combinations
-- Inheritance complexity: Document role hierarchies clearly
+- Preserve resource-server boundaries: prefer `resource_roles` over flat legacy claims (see [Roles and Permissions Compatibility](../authorization/legacy-roles-permissions-compatibility.md))
 
 #### Delegated Administration (UMRS)
 
 **User-Managed Role System**:
 
-- Enables non-admin users to grant specific roles
-- Manager group controls who can grant role
+- Enables non-admin users to grant specific resource-server-scoped Access Roles
+- Manager group controls who can grant the role
 - Supports time-limited grants with expiration
-- Resource-scoped (not tenant-wide)
+- Resource-server-scoped (not tenant-wide)
 
 **Configuration**:
 

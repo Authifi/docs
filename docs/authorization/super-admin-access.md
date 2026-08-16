@@ -157,10 +157,9 @@ For a consolidated overview of privileged permissions, roles, and groups, see [P
 
 ## Roles & permissions (privileged RBAC entities)
 
-- **Create/update/delete privileged roles**
-    - `POST /auth/admin/tenants/{tenantId}/clients/{clientId}/roles`
-    - `PUT /auth/admin/tenants/{tenantId}/clients/{clientId}/roles/{id}`
-    - `DELETE /auth/admin/tenants/{tenantId}/clients/{clientId}/roles/{id}`
+Use the canonical Access Role and Resource Server Permission APIs for new integrations. Deprecated `/roles` and `/permissions` wrappers are documented in [Roles and Permissions Compatibility](./legacy-roles-permissions-compatibility.md).
+
+- **Create/update/delete privileged Access Roles**
     - `POST /auth/admin/tenants/{tenantId}/access-roles`
     - `PUT /auth/admin/tenants/{tenantId}/access-roles/{id}`
     - `DELETE /auth/admin/tenants/{tenantId}/access-roles/{id}`
@@ -168,12 +167,9 @@ For a consolidated overview of privileged permissions, roles, and groups, see [P
     - **SA-or-scope** (`admin::admin-permissions:edit`)
     - Extra restriction: default tenant-admin role (`DEFAULT_ROLE.TENANT_ADMIN`) has additional protections against rename/removal.
 
-- **Create/update/delete privileged permissions**
-    - `POST /auth/admin/tenants/{tenantId}/permissions`
-    - `PUT /auth/admin/tenants/{tenantId}/permissions/{id}`
-    - `DELETE /auth/admin/tenants/{tenantId}/permissions/{id}`
+- **Create/update/delete privileged Resource Server Permissions**
     - `POST /auth/admin/tenants/{tenantId}/resource-servers/{resourceServerId}/permissions`
-    - `PUT /auth/admin/tenants/{tenantId}/resource-servers/{resourceServerId}/permissions/{id}`
+    - `PATCH /auth/admin/tenants/{tenantId}/resource-servers/{resourceServerId}/permissions/{id}`
     - `DELETE /auth/admin/tenants/{tenantId}/resource-servers/{resourceServerId}/permissions/{id}`
     - **UI**: Users and Groups > Permissions > + ADD PERMISSION / Edit / Delete
     - **SA-or-scope** (`admin::admin-permissions:edit`)

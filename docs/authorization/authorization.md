@@ -81,10 +81,11 @@ Authorize `OAuth Clients` to access a specific `API` (Resource Server).
 
 ### Role Based Access Control
 
-A `Role` is a grouping of a set of permissions (Resource Scopes).
-Roles can be assigned to one or more `User Groups` and each `Role` can be assigned one or more `Permissions`. `Permissions` define granular, `API`-level access control. For example: `facility.users.createFacility`. These will be populated in authenticated `User's` Bearer tokens under the `scope` claim. The `scope` claim can then be verified by the service receiving a request.
+An **Access Role** (also called an **API Role** in some UI labels) groups **Resource Server Permissions** within a resource-server authorization context. Access Roles can be assigned to `User Groups`. Resource Server Permissions define granular access control for a resource server — for example `facility.users.createFacility`. Granted permissions appear in ordinary API access tokens under the `scope` claim; APIs should verify that claim.
 
-Use `Roles` to group low-level `Permissions` into reusable mappings. Similarly, use `User Groups` to group `Roles` into reusable mappings for a set of users.
+Use Access Roles to group Resource Server Permissions into reusable mappings. Use `User Groups` to assign Access Roles to sets of users. Client-linked (including auto-generated) resource servers and standalone API resource servers use the same Access Role and Resource Server Permission model.
+
+For application role checks from trusted UserInfo or session data, request `profile` and read `resource_roles` keyed by resource server identifier. Deprecated flat claims and legacy admin routes are documented in [Roles and Permissions Compatibility](./legacy-roles-permissions-compatibility.md).
 
 ### Identity Assurance Levels
 
