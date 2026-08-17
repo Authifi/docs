@@ -1,6 +1,6 @@
 # Contributing to Authifi Documentation
 
-Thank you for contributing to the Authifi documentation! This guide explains how to make changes to the documentation.
+Use this guide to make changes to the Authifi documentation.
 
 ## Quick Start (No Setup Required)
 
@@ -31,7 +31,7 @@ This is the simplest approach for quick edits to a single file.
 1. Scroll down to the "Commit changes" section
 2. Enter a short description of your change (e.g., "Fix typo in tenant admin guide")
 3. Select **"Create a new branch for this commit and start a pull request"**
-4. GitHub will suggest a branch name like `username-patch-1` — you can keep it or change it
+4. GitHub will suggest a branch name like `username-patch-1`. You can keep it or change it.
 5. Click **Propose changes**
 6. On the next page, review your changes and click **Create pull request**
 
@@ -116,8 +116,8 @@ Before requesting a review, verify:
 
 ### Preview vs. Production
 
-- **Preview URL**: `https://<build-id>.authifi.pages.dev` — unique to each PR
-- **Production URL**: `https://docs.authifi.io` — updated when PRs are merged to `main`
+- **Preview URL**: `https://<build-id>.authifi.pages.dev`, unique to each PR
+- **Production URL**: `https://docs.authifi.io`, updated when PRs are merged to `main`
 
 ---
 

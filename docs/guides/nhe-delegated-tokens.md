@@ -2,11 +2,11 @@
 
 ## Overview
 
-NHE Delegation allows authorized users to issue short-lived, tightly scoped access tokens to Non-Human Entities such as LLM agents, automated pipelines, and AI assistants. These tokens let NHEs call protected APIs **on behalf of the user**, while remaining clearly identifiable as delegated machine tokens with limited privileges and a full audit trail.
+NHE Delegation lets authorized users issue short-lived, narrowly scoped access tokens to Non-Human Entities such as LLM agents, automated pipelines, and AI assistants. NHEs use these tokens to call protected APIs **on behalf of the user**. The tokens identify the machine actor, limit its privileges, and record the delegation in the audit trail.
 
 ## Standards
 
-This feature builds on established and emerging standards:
+The feature uses these standards and drafts:
 
 - **RFC 8693 (OAuth 2.0 Token Exchange)** — The `actor_token` parameter and `act` JWT claim provide delegation semantics within the existing token exchange grant type.
 - **IETF Agent Authorization Profile (AAP) draft (Feb 2026)** — The `agent` structured claim provides agent identity, type, and operator metadata.
@@ -97,7 +97,7 @@ Key claims:
 
 ### Tenant Settings
 
-Enable NHE delegation and configure limits via tenant settings:
+Enable NHE delegation and configure its limits in tenant settings:
 
 ```json
 {
@@ -184,7 +184,7 @@ Tenant administrators manage NHE delegation in the Authifi UI:
 - **Non-Human Entities** (under the tenant SSO menu) — Register agents, set allowed scopes and token lifetime limits, and configure per-user or per-group delegation policies.
 - **NHE Token Audit** (under **Monitoring**) — Review every delegation token issuance, including user, agent, client, resource server, scopes, TTL, and source IP.
 
-Enable the feature at the tenant level (`settings.nhe.enabled`), then on each OAuth client and resource server that participates in delegation. Schedule the **nhe-audit-retention** job under **Resources and Tools** > **Jobs** when `auditRetentionDays` is configured.
+Enable the feature at the tenant level (`settings.nhe.enabled`), then enable it on each participating OAuth client and resource server. When `auditRetentionDays` is configured, schedule the **nhe-audit-retention** job under **Resources and Tools** > **Jobs**.
 
 ## Management API
 
@@ -220,7 +220,7 @@ Enable the feature at the tenant level (`settings.nhe.enabled`), then on each OA
 
 ### Detecting NHE Tokens
 
-NHE delegation tokens are standard JWTs with additional claims. Resource servers can detect them by checking for:
+NHE delegation tokens are standard JWTs with additional claims. Resource servers can detect them by checking:
 
 ```typescript
 // Using the services-auth utility
@@ -247,14 +247,14 @@ const actorSub = req.user.act?.sub; // "nhe:agent-researcher-01"
 ### Security Considerations
 
 - NHE tokens have the same signature and validation as regular access tokens.
-- The `sub` claim is the human user — authorization decisions based on `sub` work normally.
-- The `act` claim identifies the NHE actor — use this for audit logging and agent-specific restrictions.
+- The `sub` claim is the human user; authorization decisions based on `sub` work normally.
+- The `act` claim identifies the NHE actor; use this for audit logging and agent-specific restrictions.
 - NHE tokens are short-lived (typically 5 minutes) and cannot be refreshed.
 - Scopes are always a subset of what the delegating user has.
 
 ## Database Schema
 
-Three new tables support NHE delegation:
+NHE delegation uses three tables:
 
 - **`NonHumanEntity`** — Registered NHE agents with allowed scopes and TTL limits.
 - **`NheDelegationPolicy`** — Per-user or per-group policies controlling who can delegate to which NHEs.

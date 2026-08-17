@@ -1,12 +1,12 @@
 # FedRAMP Compliance Evidence
 
-To satisfy the request to address the Controls Requirements Project "*(050) Create a Security Admin Guide*" and provide evidence of controls *FRR-RSC-01, FRR-RSC-02, and FRR-RSC-09*, Axle Informatics is providing the following publicly accessible URL(s)/link(s) that address the content of the requested security admin guide or documentation.
+This page addresses the Controls Requirements Project request "*(050) Create a Security Admin Guide*" and provides evidence for *FRR-RSC-01, FRR-RSC-02, and FRR-RSC-09* through public Authifi documentation.
 
 ---
 
 ## 1. Top-Level Administrative Account Role Definitions
 
-Documentation covering permissions, actions, and operations for administrative accounts:
+The linked pages cover administrative account permissions, actions, and operations:
 
 - **Admin Roles and Privileges**: [https://docs.authifi.io/authorization/admin-roles/](https://docs.authifi.io/authorization/admin-roles/)
 - **Security Overview**: [https://docs.authifi.io/security/](https://docs.authifi.io/security/)
@@ -15,7 +15,7 @@ Documentation covering permissions, actions, and operations for administrative a
 
 ## 2. Admin Account Lifecycle Procedures
 
-Documentation covering setup, MFA requirements, configuration, and decommissioning:
+The linked pages cover setup, MFA requirements, configuration, and decommissioning:
 
 - **Account Lifecycle Management**: [https://docs.authifi.io/security/security-admin-guide/#account-lifecycle-management](https://docs.authifi.io/security/security-admin-guide/#account-lifecycle-management)
 - **Top-Level Administrative Accounts**: [https://docs.authifi.io/security/recommended-secure-configuration/#top-level-administrative-accounts](https://docs.authifi.io/security/recommended-secure-configuration/#top-level-administrative-accounts)
@@ -24,7 +24,7 @@ Documentation covering setup, MFA requirements, configuration, and decommissioni
 
 ## 3. Security Settings Reference
 
-Documentation describing admin-controlled settings with associated functions, security impacts, and recommended values:
+The linked pages describe admin-controlled settings, security impacts, and recommended values:
 
 - **Secure Configuration Baseline**: [https://docs.authifi.io/security/recommended-secure-configuration/#secure-configuration-baseline](https://docs.authifi.io/security/recommended-secure-configuration/#secure-configuration-baseline)
 - **Security Best Practices**: [https://docs.authifi.io/security/recommended-secure-configuration/#security-best-practices](https://docs.authifi.io/security/recommended-secure-configuration/#security-best-practices)
@@ -33,6 +33,6 @@ Documentation describing admin-controlled settings with associated functions, se
 
 ## Public Accessibility
 
-All the above links are publicly accessible without authentication at:
+These links are publicly accessible without authentication at:
 
 **[https://docs.authifi.io/](https://docs.authifi.io/)**

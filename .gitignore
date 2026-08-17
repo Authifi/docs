@@ -1,6 +1,9 @@
 # MkDocs build output
 site/
 
+# Agent working files
+docs/superpowers/
+
 # Python
 __pycache__/
 *.py[cod]

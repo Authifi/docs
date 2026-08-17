@@ -1,12 +1,12 @@
 # Authifi Documentation
 
-Authifi is an enterprise identity broker, access management, and application security platform with an emphasis on security, collaboration, and ease of use.
+Authifi is an enterprise identity broker, access management, and application security platform.
 
 ## Getting Started
 
 ### Authorization
 
-Authifi supports admin roles as well as RBAC, OAuth scopes, custom roles and permissions, scripted authorization rules, and fine-grained access control. Use the links below to learn more.
+Authifi supports admin roles, RBAC, OAuth scopes, custom roles and permissions, scripted authorization rules, and fine-grained access control.
 
 - [OAuth Client Authorization](authorization/authorization.md) - User groups, API authorization, and RBAC
 - [Admin Roles](authorization/admin-roles.md) - System admin, tenant admin, and delegated admin roles
@@ -18,7 +18,7 @@ Authifi supports admin roles as well as RBAC, OAuth scopes, custom roles and per
 
 ### Administrator Guides
 
-Step-by-step guides for tenant administrators:
+Guides for tenant administrators:
 
 - [Tenant Administration](guides/tenant-admin-guide.md) - Configure tenant settings, branding, and security
 - [Users and Groups](guides/users-groups-admin-guide.md) - Manage users, groups, roles, and permissions
@@ -31,7 +31,7 @@ Step-by-step guides for tenant administrators:
 
 ### Security
 
-Security configuration and best practices:
+Security configuration:
 
 - [Security Overview](security/README.md) - Security documentation index
 - [Security Admin Guide](security/security-admin-guide.md) - Administrative account lifecycle and security
@@ -39,7 +39,7 @@ Security configuration and best practices:
 
 ## Feature Overview
 
-For a complete list of Authifi capabilities — authentication protocols, MFA, RBAC, secret management, AI agent delegation, GA4GH Passport support, FedRAMP High compliance, and more — see the **[Authifi Identity Broker Feature List](feature-list.html)**.
+See the [Authifi Identity Broker Feature List](feature-list.html) for the full capability list: authentication protocols, MFA, RBAC, secret management, AI agent delegation, GA4GH Passport support, and FedRAMP High compliance.
 
 ## FedRAMP
 
@@ -49,4 +49,4 @@ Authifi is FedRAMP High authorized as a supporting service in the [Palantir Fede
 
 ## Support
 
-For questions or issues, please contact your Authifi administrator or support team.
+For questions or issues, contact your Authifi administrator or support team.

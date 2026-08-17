@@ -1,8 +1,8 @@
 # Authifi Service - Recommended Secure Configuration
 
-This document provides comprehensive security guidance for configuring and operating the Authifi service in accordance with FedRAMP Recommended Secure Configuration requirements and security best practices.
+This guide defines secure Authifi configuration and operation in accordance with FedRAMP Recommended Secure Configuration requirements.
 
-> **See Also**: For a structured guide covering administrative account lifecycle (setup, configuration, operation, decommissioning) and security settings reference tables, refer to the [Security Admin Guide](./security-admin-guide.md).
+> **See also**: The [Security Admin Guide](./security-admin-guide.md) covers the administrative account lifecycle and includes security settings reference tables.
 
 ## Table of Contents
 
@@ -39,7 +39,7 @@ This document provides comprehensive security guidance for configuring and opera
 
 ## Terminology
 
-**Important Distinction:** This document uses specific terminology to distinguish between infrastructure and application administration:
+The terminology below distinguishes infrastructure administration from Authifi application administration:
 
 ### Super Administrator
 
@@ -69,22 +69,22 @@ This document provides comprehensive security guidance for configuring and opera
 
 ## Executive Summary
 
-The Authifi service provides enterprise identity and access management with a hierarchical administrative model. This document describes:
+Authifi uses a hierarchical administrative model:
 
 - **Top-level administrative accounts** (Super Administrators): Full platform control, cross-tenant management
 - **Privileged accounts** (Tenant Administrators): Tenant-scoped administrative access
 - **Delegated admin accounts**: Scoped permissions for specific resources
 
-**Key Security Features**:
+The baseline includes:
 
 - Multi-factor authentication (MFA) enforcement for administrative accounts
 - Role-based access control (RBAC) with least privilege
-- Comprehensive audit logging of all administrative actions
+- Audit logging of all administrative actions
 - Session management with configurable lifetimes
 - Encryption at rest and in transit
 - API-based configuration management
 
-**Secure Defaults**:
+Recommended defaults:
 
 - MFA required for all administrative functions
 - Short session lifetimes for privileged contexts
@@ -97,7 +97,7 @@ The Authifi service provides enterprise identity and access management with a hi
 
 ### Account Hierarchy
 
-The Authifi service implements three levels of administrative access:
+Authifi has three levels of administrative access:
 
 ```
 ┌─────────────────────────────────────┐
@@ -186,7 +186,7 @@ Super Administrators have unrestricted access to the Authifi platform and can:
 
 ### Creating Temporary Super Administrators
 
-Super administrator assignment is controlled through system configuration, not through the standard UI workflow. However, in exceptional circumstances a user may be granted temporay super admin access.
+Super administrator assignment is controlled through system configuration, not the standard UI workflow. In exceptional circumstances, a user may receive temporary super admin access.
 
 **Prerequisites**:
 
@@ -202,7 +202,7 @@ Super administrator assignment is controlled through system configuration, not t
 **Process**:
 
 - Existing super admin accesses system configuration
-- Adds target user account to the `systemAdmins` group with and expiration date/time. This action automatically:
+- Adds the target user account to the `systemAdmins` group with an expiration date/time. This action automatically:
 
    - Grants `Auth System Admin` role
    - Triggers security alerts to all existing super admins
@@ -312,7 +312,7 @@ Super administrator assignment is controlled through system configuration, not t
     - Authentication credentials (hashed)
     - Audit logs and activity
     - Application configurations
-- **Mitigation**: Enforce least privilege, limit number of super admins, comprehensive logging
+- **Mitigation**: Enforce least privilege, limit number of super admins, log all super admin actions
 
 **Configuration Changes**:
 
@@ -394,7 +394,7 @@ Delegated Admins have permissions limited to specific resources:
 - `admin::clients:*`: Application management only
 - `admin::providers:*`: Identity provider management only
 
-> **Naming Convention:** By convention, delegated admin permissions use the `admin::` prefix. However, this naming convention alone does not make an entity privileged—the `isPrivileged` flag must be set.
+> **Naming Convention:** By convention, delegated admin permissions use the `admin::` prefix. However, this naming convention alone does not make an entity privileged; the `isPrivileged` flag must be set.
 
 **Delegated Administration (UMRS)**:
 
@@ -576,7 +576,7 @@ Tenant administrators can configure these security settings within their tenant:
 
 **Security Implications**:
 
-- MFA significantly reduces account compromise risk
+- MFA reduces account compromise risk
 - WebAuthn/FIDO2 provides strongest protection (phishing-resistant)
 - TOTP is acceptable minimum, SMS/Email not recommended
 - Strike count balances security with usability (too low = lockouts, too high = brute force risk)
@@ -659,7 +659,7 @@ Tenant administrators can configure these security settings within their tenant:
 
 **Scope-Based Access Control**:
 
-- Ordinary API access tokens carry granted permissions in the `scope` claim — enforce API access from that claim
+- Ordinary API access tokens carry granted permissions in the `scope` claim. Enforce API access from that claim
 - For application role checks, request `profile` and read `resource_roles` from trusted UserInfo or server-side session data
 - Do not treat `groups` or `resource_roles` as ordinary access-token claims
 
@@ -962,7 +962,7 @@ Returns the tenant configuration including security-relevant settings:
 
 All security settings are accessible via REST API and the Authifi UI:
 
-**Tenant Settings** — UI: Tenant > Settings
+**Tenant Settings**: UI: Tenant > Settings
 
 ```
 GET    /auth/admin/tenants/{tenantId}
@@ -970,7 +970,7 @@ PUT    /auth/admin/tenants/{tenantId}
 PATCH  /auth/admin/tenants/{tenantId}
 ```
 
-**Identity Providers** — UI: SSO Integration > Identity Provider Dashboard
+**Identity Providers**: UI: SSO Integration > Identity Provider Dashboard
 
 ```
 GET    /auth/admin/tenants/{tenantId}/identity-providers
@@ -979,7 +979,7 @@ PUT    /auth/admin/tenants/{tenantId}/identity-providers/{idpId}
 DELETE /auth/admin/tenants/{tenantId}/identity-providers/{idpId}
 ```
 
-**Applications** — UI: SSO Integration > App Dashboard
+**Applications**: UI: SSO Integration > App Dashboard
 
 ```
 GET    /auth/admin/tenants/{tenantId}/clients
@@ -988,7 +988,7 @@ PUT    /auth/admin/tenants/{tenantId}/clients/{clientId}
 DELETE /auth/admin/tenants/{tenantId}/clients/{clientId}
 ```
 
-**Users and Groups** — UI: Users and Groups > Users / Groups
+**Users and Groups**: UI: Users and Groups > Users / Groups
 
 ```
 GET    /auth/admin/tenants/{tenantId}/users
@@ -1077,7 +1077,7 @@ DELETE /auth/admin/tenants/{tenantId}/users/{userId}
     - Only mark IdPs as "trusted" if:
         - IdP is enterprise-managed and secured
         - IdP enforces strong authentication
-        - IdP has comprehensive audit logging
+        - IdP has audit logging
         - IdP vendor is reputable
     - Never trust public IdPs (Google, Facebook) for admin access
 
@@ -1175,7 +1175,7 @@ DELETE /auth/admin/tenants/{tenantId}/users/{userId}
     - **Daily**: Failed login monitoring
     - **Weekly**: Admin action audit
     - **Monthly**: Application and IdP configuration review
-    - **Quarterly**: Comprehensive access review (all admins, roles, permissions)
+    - **Quarterly**: Access review covering all admins, roles, and permissions
     - **Annually**: Security posture assessment
 
 - **Audit Log Protection**:
@@ -1315,7 +1315,7 @@ This document addresses the following FedRAMP Recommended Secure Configuration r
     - Least privilege evidence
 
 - **Audit and Accountability** (AU):
-    - Audit log exports (comprehensive)
+    - Audit log exports
     - Event log exports (login activity)
     - Admin action reviews
     - Incident investigation logs
@@ -1345,7 +1345,7 @@ This document addresses the following FedRAMP Recommended Secure Configuration r
 **Review Schedule**:
 
 - Quarterly: Technical accuracy review
-- Annually: Comprehensive security review
+- Annually: Full security review
 - As needed: After major product changes or security incidents
 
 **Change History**:

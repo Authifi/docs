@@ -1,6 +1,6 @@
 # Privileged Permissions, Roles, and Groups
 
-This document provides a consolidated summary of privileged access in Authifi. For detailed information, see the linked documentation.
+This page summarizes privileged access in Authifi. See the linked pages for details.
 
 ## Table of Contents
 
@@ -14,7 +14,7 @@ This document provides a consolidated summary of privileged access in Authifi. F
 
 ## Overview
 
-Authifi implements a multi-layered authorization model:
+Authifi uses this authorization model:
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -35,7 +35,7 @@ Authifi implements a multi-layered authorization model:
 
 ### Delegated Admins
 
-Delegated Admins are users who have been granted specific `admin::*` permissions, allowing them to perform targeted administrative tasks without full Super Administrator or Tenant Administrator access. This enables organizations to delegate specific responsibilities (such as resetting MFA, editing identity provider settings, or managing templates) to trusted users while maintaining strict control over who can grant these elevated permissions.
+Delegated Admins have specific `admin::*` permissions for targeted administrative tasks. Organizations can delegate tasks such as resetting MFA, editing identity provider settings, and managing templates without granting full Super Administrator or Tenant Administrator access.
 
 ### Assigning Privileged Permissions
 
@@ -51,7 +51,7 @@ Privileged entities are identified by the `isPrivileged` flag. See [Privileged E
 
 ## Admin Scopes
 
-Admin scopes provide granular elevated permissions for Delegated Admins. Users with these scopes can perform specific privileged operations without being a Super Administrator.
+Admin scopes give Delegated Admins permission to perform specific privileged operations without Super Administrator access.
 
 > **Important:** Only Super Administrators can assign admin scopes to users. The permissions and roles containing these scopes are themselves privileged entities.
 
@@ -82,15 +82,15 @@ Admin scopes provide granular elevated permissions for Delegated Admins. Users w
 
 ## Privileged Entities
 
-Certain entities are marked as "privileged" and require **Super Administrator** access to manage.
+Entities marked as "privileged" require **Super Administrator** access to manage.
 
-> **Critical Security Control:** Only Super Administrators can create, edit, delete, or assign privileged groups, roles, and permissions. This restriction ensures that elevated access cannot be granted without platform-level oversight.
+Only Super Administrators can create, edit, delete, or assign privileged groups, roles, and permissions.
 
 ### What Makes an Entity Privileged?
 
 An entity is privileged when it has `isPrivileged: true` set. This flag is the authoritative indicator that determines whether Super Administrator access is required to manage the entity.
 
-> **Naming Convention:** By convention, privileged permissions use the `admin::` prefix (e.g., `admin::mfa:reset`). However, this naming convention alone does not make an entity privileged—the `isPrivileged` flag must be set.
+> **Naming Convention:** By convention, privileged permissions use the `admin::` prefix (e.g., `admin::mfa:reset`). However, this naming convention alone does not make an entity privileged; the `isPrivileged` flag must be set.
 
 ### Privileged Entity Types
 
@@ -100,7 +100,7 @@ An entity is privileged when it has `isPrivileged: true` set. This flag is the a
 | Access Roles                | `isPrivileged: true` | Roles containing `admin::` permissions      |
 | Resource Server Permissions | `isPrivileged: true` | Permissions granting elevated or API access |
 
-Access Roles and Resource Server Permissions cover both client-linked and standalone API authorization contexts. Deprecated role and permission interfaces are documented in [Roles and Permissions Compatibility](./legacy-roles-permissions-compatibility.md).
+Access Roles and Resource Server Permissions cover client-linked and standalone API authorization contexts. See [Roles and Permissions Compatibility](./legacy-roles-permissions-compatibility.md) for deprecated role and permission interfaces.
 
 ### Required Access for Privileged Entities
 
@@ -112,13 +112,11 @@ Access Roles and Resource Server Permissions cover both client-linked and standa
 | Assign users to privileged groups | **Super Administrator only** |
 | Assign privileged roles to groups | **Super Administrator only** |
 
-> **Why this matters:** Privileged entities grant elevated permissions. If non-Super-Admins could create or assign them, they could escalate their own privileges or grant unauthorized access to others.
-
 ---
 
 ## Group Membership Roles
 
-Users within groups can have different membership roles that grant varying levels of control.
+Group membership has three roles with different levels of control.
 
 | Role    | Value     | Capabilities                              |
 | ------- | --------- | ----------------------------------------- |

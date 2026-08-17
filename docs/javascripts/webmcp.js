@@ -5,8 +5,8 @@
     return;
   }
 
-  var controller = new AbortController();
-  var signal = controller.signal;
+  const controller = new AbortController();
+  const signal = controller.signal;
 
   function getSearchInput() {
     return document.querySelector('input[type="search"], input[data-md-component="search-query"]');
@@ -27,12 +27,12 @@
         required: ["query"],
       },
       execute: async function (args) {
-        var query = args && args.query ? String(args.query).trim() : "";
+        const query = args && args.query ? String(args.query).trim() : "";
         if (!query) {
           return { error: "query is required" };
         }
 
-        var input = getSearchInput();
+        const input = getSearchInput();
         if (!input) {
           return { error: "Search input not found on this page" };
         }
@@ -59,7 +59,7 @@
         properties: {},
       },
       execute: async function () {
-        var links = Array.from(
+        let links = Array.from(
           document.querySelectorAll(".md-nav--primary > .md-nav__list > .md-nav__item > .md-nav__link")
         );
 

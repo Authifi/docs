@@ -6,7 +6,7 @@ Public documentation for the Authifi identity and access management platform.
 
 ## For Documentation Writers
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for instructions on editing documentation. **No local setup required** — you can edit directly on GitHub.com or using GitHub.dev (press `.` on the repo page).
+See [CONTRIBUTING.md](CONTRIBUTING.md) for instructions on editing documentation. **No local setup is required.** Edit directly on GitHub.com or using GitHub.dev (press `.` on the repo page).
 
 ## Cloudflare Pages Setup
 
@@ -54,7 +54,7 @@ The production site is served at the custom domain **`docs.authifi.io`**. The
 #### B. Configure DNS
 
 If the `authifi.io` zone is managed in the **same Cloudflare account**, Pages
-creates the DNS record automatically — just **Activate** it when prompted. The
+creates the DNS record automatically. **Activate** it when prompted. The
 record will be:
 
 ```

@@ -1,6 +1,6 @@
 # Monitoring and Logging Guide
 
-This guide provides comprehensive instructions for tenant administrators on monitoring authentication activity, viewing audit trails, and analyzing system behavior through the Authifi UI.
+Tenant administrators use the Authifi UI to monitor authentication activity, review audit trails, and investigate system behavior.
 
 ## Table of Contents
 
@@ -20,23 +20,13 @@ This guide provides comprehensive instructions for tenant administrators on moni
 
 ## Overview
 
-The **Monitoring** section provides visibility into all authentication and administrative activity within your tenant:
+Use **Monitoring** to review authentication and administrative activity in your tenant:
 
 - **Security monitoring**: Track login attempts, failures, and suspicious activity
-- **Compliance and audit**: Complete audit trail of all administrative actions
+- **Compliance and audit**: Audit trail of all administrative actions
 - **Operational insights**: Monitor system jobs, email delivery, and active sessions
 - **Troubleshooting**: Investigate authentication issues and configuration changes
 - **User activity**: Track individual user actions and access patterns
-
-**Security philosophy**: Comprehensive logging enables:
-
-- Detection of unauthorized access attempts
-- Forensic investigation of security incidents
-- Compliance with regulatory requirements (SOC 2, HIPAA, etc.)
-- Accountability for administrative actions
-- Early warning of potential security issues
-
----
 
 ## Monitoring Menu Options
 
@@ -44,7 +34,7 @@ The **Monitoring** section provides visibility into all authentication and admin
 
 **Location**: Monitoring > Audit Logs
 
-**Purpose**: Comprehensive audit trail of all administrative actions and configuration changes within the tenant.
+Audit logs record administrative actions and configuration changes within the tenant.
 
 #### What is Logged
 
@@ -137,7 +127,7 @@ See [Natural Language Queries](#natural-language-queries) for more examples.
 }
 ```
 
-**Use case**: Investigate "Who changed the Google IdP configuration last week?"
+Use this workflow to investigate "Who changed the Google IdP configuration last week?"
 
 - Search for Target: "Google"
 - Set date range: Last 7 days
@@ -170,7 +160,7 @@ See [Natural Language Queries](#natural-language-queries) for more examples.
 
 **Super admin only**: Restore functionality requires super admin permissions.
 
-**Purpose**: Restore previously exported audit logs after tenant data cleanup or migration.
+Restore previously exported audit logs after tenant data cleanup or migration.
 
 **Steps**:
 
@@ -191,7 +181,7 @@ See [Natural Language Queries](#natural-language-queries) for more examples.
 
 **Location**: Monitoring > Event Logs
 
-**Purpose**: Track all authentication events (login, logout, MFA, failures) for security monitoring and troubleshooting.
+Event logs track authentication events, including login, logout, MFA, and failures.
 
 #### What is Logged
 
@@ -308,7 +298,7 @@ See [Natural Language Queries](#natural-language-queries) for more examples.
 
 **Location**: Monitoring > Job Logs
 
-**Purpose**: Monitor system background jobs (scheduled tasks, data processing, cleanup operations).
+Job logs show scheduled tasks, data processing, and cleanup operations.
 
 #### What is Logged
 
@@ -415,7 +405,7 @@ See [Natural Language Queries](#natural-language-queries) for more examples.
 
 **Location**: Monitoring > Notification Logs
 
-**Purpose**: Track all email notifications sent by the system (invitations, password resets, alerts, etc.).
+Notification logs track system email, including invitations, password resets, and alerts.
 
 #### What is Logged
 
@@ -524,7 +514,7 @@ See [Natural Language Queries](#natural-language-queries) for more examples.
 
 **Location**: Monitoring > Sessions
 
-**Purpose**: View and manage active authentication sessions (logged-in users).
+Sessions show and manage active user authentication sessions.
 
 #### What is Tracked
 
@@ -615,7 +605,7 @@ See [Natural Language Queries](#natural-language-queries) for more examples.
 
 **Location**: Monitoring > Grants
 
-**Purpose**: View OAuth 2.0 / OIDC authorization grants (consent records).
+Grants show OAuth 2.0 and OIDC authorization records.
 
 #### What is Tracked
 
@@ -695,7 +685,7 @@ See [Natural Language Queries](#natural-language-queries) for more examples.
 
 ## Natural Language Queries
 
-**All log dashboards** support natural language queries (NLQ) for intuitive filtering.
+**All log dashboards** support natural language queries (NLQ) for filtering in plain English.
 
 ### How to Use
 
@@ -853,7 +843,7 @@ See [Natural Language Queries](#natural-language-queries) for more examples.
 
 **Monthly tasks**:
 
-- Comprehensive Audit Log review
+- Review Audit Logs
 - Review all Grants for unused applications
 - Revoke old Sessions (> 30 days)
 - Verify email delivery health (Notification Logs)
