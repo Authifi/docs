@@ -96,26 +96,23 @@ build.
 ### Setup
 
 ```bash
-# Set up a virtual environment
 python3 -m venv .venv
-source .venv/bin/activate
-
-# Install dependencies
-python3 -m pip install -r requirements.txt
-
-# Start development server
-mkdocs serve
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/mkdocs serve
 ```
 
 Open http://127.0.0.1:8000 to view the documentation locally.
 
-### Build
+### Validate
 
 ```bash
-mkdocs build
+.venv/bin/python -m unittest discover -s tests -v
+.venv/bin/mkdocs build --strict
 ```
 
-The static site is generated in the `site/` directory.
+The tests build the site in a temporary directory and inspect generated
+documentation, search, discovery, and sitemap artifacts. The standalone build
+writes the static site to `site/`.
 
 ## Agent Readiness
 
