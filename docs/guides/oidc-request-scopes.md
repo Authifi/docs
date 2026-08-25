@@ -75,6 +75,18 @@ Set it to `true` when an app should mint least-privilege tokens (for example, on
 
 Configure it via the client API (`config.featureToggles.requireAuthorizationScopesInRequest`) or in the Auth admin UI under the client's feature toggles (**Require Resource Indicator scopes**).
 
+### Which API a client may request
+
+For a **custom** resource server, the client must be associated with that API (Manage APIs → clients on the resource server) before the issuer will mint a user or client-credentials access token whose `aud` matches that identifier. An unassigned `resource` value is rejected (`invalid_target`).
+
+The tenant **default** management audience (`https://{issuer}/_api/auth/{tenantId}`) is the exception: if the request omits `resource`, or sends that default identifier, the issuer does **not** require a client–API association unless `requireResourceIndicatorInRequest` is on.
+
+That association is **all-or-nothing per API**. It does not choose _which_ resource scopes a **user** access token receives. Those come from the signed-in user's RBAC on that resource server (then optionally narrowed by `requireAuthorizationScopesInRequest`).
+
+**Client credential roles and permissions** (Access Roles with `isClientRole`) apply only to the **client credentials** grant. They are not intersected into a user access token. Enabling them on an app does not cap what a logged-in user can do through that app.
+
+If two applications must call the same physical API but with different privilege for the same user, use separate resource servers (distinct identifiers) and authorize on `aud`, or enforce `azp` (authorized party / client) in the API. Do not expect client-credential roles to create that split. See [Scope resolution and token issuance](https://github.com/Authifi/idbroker/blob/main/packages/auth/docs/oidc/scope-resolution-and-token-issuance.md#user-tokens-vs-client-credential-roles).
+
 ## Supported scopes (scopes_supported)
 
 These scopes are advertised by each deployment's OpenID Provider discovery document:

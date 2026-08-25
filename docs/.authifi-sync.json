@@ -9,6 +9,14 @@
     {
       "dest": "guides/oidc-request-scopes.md",
       "source": "packages/auth/docs/oidc/request-scopes.md"
+    },
+    {
+      "dest": "privacy-policy.md",
+      "source": "docs/privacy-policy.md"
+    },
+    {
+      "dest": "terms-of-service.md",
+      "source": "docs/terms-of-service.md"
     }
   ]
 }
