@@ -31,6 +31,22 @@ Authifi needs a non-functional SMS opt-in page preview to share with an SMS prov
 | Preview banner | None |
 | Fields | Phone number + explicit consent checkbox + frequency/message-type disclosure + privacy/terms links |
 | Message types | Account / security alerts only (login, MFA, access notifications) |
+| Submit CTA | Clear affirmative language: **“Yes, sign me up!”** |
+
+## SMS provider requirements (binding)
+
+The page **must** include all of the following:
+
+1. **Phone number input field**
+2. **Consent checkbox** that is **not** pre-selected — the user must actively check it
+3. **Clear description** of what type of messages they will receive
+4. **Message frequency** information
+5. **Standard disclaimer** that message and data rates may apply
+6. **HELP and STOP** instructions
+7. **Links** to Terms of Service and Privacy Policy
+8. **Submit button** with clear language (e.g. “Yes, sign me up!”)
+
+**Critical:** The consent checkbox must never render checked by default (`checked` attribute forbidden; no JS that auto-checks it).
 
 ## Design
 
@@ -41,26 +57,27 @@ Single first-viewport composition:
 1. **Brand:** Authifi as the hero-level signal (logo + wordmark)
 2. **Headline:** SMS notifications (or equivalent)
 3. **Supporting sentence:** Short explanation that Authifi can send account and security alerts by text
-4. **Form:** Phone field + consent checkbox + submit
-5. **Disclosure block:** Frequency, rates, STOP/HELP, links to Privacy Policy and Terms
+4. **Form:** Phone field → consent checkbox (unchecked) → submit “Yes, sign me up!”
+5. **Disclosure block** (visible without digging): message types, frequency, msg & data rates, STOP/HELP, Terms + Privacy links
 
 No cards in the hero. No stats, promo chips, or secondary marketing blocks.
 
 ### Form behavior (preview only)
 
-- `action` omitted or `#`; `submit` prevented with a no-op handler (or button `type="button"` with inert confirm styling)
+- `action` omitted or `#`; submit prevented with a no-op handler (still validates checkbox/phone client-side for realism if useful)
 - Phone input: `type="tel"`, `autocomplete="tel"`, placeholder example
-- Consent checkbox required for visual completeness (HTML `required` acceptable even if submit is inert)
+- Consent checkbox: unchecked by default; may use HTML `required` so submit appears gated
+- Submit button label: **Yes, sign me up!**
 - No network requests
 
 ### Consent and disclosure copy (intent)
 
 - Explicit opt-in to receive Authifi account/security SMS at the provided number
-- Message types: login alerts, MFA, access/security notifications — not marketing
-- Frequency: as needed for account activity (or similar accurate phrasing)
-- “Msg & data rates may apply”
-- Reply STOP to cancel, HELP for help
-- Links: Privacy Policy and Terms of Service on `authifi.com` (use real public URLs if known; otherwise `https://authifi.com` paths that match the public site)
+- **Message types (clear):** login alerts, MFA / verification codes, access and security notifications — not marketing
+- **Frequency:** e.g. message frequency varies; typically a few messages per month depending on account activity (or similar accurate phrasing)
+- **Rates:** “Msg & data rates may apply”
+- **STOP / HELP:** Reply STOP to cancel; reply HELP for help
+- **Links:** Privacy Policy and Terms of Service on `authifi.com` (prefer real public URLs if known)
 
 ### Visual direction
 
@@ -85,7 +102,9 @@ Assets: reuse `docs/assets/authifi-logo.png` if suitable for the page.
 
 ## Success criteria
 
-- Page renders as a branded SMS opt-in with phone, consent, disclosure, and policy links.
+- Page includes every SMS-provider required element listed above.
+- Consent checkbox is unchecked on load and only becomes checked via user action.
+- Submit label is clear affirmative language (“Yes, sign me up!”).
 - Submit does not enroll or call any service.
 - Page is reachable at `/sms-opt-in/` (or `/sms-opt-in.html` depending on MkDocs HTML naming) after deploy/preview.
 - Page does not appear in the main docs nav.
