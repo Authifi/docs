@@ -1,5 +1,15 @@
 # authifi-docs
 
+## 1.5.0
+
+### Minor Changes
+
+- eeb1238: Add a standalone Authifi SMS opt-in page preview for provider review.
+
+### Patch Changes
+
+- 42e258c: Sync public documentation from idbroker.
+
 ## 1.4.1
 
 ### Patch Changes
