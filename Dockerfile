@@ -39,6 +39,8 @@ RUN groupadd --gid "${APP_GID}" "${APP_USER}" \
         --no-log-init --shell /usr/sbin/nologin "${APP_USER}"
 
 COPY --chown=${APP_UID}:${APP_GID} server ./server
+# _headers is excluded from the MkDocs site output, but the server still reads
+# it at runtime to populate the root Link headers.
 COPY --from=site-builder --chown=${APP_UID}:${APP_GID} /app/docs/_headers ./docs/_headers
 COPY --from=site-builder --chown=${APP_UID}:${APP_GID} /app/site ./site
 

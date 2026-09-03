@@ -15,13 +15,7 @@ SPEC.loader.exec_module(agent_assets)
 
 
 def test_write_sitemap_includes_only_public_content(tmp_path: Path) -> None:
-    nav = [
-        {"Home": "index.md"},
-        {"Guides": ["guides/sso-integration-guide.md", "guides/nhe-delegated-tokens.md"]},
-        {"Security": ["security/README.md"]},
-    ]
-
-    agent_assets._write_sitemap(tmp_path, "https://docs.authifi.io", nav)
+    agent_assets._write_sitemap(tmp_path, "https://docs.authifi.io")
 
     sitemap = ET.fromstring((tmp_path / "sitemap.xml").read_text(encoding="utf-8"))
     namespace = {"sm": "http://www.sitemaps.org/schemas/sitemap/0.9"}
@@ -53,10 +47,7 @@ def test_post_build_does_not_require_site_headers_file(tmp_path: Path) -> None:
         docs_dir=str(docs_dir),
         site_dir=str(site_dir),
         site_url="https://docs.authifi.io",
-        nav=["privacy-policy.md", "terms-of-service.md", "sms-opt-in.html"],
     )
-
-    agent_assets._resolved_nav = None
 
     agent_assets.on_post_build(config)
 
