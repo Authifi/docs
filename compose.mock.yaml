@@ -5,8 +5,8 @@ services:
         condition: service_healthy
     environment:
       OIDC_ISSUER: "http://${MOCK_OIDC_HOST:-oidc-mock.127.0.0.1.nip.io}:${MOCK_OIDC_PORT:-9400}"
-      OIDC_CLIENT_ID: "${OIDC_CLIENT_ID:-local-docs-client}"
-      OIDC_CLIENT_SECRET: "${OIDC_CLIENT_SECRET:-local-docs-secret}"
+      OIDC_CLIENT_ID: local-docs-client
+      OIDC_CLIENT_SECRET: local-docs-secret
     extra_hosts:
       - "${MOCK_OIDC_HOST:-oidc-mock.127.0.0.1.nip.io}:host-gateway"
 
