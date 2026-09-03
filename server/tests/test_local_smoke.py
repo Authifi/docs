@@ -80,14 +80,12 @@ def test_build_mock_compose_env_supplies_required_mock_safe_values(tmp_path: Pat
         env,
         {
             "PUBLIC_BASE_URL": "http://localhost:8999",
-            "OIDC_ISSUER": "http://issuer.example.test:9444",
-            "OIDC_CLIENT_ID": "local-docs-client",
-            "OIDC_CLIENT_SECRET": "local-docs-secret",
-            "SESSION_SECRET": "local-session-secret",
             "MOCK_OIDC_HOST": "issuer.example.test",
             "MOCK_OIDC_PORT": "9444",
         },
     )
+    for key in ("OIDC_ISSUER", "OIDC_CLIENT_ID", "OIDC_CLIENT_SECRET", "SESSION_SECRET"):
+        assert key not in env
 
 
 def test_parse_args_uses_env_driven_defaults(tmp_path: Path) -> None:

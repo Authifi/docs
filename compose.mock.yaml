@@ -7,6 +7,7 @@ services:
       OIDC_ISSUER: "http://${MOCK_OIDC_HOST:-oidc-mock.127.0.0.1.nip.io}:${MOCK_OIDC_PORT:-9400}"
       OIDC_CLIENT_ID: local-docs-client
       OIDC_CLIENT_SECRET: local-docs-secret
+      SESSION_SECRET: local-session-secret
     extra_hosts:
       - "${MOCK_OIDC_HOST:-oidc-mock.127.0.0.1.nip.io}:host-gateway"
 

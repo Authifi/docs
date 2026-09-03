@@ -18,9 +18,6 @@ DEFAULT_DOCS_PORT = "8000"
 DEFAULT_MOCK_HOST = "oidc-mock.127.0.0.1.nip.io"
 DEFAULT_MOCK_PORT = "9400"
 DEFAULT_SUBJECT = "alice@example.com"
-DEFAULT_MOCK_CLIENT_ID = "local-docs-client"
-DEFAULT_MOCK_CLIENT_SECRET = "local-docs-secret"
-DEFAULT_SESSION_SECRET = "local-session-secret"
 DEFAULT_TIMEOUT_SECONDS = 60.0
 POLL_INTERVAL_SECONDS = 0.5
 COMPOSE_FILES = ("compose.yaml", "compose.mock.yaml")
@@ -101,12 +98,6 @@ def build_mock_compose_env(project_dir: Path, environ: dict[str, str] | None = N
     merged_env.setdefault("MOCK_OIDC_PORT", DEFAULT_MOCK_PORT)
     merged_env.setdefault("MOCK_OIDC_SUBJECT", DEFAULT_SUBJECT)
     merged_env.setdefault("PUBLIC_BASE_URL", f"http://localhost:{merged_env['DOCS_PORT']}")
-
-    mock_issuer = f"http://{merged_env['MOCK_OIDC_HOST']}:{merged_env['MOCK_OIDC_PORT']}"
-    merged_env.setdefault("OIDC_ISSUER", mock_issuer)
-    merged_env.setdefault("OIDC_CLIENT_ID", DEFAULT_MOCK_CLIENT_ID)
-    merged_env.setdefault("OIDC_CLIENT_SECRET", DEFAULT_MOCK_CLIENT_SECRET)
-    merged_env.setdefault("SESSION_SECRET", DEFAULT_SESSION_SECRET)
     return merged_env
 
 
