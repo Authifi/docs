@@ -1,34 +1,101 @@
+# Crawl preferences for the site's intentionally public resources.
+
 User-agent: *
-Allow: /
-Disallow: /search/
+Disallow: /
+Allow: /privacy-policy/
+Allow: /terms-of-service/
+Allow: /sms-opt-in.html
+Allow: /robots.txt
+Allow: /auth.md
+Allow: /sitemap.xml
+Allow: /.well-known/
+Allow: /assets/
+Allow: /javascripts/
+Allow: /stylesheets/
 Content-Signal: ai-train=no, search=yes, ai-input=yes
 
 User-agent: GPTBot
-Allow: /
-Disallow: /search/
+Disallow: /
+Allow: /privacy-policy/
+Allow: /terms-of-service/
+Allow: /sms-opt-in.html
+Allow: /robots.txt
+Allow: /auth.md
+Allow: /sitemap.xml
+Allow: /.well-known/
+Allow: /assets/
+Allow: /javascripts/
+Allow: /stylesheets/
 Content-Signal: ai-train=no, search=yes, ai-input=yes
 
 User-agent: OAI-SearchBot
-Allow: /
-Disallow: /search/
+Disallow: /
+Allow: /privacy-policy/
+Allow: /terms-of-service/
+Allow: /sms-opt-in.html
+Allow: /robots.txt
+Allow: /auth.md
+Allow: /sitemap.xml
+Allow: /.well-known/
+Allow: /assets/
+Allow: /javascripts/
+Allow: /stylesheets/
 Content-Signal: ai-train=no, search=yes, ai-input=yes
 
 User-agent: Claude-Web
-Allow: /
-Disallow: /search/
+Disallow: /
+Allow: /privacy-policy/
+Allow: /terms-of-service/
+Allow: /sms-opt-in.html
+Allow: /robots.txt
+Allow: /auth.md
+Allow: /sitemap.xml
+Allow: /.well-known/
+Allow: /assets/
+Allow: /javascripts/
+Allow: /stylesheets/
 Content-Signal: ai-train=no, search=yes, ai-input=yes
 
 User-agent: Google-Extended
-Allow: /
-Disallow: /search/
+Disallow: /
+Allow: /privacy-policy/
+Allow: /terms-of-service/
+Allow: /sms-opt-in.html
+Allow: /robots.txt
+Allow: /auth.md
+Allow: /sitemap.xml
+Allow: /.well-known/
+Allow: /assets/
+Allow: /javascripts/
+Allow: /stylesheets/
 Content-Signal: ai-train=no, search=yes, ai-input=yes
 
 User-agent: Amazonbot
-Allow: /
+Disallow: /
+Allow: /privacy-policy/
+Allow: /terms-of-service/
+Allow: /sms-opt-in.html
+Allow: /robots.txt
+Allow: /auth.md
+Allow: /sitemap.xml
+Allow: /.well-known/
+Allow: /assets/
+Allow: /javascripts/
+Allow: /stylesheets/
 Content-Signal: ai-train=no, search=yes, ai-input=yes
 
 User-agent: anthropic-ai
-Allow: /
+Disallow: /
+Allow: /privacy-policy/
+Allow: /terms-of-service/
+Allow: /sms-opt-in.html
+Allow: /robots.txt
+Allow: /auth.md
+Allow: /sitemap.xml
+Allow: /.well-known/
+Allow: /assets/
+Allow: /javascripts/
+Allow: /stylesheets/
 Content-Signal: ai-train=no, search=yes, ai-input=yes
 
 User-agent: Bytespider
@@ -38,7 +105,17 @@ User-agent: CCBot
 Disallow: /
 
 User-agent: Applebot-Extended
-Allow: /
+Disallow: /
+Allow: /privacy-policy/
+Allow: /terms-of-service/
+Allow: /sms-opt-in.html
+Allow: /robots.txt
+Allow: /auth.md
+Allow: /sitemap.xml
+Allow: /.well-known/
+Allow: /assets/
+Allow: /javascripts/
+Allow: /stylesheets/
 Content-Signal: ai-train=no, search=yes, ai-input=yes
 
 Sitemap: https://docs.authifi.io/sitemap.xml

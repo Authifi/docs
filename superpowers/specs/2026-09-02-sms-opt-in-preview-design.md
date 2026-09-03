@@ -7,19 +7,19 @@
 
 ## Problem
 
-Authifi needs a non-functional SMS opt-in page preview to share with an SMS provider for compliance/review before a future live deployment.
+Authifi needs a non-functional SMS opt-in page to share with an SMS provider for compliance review before a future live deployment.
 
 ## Goals
 
 1. Deliver a polished, branded standalone HTML page that looks like a real Authifi.com SMS opt-in experience.
 2. Include the consent, disclosure, and policy links SMS providers typically expect for review.
-3. Make the page shareable via a direct/preview URL without adding it to the main docs navigation.
+3. Make the page shareable via a direct URL without adding it to the main docs navigation.
 
 ## Non-goals
 
 - Functional SMS enrollment, API calls, storage, CAPTCHA, or backend validation.
 - A live production signup flow.
-- Preview/draft banners or “not live” callouts.
+- Draft banners or “not live” callouts.
 - Linking the page from `docs/.nav.yml`.
 
 ## Decisions (approved)
@@ -96,7 +96,7 @@ No cards in the hero. No stats, promo chips, or secondary marketing blocks.
 | --- | --- |
 | `docs/sms-opt-in.html` | Create standalone page (self-contained CSS; optional small inline JS for inert submit) |
 | `docs/.nav.yml` | No change (page intentionally unlisted) |
-| `mkdocs.yml` `exclude_docs` | Do **not** exclude this page — it must build/deploy so the preview URL works |
+| `mkdocs.yml` `exclude_docs` | Do **not** exclude this page — it must build/deploy so the direct URL works |
 
 Assets: reuse `docs/assets/authifi-logo.png` if suitable for the page.
 
@@ -106,11 +106,11 @@ Assets: reuse `docs/assets/authifi-logo.png` if suitable for the page.
 - Consent checkbox is unchecked on load and only becomes checked via user action.
 - Submit label is clear affirmative language (“Yes, sign me up!”).
 - Submit does not enroll or call any service.
-- Page is reachable at `/sms-opt-in/` (or `/sms-opt-in.html` depending on MkDocs HTML naming) after deploy/preview.
+- Page is reachable at `/sms-opt-in/` (or `/sms-opt-in.html` depending on MkDocs HTML naming) after deploy.
 - Page does not appear in the main docs nav.
-- No “preview” banner on the page.
+- No draft banner on the page.
 
 ## Delivery
 
 - Branch: `docs/sms-opt-in-preview`
-- PR with a short summary and the preview URL for SMS-provider sharing
+- PR with a short summary and the direct URL for SMS-provider sharing

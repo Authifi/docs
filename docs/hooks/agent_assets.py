@@ -35,6 +35,11 @@ STATIC_COPIES = (
     ".well-known/agent-skills/authifi-docs-navigation/SKILL.md",
     ".well-known/agent-skills/authifi-oauth-concepts/SKILL.md",
 )
+PUBLIC_SITEMAP_PATHS = (
+    "privacy-policy.md",
+    "terms-of-service.md",
+    "sms-opt-in.html",
+)
 
 # Navigation is derived by the awesome-nav plugin and no longer lives in
 # mkdocs.yml (config.nav is None at post-build time). Capture the resolved
@@ -48,8 +53,18 @@ def _sha256_digest(path: Path) -> str:
 
 
 def _iter_nav_pages(nav: Any, pages: list[str]) -> None:
+    if isinstance(nav, dict):
+        for value in nav.values():
+            _iter_nav_pages(value, pages)
+        return
+
+    if isinstance(nav, list):
+        for item in nav:
+            _iter_nav_pages(item, pages)
+        return
+
     # Resolved mkdocs Navigation object (from the awesome-nav plugin).
-    if hasattr(nav, "items"):
+    if hasattr(nav, "items") and not callable(nav.items):
         for item in nav.items:
             _iter_nav_pages(item, pages)
         return
@@ -70,16 +85,6 @@ def _iter_nav_pages(nav: Any, pages: list[str]) -> None:
         pages.append(nav)
         return
 
-    if isinstance(nav, dict):
-        for value in nav.values():
-            _iter_nav_pages(value, pages)
-        return
-
-    if isinstance(nav, list):
-        for item in nav:
-            _iter_nav_pages(item, pages)
-
-
 def _page_to_url(site_url: str, page: str) -> str:
     if page == "index.md":
         return site_url.rstrip("/") + "/"
@@ -92,15 +97,12 @@ def _page_to_url(site_url: str, page: str) -> str:
 
 
 def _write_sitemap(site_dir: Path, site_url: str, nav: Any) -> None:
-    pages: list[str] = []
-    _iter_nav_pages(nav, pages)
-
     urlset = ET.Element(
         "urlset", xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
     )
 
     seen: set[str] = set()
-    for page in pages:
+    for page in PUBLIC_SITEMAP_PATHS:
         loc = _page_to_url(site_url, page)
         if loc in seen:
             continue
@@ -168,9 +170,3 @@ def on_post_build(config, **kwargs) -> None:
     _copy_static_files(docs_dir, site_dir)
     _write_sitemap(site_dir, site_url, nav)
     _write_agent_skills_index(site_dir, site_url, docs_dir)
-
-    headers_path = site_dir / "_headers"
-    if not headers_path.exists():
-        raise FileNotFoundError(
-            "Expected Cloudflare _headers file at site/_headers after build."
-        )

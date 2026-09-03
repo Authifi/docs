@@ -19,6 +19,7 @@ PUBLIC_EXACT_PATHS = {
     "/privacy-policy/",
     "/terms-of-service/",
     "/sms-opt-in.html",
+    "/sitemap.xml",
     "/robots.txt",
     "/auth.md",
 }

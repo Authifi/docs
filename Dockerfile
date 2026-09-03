@@ -39,6 +39,7 @@ RUN groupadd --gid "${APP_GID}" "${APP_USER}" \
         --no-log-init --shell /usr/sbin/nologin "${APP_USER}"
 
 COPY --chown=${APP_UID}:${APP_GID} server ./server
+COPY --from=site-builder --chown=${APP_UID}:${APP_GID} /app/docs/_headers ./docs/_headers
 COPY --from=site-builder --chown=${APP_UID}:${APP_GID} /app/site ./site
 
 EXPOSE 8080

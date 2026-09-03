@@ -1,5 +1,5 @@
 site_name: Authifi Documentation
-site_description: Public documentation for the Authifi identity and access management platform
+site_description: Protected Authifi product documentation with public legal and agent-discovery resources
 site_url: https://docs.authifi.io
 
 hooks:
@@ -7,6 +7,7 @@ hooks:
 
 exclude_docs: |
   auth.md
+  _headers
   .well-known/**/SKILL.md
   superpowers/**
 
