@@ -1,0 +1,31 @@
+services:
+  docs:
+    depends_on:
+      mock-oidc:
+        condition: service_healthy
+    environment:
+      OIDC_ISSUER: "http://${MOCK_OIDC_HOST:-oidc-mock.127.0.0.1.nip.io}:${MOCK_OIDC_PORT:-9400}"
+      OIDC_CLIENT_ID: "${OIDC_CLIENT_ID:-local-docs-client}"
+      OIDC_CLIENT_SECRET: "${OIDC_CLIENT_SECRET:-local-docs-secret}"
+    extra_hosts:
+      - "${MOCK_OIDC_HOST:-oidc-mock.127.0.0.1.nip.io}:host-gateway"
+
+  mock-oidc:
+    image: ghcr.io/geigerzaehler/oidc-provider-mock@sha256:68fb46a6be1963530fe9ec7ca66be85762f42dc58df9f50b0362eaa37777d6e4
+    command:
+      - --user-claims-file
+      - /config/users.yaml
+    ports:
+      - "${MOCK_OIDC_PORT:-9400}:9400"
+    volumes:
+      - ./local/mock-oidc-users.yaml:/config/users.yaml:ro
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9400/.well-known/openid-configuration').read()"
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 3s

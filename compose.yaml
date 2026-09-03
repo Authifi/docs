@@ -1,0 +1,24 @@
+services:
+  docs:
+    build:
+      context: .
+    image: authifi-docs:local
+    ports:
+      - "${DOCS_PORT:-8000}:8080"
+    environment:
+      OIDC_ISSUER: "${OIDC_ISSUER:-https://your-authifi-tenant.example.com}"
+      OIDC_CLIENT_ID: "${OIDC_CLIENT_ID:-your-authifi-client-id}"
+      OIDC_CLIENT_SECRET: "${OIDC_CLIENT_SECRET:-replace-with-real-client-secret}"
+      SESSION_SECRET: "${SESSION_SECRET:-replace-with-a-long-random-local-secret}"
+      PUBLIC_BASE_URL: "${PUBLIC_BASE_URL:-http://localhost:8000}"
+      SITE_DIR: /app/site
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health').read()"
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
