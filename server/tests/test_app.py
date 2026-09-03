@@ -3,6 +3,8 @@ import base64
 import json
 import sys
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
+from unittest.mock import ANY
 
 import pytest
 from itsdangerous import TimestampSigner
@@ -71,7 +73,13 @@ def build_client(
     public_base_url: str = "https://docs.example.com",
     auth_client: DummyAuthClient | None = None,
 ) -> TestClient:
-    config = AppConfig(
+    config = build_config(site_dir, public_base_url=public_base_url)
+    app = create_app(config=config, auth_client=auth_client or DummyAuthClient())
+    return TestClient(app)
+
+
+def build_config(site_dir: Path, public_base_url: str = "https://docs.example.com") -> AppConfig:
+    return AppConfig(
         oidc_issuer="https://issuer.example.com",
         oidc_client_id="client-id",
         oidc_client_secret="client-secret",
@@ -79,8 +87,6 @@ def build_client(
         public_base_url=public_base_url,
         site_dir=site_dir,
     )
-    app = create_app(config=config, auth_client=auth_client or DummyAuthClient())
-    return TestClient(app)
 
 
 def authenticated_client(
@@ -223,7 +229,7 @@ def test_returns_404_for_missing_private_file_after_authentication(site_dir: Pat
     assert response.status_code == 404
 
 
-def test_login_uses_pkce_and_persists_safe_next(site_dir: Path) -> None:
+def test_login_redirects_and_persists_safe_next(site_dir: Path) -> None:
     auth_client = DummyAuthClient()
     client = build_client(site_dir, auth_client=auth_client)
 
@@ -231,14 +237,35 @@ def test_login_uses_pkce_and_persists_safe_next(site_dir: Path) -> None:
 
     assert response.status_code == 307
     assert response.headers["location"] == "https://issuer.example.com/authorize"
-    assert auth_client.redirect_calls == [
-        {
-            "redirect_uri": "https://docs.example.com/_auth/callback",
-            "code_challenge_method": "S256",
-        }
-    ]
+    assert auth_client.redirect_calls == [{"redirect_uri": "https://docs.example.com/_auth/callback"}]
     session = decode_session_cookie(client.cookies["authifi-session"])
     assert session["next"] == "/guides/sso-integration-guide/"
+
+
+def test_login_with_real_authlib_client_generates_pkce_challenge_and_persists_verifier(site_dir: Path) -> None:
+    app = create_app(build_config(site_dir))
+
+    async def fake_metadata() -> dict[str, str]:
+        return {
+            "authorization_endpoint": "https://issuer.example.com/oauth2/authorize",
+            "token_endpoint": "https://issuer.example.com/oauth2/token",
+            "jwks_uri": "https://issuer.example.com/.well-known/jwks.json",
+        }
+
+    app.state.auth_client.load_server_metadata = fake_metadata
+    client = TestClient(app)
+
+    response = client.get("/_auth/login?next=/guides/sso-integration-guide/", follow_redirects=False)
+
+    assert response.status_code == 302
+    params = parse_qs(urlparse(response.headers["location"]).query)
+    assert params["code_challenge_method"] == ["S256"]
+    assert params["code_challenge"] == [ANY]
+    session = decode_session_cookie(client.cookies["authifi-session"])
+    state_key = f"_state_authifi_{params['state'][0]}"
+    assert session["next"] == "/guides/sso-integration-guide/"
+    assert session[state_key]["data"]["code_verifier"] == ANY
+    assert session[state_key]["data"]["nonce"] == params["nonce"][0]
 
 
 @pytest.mark.parametrize("unsafe_next", ["//evil.example", "https://evil.example/steal", "guides/no-leading-slash"])
@@ -290,6 +317,18 @@ def test_logout_clears_session_and_redirects_to_safe_path(site_dir: Path) -> Non
     assert response.status_code == 307
     assert response.headers["location"] == "/terms-of-service/"
     assert "expires=Thu, 01 Jan 1970 00:00:00 GMT" in response.headers["set-cookie"]
+
+
+def test_unauthenticated_internal_auth_file_still_requires_auth(site_dir: Path) -> None:
+    protected_auth_file = site_dir / "_auth" / "secret.html"
+    protected_auth_file.parent.mkdir(parents=True, exist_ok=True)
+    protected_auth_file.write_text("<h1>Protected</h1>", encoding="utf-8")
+    client = build_client(site_dir)
+
+    response = client.get("/_auth/secret.html", follow_redirects=False)
+
+    assert response.status_code == 307
+    assert response.headers["location"] == "/_auth/login?next=%2F_auth%2Fsecret.html"
 
 
 def test_session_cookie_is_secure_for_https_base_url(site_dir: Path) -> None:

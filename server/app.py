@@ -22,6 +22,7 @@ PUBLIC_EXACT_PATHS = {
     "/robots.txt",
     "/auth.md",
 }
+PUBLIC_AUTH_PATHS = {"/_auth/login", "/_auth/callback", "/_auth/logout"}
 PUBLIC_PREFIXES = ("/.well-known/", "/assets/", "/javascripts/", "/stylesheets/")
 SESSION_COOKIE_NAME = "authifi-session"
 DEFAULT_SITE_DIR = "site"
@@ -92,11 +93,7 @@ async def health_endpoint(request: Request) -> Response:
 async def login_endpoint(request: Request) -> Response:
     request.session[SESSION_NEXT_KEY] = normalize_next_path(request.query_params.get("next"))
     redirect_uri = build_public_url(request.app.state.config.public_base_url, "/_auth/callback")
-    return await request.app.state.auth_client.authorize_redirect(
-        request,
-        redirect_uri,
-        code_challenge_method="S256",
-    )
+    return await request.app.state.auth_client.authorize_redirect(request, redirect_uri)
 
 
 async def callback_endpoint(request: Request) -> Response:
@@ -130,7 +127,7 @@ async def site_endpoint(request: Request) -> Response:
 
 
 def is_public_path(path: str) -> bool:
-    if path == "/health" or path.startswith("/_auth/"):
+    if path == "/health" or path in PUBLIC_AUTH_PATHS:
         return True
     if path in PUBLIC_EXACT_PATHS:
         return True
@@ -236,6 +233,6 @@ def create_auth_client(config: AppConfig):
             config.oidc_issuer.rstrip("/"),
             "/.well-known/openid-configuration",
         ),
-        client_kwargs={"scope": DEFAULT_OIDC_SCOPE},
+        client_kwargs={"scope": DEFAULT_OIDC_SCOPE, "code_challenge_method": "S256"},
     )
     return oauth.create_client("authifi")
