@@ -1,0 +1,11 @@
+.git
+.github
+.venv
+.pytest_cache
+.superpowers
+docs/superpowers
+infra/.terraform
+infra/*.tfstate
+infra/*.tfstate.*
+node_modules
+site

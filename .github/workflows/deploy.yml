@@ -1,0 +1,157 @@
+name: Deploy
+
+on:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+  APP_RUNNER_SERVICE_ARN: ${{ vars.APP_RUNNER_SERVICE_ARN }}
+  ECR_REPOSITORY_URL: ${{ vars.ECR_REPOSITORY_URL }}
+
+jobs:
+  deploy:
+    name: Build and deploy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Verify required repository variables
+        run: |
+          set -euo pipefail
+          : "${AWS_REGION:?Set repository variable AWS_REGION}"
+          : "${AWS_DEPLOY_ROLE_ARN:?Set repository variable AWS_DEPLOY_ROLE_ARN}"
+          : "${APP_RUNNER_SERVICE_ARN:?Set repository variable APP_RUNNER_SERVICE_ARN}"
+          : "${ECR_REPOSITORY_URL:?Set repository variable ECR_REPOSITORY_URL}"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push image
+        id: image
+        env:
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          image_uri="${ECR_REPOSITORY_URL}:${IMAGE_TAG}"
+          docker build --tag "$image_uri" .
+          docker push "$image_uri"
+          echo "image_uri=$image_uri" >> "$GITHUB_OUTPUT"
+
+      - name: Update App Runner source image
+        id: deploy
+        env:
+          IMAGE_URI: ${{ steps.image.outputs.image_uri }}
+        run: |
+          set -euo pipefail
+
+          service_json="$(mktemp)"
+          source_json="$(mktemp)"
+
+          aws apprunner describe-service \
+            --service-arn "$APP_RUNNER_SERVICE_ARN" \
+            --output json > "$service_json"
+
+          current_image="$(jq -r '.Service.SourceConfiguration.ImageRepository.ImageIdentifier // empty' "$service_json")"
+
+          if [[ -z "$current_image" ]]; then
+            echo "App Runner service is not configured for an image repository." >&2
+            exit 1
+          fi
+
+          if [[ "$current_image" == "$IMAGE_URI" ]]; then
+            operation_id="$(aws apprunner start-deployment \
+              --service-arn "$APP_RUNNER_SERVICE_ARN" \
+              --query 'OperationId' \
+              --output text)"
+            operation_type="START_DEPLOYMENT"
+          else
+            jq --arg image "$IMAGE_URI" '
+              .Service.SourceConfiguration
+              | .AutoDeploymentsEnabled = false
+              | .ImageRepository.ImageIdentifier = $image
+            ' "$service_json" > "$source_json"
+
+            operation_id="$(aws apprunner update-service \
+              --service-arn "$APP_RUNNER_SERVICE_ARN" \
+              --source-configuration "file://$source_json" \
+              --query 'OperationId' \
+              --output text)"
+            operation_type="UPDATE_SERVICE"
+          fi
+
+          echo "operation_id=$operation_id" >> "$GITHUB_OUTPUT"
+          echo "operation_type=$operation_type" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for App Runner operation
+        env:
+          IMAGE_URI: ${{ steps.image.outputs.image_uri }}
+          OPERATION_ID: ${{ steps.deploy.outputs.operation_id }}
+          OPERATION_TYPE: ${{ steps.deploy.outputs.operation_type }}
+        run: |
+          set -euo pipefail
+
+          deadline=$((SECONDS + 1800))
+
+          while true; do
+            status="$(aws apprunner list-operations \
+              --service-arn "$APP_RUNNER_SERVICE_ARN" \
+              --output json \
+              | jq -r --arg operation_id "$OPERATION_ID" 'first(.OperationSummaryList[] | select(.Id == $operation_id) | .Status) // empty')"
+
+            if [[ -z "$status" ]]; then
+              echo "Waiting for App Runner to surface operation $OPERATION_ID..."
+            else
+              echo "$OPERATION_TYPE status: $status"
+            fi
+
+            case "$status" in
+              SUCCEEDED)
+                break
+                ;;
+              ""|PENDING|IN_PROGRESS|ROLLBACK_IN_PROGRESS)
+                ;;
+              *)
+                echo "App Runner operation $OPERATION_ID failed with status $status" >&2
+                aws apprunner list-operations --service-arn "$APP_RUNNER_SERVICE_ARN" --output json
+                exit 1
+                ;;
+            esac
+
+            if (( SECONDS >= deadline )); then
+              echo "Timed out waiting for App Runner operation $OPERATION_ID" >&2
+              exit 1
+            fi
+
+            sleep 10
+          done
+
+          service_status="$(aws apprunner describe-service \
+            --service-arn "$APP_RUNNER_SERVICE_ARN" \
+            --query 'Service.Status' \
+            --output text)"
+
+          deployed_image="$(aws apprunner describe-service \
+            --service-arn "$APP_RUNNER_SERVICE_ARN" \
+            --query 'Service.SourceConfiguration.ImageRepository.ImageIdentifier' \
+            --output text)"
+
+          [[ "$service_status" == "RUNNING" ]]
+          [[ "$deployed_image" == "$IMAGE_URI" ]]

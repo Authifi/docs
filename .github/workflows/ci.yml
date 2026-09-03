@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install Python dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -r server/requirements.txt pytest
+
+      - name: Run server tests
+        run: |
+          set -euo pipefail
+          python -m pytest server/tests
+
+      - name: Build MkDocs site
+        run: |
+          set -euo pipefail
+          mkdocs build --strict
+
+      - name: Build container image
+        run: |
+          set -euo pipefail
+          docker build --tag authifi-docs:test .
+
+      - name: Terraform format check
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -v "$PWD:/workspace" \
+            -w /workspace/infra \
+            hashicorp/terraform:1.15.7 \
+            fmt -check -recursive
+
+      - name: Terraform validate
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -v "$PWD:/workspace" \
+            -w /workspace/infra \
+            hashicorp/terraform:1.15.7 \
+            init -backend=false
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -v "$PWD:/workspace" \
+            -w /workspace/infra \
+            hashicorp/terraform:1.15.7 \
+            validate
