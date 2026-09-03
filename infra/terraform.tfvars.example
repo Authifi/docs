@@ -1,6 +1,7 @@
 aws_region          = "us-east-1"
 service_name        = "authifi-docs"
 ecr_repository_name = "authifi-docs"
+ecr_image_retention_count = 10
 
 # First bootstrap apply can leave the service off until an image exists in ECR.
 create_service   = false
@@ -10,6 +11,7 @@ oidc_issuer            = "https://issuer.example.com"
 oidc_client_id         = "authifi-docs"
 oidc_client_secret_arn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:authifi/docs/oidc-client-secret-AbCdEf"
 session_secret_arn     = "arn:aws:secretsmanager:us-east-1:123456789012:secret:authifi/docs/session-secret-ZyXwVu"
+runtime_secret_kms_key_arns = []
 
 public_base_url     = "https://docs.authifi.io"
 site_dir            = "/app/site"

@@ -2,10 +2,14 @@ provider "aws" {
   region = var.aws_region
 }
 
+data "aws_caller_identity" "current" {}
+
+data "aws_partition" "current" {}
+
 locals {
   github_repository_subject = "repo:Authifi/docs:ref:refs/heads/main"
   github_oidc_provider_arn  = coalesce(var.existing_github_oidc_provider_arn, try(aws_iam_openid_connect_provider.github[0].arn, null))
-  service_arn_for_policy    = try(aws_apprunner_service.docs[0].arn, "*")
+  service_arn_for_policy    = format("arn:%s:apprunner:%s:%s:service/%s/*", data.aws_partition.current.partition, var.aws_region, data.aws_caller_identity.current.account_id, var.service_name)
   common_tags = merge(var.tags, {
     ManagedBy  = "Terraform"
     Repository = "Authifi/docs"
@@ -37,11 +41,11 @@ resource "aws_ecr_lifecycle_policy" "docs" {
     rules = [
       {
         rulePriority = 1
-        description  = "Retain the 10 most recent images"
+        description  = "Retain the configured number of recent images"
         selection = {
           tagStatus   = "any"
           countType   = "imageCountMoreThan"
-          countNumber = 10
+          countNumber = var.ecr_image_retention_count
         }
         action = {
           type = "expire"
@@ -130,6 +134,17 @@ data "aws_iam_policy_document" "apprunner_instance_secrets" {
       var.oidc_client_secret_arn,
       var.session_secret_arn,
     ]
+  }
+
+  dynamic "statement" {
+    for_each = length(var.runtime_secret_kms_key_arns) == 0 ? [] : [var.runtime_secret_kms_key_arns]
+
+    content {
+      sid       = "AllowDecryptRuntimeSecretKeys"
+      effect    = "Allow"
+      actions   = ["kms:Decrypt"]
+      resources = statement.value
+    }
   }
 }
 

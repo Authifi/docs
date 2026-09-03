@@ -15,6 +15,17 @@ variable "ecr_repository_name" {
   default     = "authifi-docs"
 }
 
+variable "ecr_image_retention_count" {
+  description = "How many of the most recent images the ECR lifecycle policy retains."
+  type        = number
+  default     = 10
+
+  validation {
+    condition     = var.ecr_image_retention_count > 0
+    error_message = "ecr_image_retention_count must be greater than 0."
+  }
+}
+
 variable "create_service" {
   description = "Create the App Runner service and custom domain resources. Set false for the first bootstrap apply before an image exists."
   type        = bool
@@ -45,6 +56,12 @@ variable "oidc_client_secret_arn" {
 variable "session_secret_arn" {
   description = "ARN of the pre-created Secrets Manager secret containing the session secret."
   type        = string
+}
+
+variable "runtime_secret_kms_key_arns" {
+  description = "Optional customer-managed KMS key ARNs that encrypt the runtime secrets. When set, App Runner also gets kms:Decrypt on only these keys."
+  type        = list(string)
+  default     = []
 }
 
 variable "public_base_url" {

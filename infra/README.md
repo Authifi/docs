@@ -41,6 +41,7 @@ Example contents with placeholder values only:
 aws_region          = "us-east-1"
 service_name        = "authifi-docs"
 ecr_repository_name = "authifi-docs"
+ecr_image_retention_count = 10
 create_service      = false
 image_identifier    = ""
 
@@ -48,6 +49,7 @@ oidc_issuer            = "https://issuer.example.com"
 oidc_client_id         = "authifi-docs"
 oidc_client_secret_arn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:authifi/docs/oidc-client-secret-AbCdEf"
 session_secret_arn     = "arn:aws:secretsmanager:us-east-1:123456789012:secret:authifi/docs/session-secret-ZyXwVu"
+runtime_secret_kms_key_arns = []
 
 public_base_url    = "https://docs.authifi.io"
 site_dir           = "/app/site"
@@ -147,6 +149,8 @@ The deploy role trusts **only** the `Authifi/docs` `main` branch:
 - audience: `sts.amazonaws.com`
 - subject: `repo:Authifi/docs:ref:refs/heads/main`
 
+Even during `create_service=false` bootstrap, the deploy policy is scoped to the predictable App Runner ARN pattern for this AWS account, region, and `service_name` instead of falling back to a global `*` resource.
+
 If the AWS account already has a shared GitHub OIDC provider, set `existing_github_oidc_provider_arn`. Otherwise this module creates the account-level provider for `https://token.actions.githubusercontent.com`.
 
 Recommended GitHub repository variables after bootstrap:
@@ -180,6 +184,8 @@ Secrets injected from Secrets Manager by ARN:
 - `SESSION_SECRET`
 
 The App Runner instance role is scoped to `secretsmanager:GetSecretValue` on only those two ARNs. If either secret uses a customer-managed KMS key, add the matching `kms:Decrypt` permission before deploy.
+
+To keep KMS decrypt least-privilege, set `runtime_secret_kms_key_arns` only for the exact customer-managed keys that protect those secrets.
 
 ## DNS
 
