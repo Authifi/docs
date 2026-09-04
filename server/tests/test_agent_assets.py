@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import gzip
 import importlib.util
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -53,3 +56,57 @@ def test_post_build_does_not_require_site_headers_file(tmp_path: Path) -> None:
 
     assert (site_dir / "sitemap.xml").exists()
     assert not (site_dir / "_headers").exists()
+
+
+def test_write_sitemap_replaces_the_default_gzipped_sitemap(tmp_path: Path) -> None:
+    stale = tmp_path / "sitemap.xml.gz"
+    stale.write_bytes(gzip.compress(b"<urlset><url><loc>https://docs.authifi.io/guides/x/</loc></url></urlset>"))
+
+    agent_assets._write_sitemap(tmp_path, "https://docs.authifi.io")
+
+    regenerated = gzip.decompress(stale.read_bytes()).decode("utf-8")
+    assert "guides" not in regenerated
+    assert regenerated == (tmp_path / "sitemap.xml").read_text(encoding="utf-8")
+
+
+def build_page(src_uri: str, meta: dict | None = None) -> SimpleNamespace:
+    return SimpleNamespace(file=SimpleNamespace(src_uri=src_uri), meta=meta if meta is not None else {})
+
+
+@pytest.mark.parametrize("src_uri", agent_assets.PUBLIC_PAGE_SOURCES)
+def test_public_pages_are_marked_to_hide_protected_navigation(src_uri: str) -> None:
+    page = build_page(src_uri, {"title": "Privacy Policy"})
+
+    returned = agent_assets.on_page_markdown("# Body", page, config=None, files=None)
+
+    assert page.meta["hide"] == ["navigation"]
+    assert returned == "# Body"
+
+
+def test_public_page_hide_metadata_is_not_duplicated() -> None:
+    page = build_page("privacy-policy.md", {"hide": ["navigation"]})
+
+    agent_assets.on_page_markdown("# Body", page, config=None, files=None)
+
+    assert page.meta["hide"] == ["navigation"]
+
+
+def test_public_page_hide_metadata_preserves_existing_values() -> None:
+    page = build_page("terms-of-service.md", {"hide": ["toc"]})
+
+    agent_assets.on_page_markdown("# Body", page, config=None, files=None)
+
+    assert page.meta["hide"] == ["toc", "navigation"]
+
+
+@pytest.mark.parametrize("src_uri", ["index.md", "guides/sso-integration-guide.md", "security/README.md"])
+def test_protected_pages_keep_their_navigation(src_uri: str) -> None:
+    page = build_page(src_uri)
+
+    agent_assets.on_page_markdown("# Body", page, config=None, files=None)
+
+    assert "hide" not in page.meta
+
+
+def test_public_page_sources_are_a_subset_of_the_public_sitemap() -> None:
+    assert set(agent_assets.PUBLIC_PAGE_SOURCES) <= set(agent_assets.PUBLIC_SITEMAP_PATHS)

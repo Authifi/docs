@@ -11,6 +11,7 @@ RUN python -m pip install --no-cache-dir --upgrade pip \
     && python -m pip install --no-cache-dir -r requirements.txt
 
 COPY docs ./docs
+COPY overrides ./overrides
 COPY mkdocs.yml ./
 
 RUN mkdocs build --strict

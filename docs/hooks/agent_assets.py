@@ -1,5 +1,11 @@
-"""MkDocs hook: agent-readiness assets (sitemap, skill digests, static copies)."""
+"""MkDocs hook: agent-readiness assets (sitemap, skill digests, static copies).
 
+The hook is also the single source of truth for which built pages are served
+without authentication, so the published sitemap and the rendered navigation
+cannot drift apart from each other.
+"""
+
+import gzip
 import hashlib
 import json
 import xml.etree.ElementTree as ET
@@ -40,6 +46,14 @@ PUBLIC_SITEMAP_PATHS = (
     "sms-opt-in.html",
 )
 
+# Markdown pages that anonymous visitors can reach. Their rendered navigation
+# would otherwise advertise every protected guide, authorization, and security
+# page by title and URL.
+PUBLIC_PAGE_SOURCES = (
+    "privacy-policy.md",
+    "terms-of-service.md",
+)
+
 
 def _sha256_digest(path: Path) -> str:
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
@@ -75,6 +89,13 @@ def _write_sitemap(site_dir: Path, site_url: str) -> None:
     pretty = minidom.parseString(xml_body).toprettyxml(indent="  ")
     sitemap_path = site_dir / "sitemap.xml"
     sitemap_path.write_text(pretty, encoding="utf-8")
+
+    # MkDocs writes its own sitemap.xml.gz covering every built page, including
+    # gated ones. Overwrite it from the public sitemap so the compressed copy
+    # can never advertise protected URLs.
+    gzip_path = site_dir / "sitemap.xml.gz"
+    with gzip.GzipFile(gzip_path, "wb", mtime=0) as compressed:
+        compressed.write(pretty.encode("utf-8"))
 
 
 def _write_agent_skills_index(site_dir: Path, site_url: str, docs_dir: Path) -> None:
@@ -113,6 +134,16 @@ def _copy_static_files(docs_dir: Path, site_dir: Path) -> None:
         target = site_dir / relative_path
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(source.read_bytes())
+
+
+def on_page_markdown(markdown, page, config, files, **kwargs):
+    """Hide protected navigation from pages that anonymous visitors can read."""
+    if page.file.src_uri in PUBLIC_PAGE_SOURCES:
+        hidden = list(page.meta.get("hide") or [])
+        if "navigation" not in hidden:
+            hidden.append("navigation")
+        page.meta["hide"] = hidden
+    return markdown
 
 
 def on_post_build(config, **kwargs) -> None:
