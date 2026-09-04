@@ -199,10 +199,21 @@ That keeps the first apply unblocked on external DNS and makes the cutover a sec
 
 ## GitHub Actions OIDC
 
-The deploy role trusts **only** the `Authifi/docs` `main` branch:
+The deploy role trusts **only** the deployment job in `Authifi/docs`, on `main`, in the `production` environment. Every claim is bound with `StringEquals`:
 
-- audience: `sts.amazonaws.com`
-- subject: `repo:Authifi/docs:ref:refs/heads/main`
+| Claim | Value | Terraform input |
+|---|---|---|
+| `aud` | `sts.amazonaws.com` | fixed |
+| `sub` | `repo:Authifi/docs:environment:production` | `github_repository`, `deploy_environment` |
+| `environment` | `production` | `deploy_environment` |
+| `ref` | `refs/heads/main` | `deploy_branch` |
+| `repository_id` | `993416679` | `github_repository_id` |
+
+The subject is **not** `repo:Authifi/docs:ref:refs/heads/main`. The deployment job declares `environment: production`, and GitHub's default subject names the environment rather than the ref whenever a job references one, so the ref-form subject is a value this workflow can never present. Nothing in `terraform plan`, `terraform validate`, or the repository's tests would catch the mismatch on its own — the symptom is `Not authorized to perform sts:AssumeRoleWithWebIdentity` on the first real deployment, after the release archive has already been uploaded. `server/tests/test_ec2_infra.py` derives the expected subject from the workflow's own `environment:` value so the two cannot drift.
+
+The branch is bound separately, through the token's own `ref` claim, because an environment-scoped subject says nothing about which branch the run started from. `repository_id` pins the numeric repository ID, which GitHub never reuses, so a repository deleted and recreated at `Authifi/docs` — or renamed into that path — does not inherit the trust. Read it with `gh api repos/Authifi/docs --jq .id`.
+
+One caveat worth knowing before changing org policy: this is the **legacy, mutable** subject format, which is what this repository's OIDC customisation currently returns (`use_default` true, `use_immutable_subject` false — check with `gh api repos/Authifi/docs/actions/oidc/customization/sub`). Enabling immutable subjects rewrites the claim to `repo:Authifi@37509689/docs@993416679:environment:production`, and `local.github_repository_subject` in `main.tf` has to change in the same commit.
 
 If the AWS account already has a shared GitHub OIDC provider, set `existing_github_oidc_provider_arn`. Otherwise this module creates the account-level provider for `https://token.actions.githubusercontent.com`.
 

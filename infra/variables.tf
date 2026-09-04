@@ -212,14 +212,38 @@ variable "github_repository" {
   }
 }
 
+variable "github_repository_id" {
+  description = "Numeric GitHub repository ID of github_repository, bound as the OIDC repository_id claim. Numeric IDs are never reused, so this is what a repository deleted and recreated under the same name cannot inherit."
+  type        = string
+  default     = "993416679"
+
+  validation {
+    condition     = can(regex("^[0-9]+$", var.github_repository_id))
+    error_message = "github_repository_id must be the numeric repository ID, as returned by the GitHub repository API."
+  }
+}
+
 variable "deploy_branch" {
-  description = "The one branch whose workflow runs may assume the deployment role."
+  description = "The one branch whose workflow runs may assume the deployment role. Must match the push trigger in .github/workflows/deploy.yml."
   type        = string
   default     = "main"
 
   validation {
     condition     = can(regex("^[A-Za-z0-9._/-]+$", var.deploy_branch))
     error_message = "deploy_branch must be a plain branch name."
+  }
+}
+
+variable "deploy_environment" {
+  description = "The GitHub Actions environment the deployment job declares. This is part of the OIDC subject, so it must match `environment:` in .github/workflows/deploy.yml exactly."
+  type        = string
+  default     = "production"
+
+  validation {
+    # GitHub allows spaces and a broad punctuation set in environment names,
+    # but not the characters that would let one end the subject early.
+    condition     = can(regex("^[A-Za-z0-9._ -]+$", var.deploy_environment))
+    error_message = "deploy_environment must be a plain GitHub environment name."
   }
 }
 

@@ -47,8 +47,24 @@ enable_https_listener = false
 # Set this only if the account already has a shared GitHub OIDC provider.
 existing_github_oidc_provider_arn = null
 
-github_repository = "Authifi/docs"
-deploy_branch     = "main"
+# The deployment role trusts one repository, one branch, and one GitHub
+# Actions environment, and all four values below have to agree with
+# `.github/workflows/deploy.yml`.
+#
+# `deploy_environment` is the one that is easy to get wrong. Because the
+# deployment job declares `environment: production`, the OIDC subject GitHub
+# issues names the environment rather than the ref, so a trust policy written
+# against `ref:refs/heads/main` is never satisfied. `deploy_branch` is bound
+# separately, through the token's own `ref` claim.
+#
+# `github_repository_id` is the numeric ID from the GitHub repository API
+# (`gh api repos/Authifi/docs --jq .id`). Numeric IDs are never reused, so this
+# is the part of the identity that a repository recreated under the same name
+# cannot inherit.
+github_repository    = "Authifi/docs"
+github_repository_id = "993416679"
+deploy_branch        = "main"
+deploy_environment   = "production"
 
 tags = {
   Environment = "prod"

@@ -15,6 +15,7 @@ import re
 from pathlib import Path
 
 import pytest
+import yaml
 
 from server.tests.hcl_support import (
     actions,
@@ -36,6 +37,10 @@ TFVARS_EXAMPLE = (ROOT / "infra" / "terraform.tfvars.example").read_text(encodin
 README = (ROOT / "README.md").read_text(encoding="utf-8")
 INFRA_README = (ROOT / "infra" / "README.md").read_text(encoding="utf-8")
 OPERATIONS_DOC = (ROOT / "docs" / "operations" / "aws-oidc-hosting.md").read_text(encoding="utf-8")
+DEPLOY_WORKFLOW = yaml.safe_load(
+    (ROOT / ".github" / "workflows" / "deploy.yml").read_text(encoding="utf-8")
+)
+LOCALS = hcl_block(MAIN, "locals")
 
 # A rule of the shape the enumeration below exists to catch, kept next to the
 # real HCL so the assertion is exercised against something it must reject.
@@ -120,6 +125,91 @@ def operator_docs_text() -> str:
         strip_historical_migration_sections(text).lower()
         for text in (README, INFRA_README, OPERATIONS_DOC)
     )
+
+
+def variable_default(name: str) -> str:
+    """One variable's committed default, unquoted."""
+    default = attribute(hcl_block(VARIABLES, f'variable "{name}"'), "default")
+    assert default is not None, f"variable {name} declares no default"
+    return default.strip('"')
+
+
+def resolve(expression: str) -> str:
+    """A single-valued HCL string expression as the string it renders.
+
+    Only the shapes the trust policy uses are resolved -- a quoted template, a
+    `var.` reference, a `local.` reference -- because an expression this reader
+    cannot evaluate is one it cannot honestly assert anything about.
+    """
+    expression = expression.strip()
+
+    if expression.startswith('"'):
+        assert expression.endswith('"'), expression
+        return re.sub(
+            r"\$\{([^}]+)\}",
+            lambda match: resolve(match[1]),
+            expression[1:-1],
+        )
+    if expression.startswith("var."):
+        return variable_default(expression.removeprefix("var."))
+    if expression.startswith("local."):
+        name = expression.removeprefix("local.")
+        value = attribute(LOCALS, name)
+        assert value is not None, f"no local named {name}"
+        return resolve(value)
+
+    raise AssertionError(f"unresolvable expression {expression!r}")
+
+
+def resolve_list(expression: str) -> list[str]:
+    assert expression.startswith("[") and expression.endswith("]"), expression
+    return [
+        resolve(element)
+        for element in expression[1:-1].split(",")
+        if element.strip()
+    ]
+
+
+GITHUB_CLAIM = "token.actions.githubusercontent.com:"
+
+
+def github_trust_conditions() -> dict[str, tuple[str, list[str]]]:
+    """Every GitHub OIDC claim the deploy role's trust policy binds.
+
+    Keyed by claim, valued by the operator and the resolved values. Read out of
+    the `condition` blocks rather than searched for, so a claim named only in a
+    comment neither satisfies nor breaks an assertion -- and a claim bound
+    twice, which is how an exact match quietly becomes a widening, fails here.
+    """
+    trust = strip_comments(
+        hcl_block(MAIN, 'data "aws_iam_policy_document" "github_deploy_assume_role"')
+    )
+    bound: dict[str, tuple[str, list[str]]] = {}
+
+    for block in nested_blocks(trust, "condition"):
+        variable = (attribute(block, "variable") or "").strip('"')
+        assert variable.startswith(GITHUB_CLAIM), f"unexpected condition variable {variable!r}"
+
+        claim = variable.removeprefix(GITHUB_CLAIM)
+        assert claim not in bound, f"{claim} is bound by two conditions"
+
+        operator = (attribute(block, "test") or "").strip('"')
+        values = attribute(block, "values")
+        assert values is not None, f"{claim} condition carries no values"
+        bound[claim] = (operator, resolve_list(values))
+
+    return bound
+
+
+def deploy_workflow_triggers() -> dict:
+    """The workflow's `on:` mapping.
+
+    YAML 1.1 reads a bare `on` as the boolean `true`, which is why this cannot
+    simply be `DEPLOY_WORKFLOW["on"]`.
+    """
+    triggers = DEPLOY_WORKFLOW.get("on", DEPLOY_WORKFLOW.get(True))
+    assert isinstance(triggers, dict), triggers
+    return triggers
 
 
 # --- The App Runner architecture is gone, not merely unused ------------------
@@ -690,15 +780,72 @@ def test_send_command_names_the_one_document_and_the_one_instance() -> None:
     assert '"*"' not in statement
 
 
-def test_the_deploy_role_is_bound_to_one_branch_of_one_repository() -> None:
-    trust = hcl_block(MAIN, 'data "aws_iam_policy_document" "github_deploy_assume_role"')
+def test_the_deploy_role_trusts_exactly_the_subject_the_workflow_presents() -> None:
+    """The job declares `environment: production`, and that changes the token.
 
-    assert "token.actions.githubusercontent.com:sub" in trust
-    assert "local.github_repository_subject" in trust
+    GitHub's default subject names the environment when a job references one,
+    so the subject this workflow actually presents is
+    `repo:<owner>/<name>:environment:<environment>` -- not the `:ref:` form.
+    A trust policy pinned to the ref form does not fail a plan, a validate, or
+    any assertion about IAM shape: it fails the first real deployment with
+    `Not authorized to perform sts:AssumeRoleWithWebIdentity`, after the
+    release archive is already in S3.
 
-    # Reading the operators rather than searching for the absent one, so that
-    # naming `StringLike` in a comment cannot satisfy or break this.
-    assert re.findall(r'test\s*=\s*"([^"]+)"', trust) == ["StringEquals", "StringEquals"]
+    So the subject is derived here from the workflow's own `environment:` value
+    rather than restated, and the two cannot drift apart silently.
+    """
+    environment = DEPLOY_WORKFLOW["jobs"]["deploy"]["environment"]
+    conditions = github_trust_conditions()
+
+    assert environment == variable_default("deploy_environment")
+
+    subject = f"repo:{variable_default('github_repository')}:environment:{environment}"
+    assert conditions["sub"] == ("StringEquals", [subject])
+
+    # The obsolete form, named explicitly: it is what this repository had, and
+    # it is the plausible thing for someone to restore while "simplifying".
+    assert ":ref:" not in subject
+    assert resolve(attribute(LOCALS, "github_repository_subject") or "") == subject
+
+
+def test_the_deploy_role_binds_the_branch_and_the_repository_identity_too() -> None:
+    """The subject alone is one string, and every part of it is a name someone
+    can take. `ref` is what keeps a `production` deployment job on a branch
+    other than the release branch out, and `repository_id` is what keeps a
+    deleted-and-recreated `Authifi/docs` -- or a repository renamed into that
+    path -- from inheriting the trust, since the numeric ID is not reusable.
+    """
+    triggers = deploy_workflow_triggers()
+    branches = triggers["push"]["branches"]
+    conditions = github_trust_conditions()
+
+    assert branches == [variable_default("deploy_branch")]
+    assert conditions["ref"] == ("StringEquals", [f"refs/heads/{branches[0]}"])
+    assert conditions["repository_id"] == ("StringEquals", [variable_default("github_repository_id")])
+    assert re.fullmatch(r"[0-9]+", variable_default("github_repository_id"))
+    assert conditions["environment"] == (
+        "StringEquals",
+        [DEPLOY_WORKFLOW["jobs"]["deploy"]["environment"]],
+    )
+
+
+def test_every_trust_condition_is_an_exact_match_on_a_known_claim() -> None:
+    """Enumerated, because the risk here is a condition nobody meant to add.
+
+    `StringLike` on any of these turns an exact binding into a pattern, and a
+    sixth condition on a claim not listed here is a claim this file has never
+    reasoned about.
+    """
+    conditions = github_trust_conditions()
+
+    assert set(conditions) == {"aud", "sub", "ref", "repository_id", "environment"}
+    assert conditions["aud"] == ("StringEquals", ["sts.amazonaws.com"])
+
+    for claim, (operator, values) in conditions.items():
+        assert operator == "StringEquals", f"{claim} uses {operator}"
+        assert len(values) == 1, f"{claim} accepts {values}"
+        assert values[0].strip() == values[0] and values[0], claim
+        assert "*" not in values[0] and "?" not in values[0], claim
 
 
 # --- Host bootstrap -----------------------------------------------------------
