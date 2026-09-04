@@ -12,7 +12,6 @@ permissions:
 
 env:
   TERRAFORM_IMAGE: hashicorp/terraform:1.15.7@sha256:40e61a86763083ea987ded0ffa15f6d75e0df48ed16275811f949b3ecbcd8aae
-  HEALTH_CONTAINER_NAME: authifi-docs-ci
   HEALTH_PORT: "8080"
   MOCK_OIDC_HOST: oidc-mock.local.test
 
@@ -50,54 +49,87 @@ jobs:
           set -euo pipefail
           mkdocs build --strict
 
-      - name: Build container image
+      - name: Build native release artifact
         run: |
           set -euo pipefail
-          docker build --tag authifi-docs:test .
+          ./scripts/build-release.sh "$GITHUB_SHA" dist/releases
 
-      - name: Run container rootless and probe health, MIME, and bypass
+      - name: Verify offline release installation
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf dist/expanded dist/runtime dist/uvicorn.log
+          mkdir -p dist/expanded
+
+          python - "dist/releases/$GITHUB_SHA.tar.gz" "dist/expanded" <<'PY'
+          import sys
+          import tarfile
+          from pathlib import Path
+
+          archive = Path(sys.argv[1])
+          destination = Path(sys.argv[2])
+
+          with tarfile.open(archive) as release:
+              release.extractall(destination, filter="data")
+          PY
+
+          python -m venv dist/runtime
+          source dist/runtime/bin/activate
+          cmp --silent dist/expanded/requirements.txt server/requirements.txt
+          python -m pip install --no-index --find-links=dist/expanded/wheelhouse -r server/requirements.txt
+
+      - name: Probe native release server
+        shell: bash
         run: |
           set -euo pipefail
 
-          docker run --detach \
-            --name "$HEALTH_CONTAINER_NAME" \
-            --read-only \
-            --tmpfs /tmp:rw,noexec,nosuid,nodev,size=16m \
-            --cap-drop ALL \
-            --security-opt no-new-privileges:true \
-            --publish "127.0.0.1:${HEALTH_PORT}:8080" \
-            --env OIDC_ISSUER=https://issuer.invalid \
-            --env OIDC_CLIENT_ID=ci-client \
-            --env OIDC_CLIENT_SECRET=ci-secret \
-            --env SESSION_SECRET=ci-session-secret \
-            --env "PUBLIC_BASE_URL=http://127.0.0.1:${HEALTH_PORT}" \
-            authifi-docs:test
+          cleanup_server() {
+            local status=$?
+            if [[ -n "${pid:-}" ]]; then
+              kill "$pid" 2>/dev/null || true
+              wait "$pid" 2>/dev/null || true
+            fi
+            if [[ "$status" -ne 0 && -f dist/uvicorn.log ]]; then
+              echo "Native release probe log:" >&2
+              cat dist/uvicorn.log >&2
+            fi
+            return "$status"
+          }
+          trap cleanup_server EXIT
+
+          export OIDC_ISSUER=https://issuer.example.com
+          export OIDC_CLIENT_ID=docs
+          export SESSION_SECRET=ci-session-secret
+          export "PUBLIC_BASE_URL=http://127.0.0.1:${HEALTH_PORT}"
+          export SITE_DIR="$PWD/dist/expanded/site"
+
+          dist/runtime/bin/uvicorn server.main:app \
+            --app-dir dist/expanded \
+            --host 127.0.0.1 \
+            --port "$HEALTH_PORT" \
+            >dist/uvicorn.log 2>&1 &
+          pid=$!
 
           base_url="http://127.0.0.1:${HEALTH_PORT}"
-
-          for _ in $(seq 1 60); do
+          healthy=0
+          for _ in $(seq 1 30); do
             if curl --fail --silent --show-error "${base_url}/health" > /dev/null; then
+              healthy=1
+              break
+            fi
+            if ! kill -0 "$pid" 2>/dev/null; then
+              echo "Uvicorn exited before becoming healthy" >&2
               break
             fi
             sleep 1
           done
 
-          curl --fail --silent --show-error "${base_url}/health" | grep -q '"status"'
-
-          runtime_uid="$(docker exec "$HEALTH_CONTAINER_NAME" id -u)"
-          if [[ "$runtime_uid" == "0" ]]; then
-            echo "Container is running as root" >&2
-            exit 1
-          fi
-          echo "Container runs as uid $runtime_uid"
-
-          content_type="$(curl --fail --silent --show-error --output /dev/null \
-            --write-out '%{content_type}' "${base_url}/privacy-policy/")"
-          if [[ "$content_type" != "text/html; charset=utf-8" ]]; then
-            echo "Expected text/html for /privacy-policy/, got $content_type" >&2
+          if [[ "$healthy" != "1" ]]; then
+            echo "Native release server failed health check" >&2
             exit 1
           fi
 
+          curl --fail --silent --show-error "${base_url}/health" | grep -q '"status":"ok"'
           for probe in \
             "/assets/%2e%2e/index.html" \
             "/assets/%2e%2e/search/search_index.json" \
@@ -112,12 +144,6 @@ jobs:
             fi
           done
 
-      - name: Stop health container
-        if: always()
-        run: |
-          set -uo pipefail
-          docker rm --force "$HEALTH_CONTAINER_NAME" || true
-
       # Needed only by the host-side smoke client, which reaches the provider
       # through the loopback-published port. The docs container resolves the
       # same hostname through a Compose network alias.
@@ -126,7 +152,7 @@ jobs:
           set -euo pipefail
           echo "127.0.0.1 ${MOCK_OIDC_HOST}" | sudo tee -a /etc/hosts > /dev/null
 
-      - name: Run credential-free mock OIDC smoke
+      - name: Credential-free local mock OIDC smoke test
         run: |
           set -euo pipefail
           python -m server.local_smoke

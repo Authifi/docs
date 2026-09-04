@@ -457,6 +457,22 @@ def test_ci_pins_everything_it_installs() -> None:
             )
 
 
+def test_ci_exercises_the_native_release_without_production_docker() -> None:
+    workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+
+    assert "./scripts/build-release.sh" in workflow
+    assert "--no-index" in workflow
+    assert "dist/releases" in workflow
+    assert "uvicorn server.main:app" in workflow
+    assert "docker build --tag authifi-docs:test" not in workflow
+
+
+def test_ci_keeps_optional_compose_mock_coverage_explicit() -> None:
+    workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+
+    assert "Credential-free local mock OIDC smoke test" in workflow
+
+
 def readme_pip_commands() -> list[str]:
     return [
         stripped

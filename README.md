@@ -35,9 +35,9 @@ Anonymous callers learn nothing about the protected tree, not even which pages e
 Set up the local Python environment:
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install -r requirements.txt -r server/requirements-dev.txt
+python3.12 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python -m pip install -r server/requirements-dev.txt
 ```
 
 Every version comes from the checkout, including pip's own: upgrading it would
@@ -74,6 +74,14 @@ make serve
 ```
 
 This serves the static site at `http://127.0.0.1:8000` without OIDC enforcement.
+
+### Native release archive
+
+Build the deployable release archive locally with:
+
+```bash
+make release
+```
 
 ### Production-like OIDC locally
 
