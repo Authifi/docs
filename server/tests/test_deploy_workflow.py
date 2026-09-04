@@ -412,6 +412,40 @@ def test_the_probe_parser_refuses_origins_it_cannot_probe_faithfully(
     assert "connect_to=" not in completed.stdout
 
 
+def test_the_probe_parser_treats_a_trailing_slash_as_the_root_it_is() -> None:
+    completed = run_probe_settings("https://docs.authifi.io/")
+
+    assert completed.returncode == 0, completed.stderr
+    assert "public_url=https://docs.authifi.io/privacy-policy/" in completed.stdout
+
+
+@pytest.mark.parametrize(
+    "public_base_url",
+    [
+        "https://docs.authifi.io/docs",
+        "https://docs.authifi.io/docs/",
+        "https://docs.authifi.io//",
+    ],
+)
+def test_the_probe_parser_refuses_a_base_url_carrying_a_path(
+    public_base_url: str,
+) -> None:
+    """The parser used to strip the path and probe under the prefix anyway.
+
+    Nothing is mounted beneath one -- the routes are rooted at `/` and the load
+    balancer strips no prefix -- so `https://host/docs` produced a probe of
+    `/docs/privacy-policy/`, which answers 404, and a deployment that fails its
+    own checks for a reason the output does not explain. The server refuses the
+    same value at startup, so the probe has to agree with it rather than
+    quietly normalise it away.
+    """
+    completed = run_probe_settings(public_base_url)
+
+    assert completed.returncode != 0
+    assert "path" in completed.stderr
+    assert "public_url=" not in completed.stdout
+
+
 def test_the_probe_parser_refuses_an_alb_name_carrying_shell_syntax() -> None:
     completed = run_probe_settings("https://docs.authifi.io", "$(id).example.com")
 

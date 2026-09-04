@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from server.app import normalize_origin
 from server.tests.hcl_support import (
     actions,
     attribute,
@@ -27,6 +28,7 @@ from server.tests.hcl_support import (
     statement_with_action,
     statements,
     strip_comments,
+    variable_accepts,
 )
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -597,6 +599,64 @@ def test_the_advertised_origin_matches_the_name_the_certificate_covers() -> None
 
     assert "var.public_base_url" in condition
     assert "== var.custom_domain_name" in condition
+
+
+# The two spellings of "the root of this origin", which mean the same
+# deployment and both have to keep working.
+PUBLIC_BASE_URLS_THAT_WORK = ("https://docs.authifi.io", "https://docs.authifi.io/")
+
+# Everything the application could not honour if Terraform handed it over. The
+# routes are all rooted at `/` and the load balancer strips no prefix, so a
+# path here is a deployment whose callback URL, post-logout URL, and probe
+# targets all name something nothing serves.
+PUBLIC_BASE_URLS_THAT_CANNOT_WORK = (
+    "http://docs.authifi.io",
+    "https://docs.authifi.io/docs",
+    "https://docs.authifi.io/docs/",
+    "https://docs.authifi.io//",
+    "https://docs.authifi.io/privacy-policy/",
+    "https://docs.authifi.io?probe=1",
+    "https://docs.authifi.io/?probe=1",
+    "https://docs.authifi.io#fragment",
+    "https://user:pass@docs.authifi.io",
+    "https://docs.authifi.io:8443",
+    "https://docs.authifi.io/docs?probe=1#fragment",
+)
+
+
+@pytest.mark.parametrize("value", PUBLIC_BASE_URLS_THAT_WORK)
+def test_terraform_accepts_the_origin_this_deployment_actually_serves(value: str) -> None:
+    assert variable_accepts(VARIABLES, "public_base_url", value)
+
+
+@pytest.mark.parametrize("value", PUBLIC_BASE_URLS_THAT_CANNOT_WORK)
+def test_terraform_refuses_a_public_base_url_the_host_could_not_honour(value: str) -> None:
+    """Caught in a plan rather than after the instance is replaced.
+
+    `public_base_url` reaches the host through user data, and user data is part
+    of the instance's identity under `user_data_replace_on_change`. A value the
+    server refuses at startup therefore costs a destroyed and rebuilt instance
+    to correct, so the plan is where it has to fail.
+    """
+    assert not variable_accepts(VARIABLES, "public_base_url", value)
+
+
+@pytest.mark.parametrize(
+    "value", (*PUBLIC_BASE_URLS_THAT_WORK, *PUBLIC_BASE_URLS_THAT_CANNOT_WORK)
+)
+def test_terraform_never_accepts_a_public_base_url_the_server_would_refuse(
+    value: str,
+) -> None:
+    """One rule, enforced twice, and the plan is the stricter of the two.
+
+    `server/app.py` refuses a `PUBLIC_BASE_URL` carrying anything but the root
+    path at startup. Terraform accepting one the server will reject is an
+    instance that boots, replaces itself on the next apply, and never serves --
+    so the interesting direction is this one: everything the plan allows has to
+    be something the process will start on.
+    """
+    if variable_accepts(VARIABLES, "public_base_url", value):
+        assert normalize_origin(value, allow_root_path=True) is not None
 
 
 def test_the_certificate_is_not_blocked_on_validation_at_apply_time() -> None:

@@ -315,7 +315,7 @@ def create_app(config: AppConfig, auth_client: object | None = None) -> Starlett
     return app
 
 
-def normalize_origin(value: str | None, allow_path: bool = False) -> str | None:
+def normalize_origin(value: str | None, allow_root_path: bool = False) -> str | None:
     """An origin in one canonical form, or ``None`` if the value is not one.
 
     Compared rather than string-matched because several spellings mean the same
@@ -326,9 +326,12 @@ def normalize_origin(value: str | None, allow_path: bool = False) -> str | None:
     Everything else about the shape is refused. A path, a query, a fragment, or
     credentials means this is not the `Origin` a browser sends, and a scheme
     other than http or https has no place here at all -- `null`, which browsers
-    do send for an opaque origin, falls out as unparseable. `allow_path` is for
-    reading our own configuration, where a sub-path deployment is a legitimate
-    shape; the header is never given that latitude.
+    do send for an opaque origin, falls out as unparseable.
+
+    `allow_root_path` is for reading our own configuration, which an operator
+    may reasonably write with the trailing slash a browser shows. That is the
+    only latitude it grants: every route here is mounted at `/`, so a path
+    below the root names a deployment this process cannot serve.
     """
     if not isinstance(value, str) or not value:
         return None
@@ -340,7 +343,10 @@ def normalize_origin(value: str | None, allow_path: bool = False) -> str | None:
         return None
     if parts.query or parts.fragment:
         return None
-    if not allow_path and parts.path:
+    if allow_root_path:
+        if parts.path not in ("", "/"):
+            return None
+    elif parts.path:
         return None
 
     try:
@@ -370,20 +376,33 @@ def request_is_same_origin(request: Request, config: AppConfig) -> bool:
     """
     submitted = normalize_origin(request.headers.get("origin"))
     return submitted is not None and submitted == normalize_origin(
-        config.public_base_url, allow_path=True
+        config.public_base_url, allow_root_path=True
     )
 
 
 def validate_public_base_url(public_base_url: str) -> str:
-    """Refuse a base URL that has no origin, at startup rather than at logout.
+    """Refuse a base URL this process could not serve, at startup.
 
-    Every logout is checked against the origin this names. A value that is not
-    an absolute http or https URL would let the container start and then refuse
-    every sign-out with a `403`.
+    Two failures, one check. Every logout is checked against the origin this
+    names, so a value that is not an absolute http or https URL would let the
+    container start and then refuse every sign-out with a `403`.
+
+    And nothing here is mounted beneath a path prefix. Every route is declared
+    at `/`, the load balancer strips nothing, and `build_public_url` appends to
+    this value verbatim -- so `https://host/docs` hands the issuer
+    `https://host/docs/_auth/callback` as the redirect URI and sends logged-out
+    readers to `https://host/docs/privacy-policy/`, while the login redirect,
+    the sign-out form action, and every stylesheet URL stay rooted at `/`. The
+    deployment probe asks for the prefixed path and gets a `404`. Making the
+    routing prefix-aware is a larger change than this deployment needs, so the
+    contract is the narrow one: the origin, optionally with its trailing slash,
+    and nothing below it.
     """
-    if normalize_origin(public_base_url, allow_path=True) is None:
+    if normalize_origin(public_base_url, allow_root_path=True) is None:
         raise ValueError(
-            f"PUBLIC_BASE_URL must be an absolute http or https URL, got {public_base_url!r}"
+            "PUBLIC_BASE_URL must be an absolute http or https URL naming this "
+            "deployment's origin, with no path below the root, no query, no "
+            f"fragment, and no credentials, got {public_base_url!r}"
         )
     return public_base_url
 

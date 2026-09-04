@@ -218,6 +218,99 @@ def strip_comments(source: str) -> str:
     return "".join(kept)
 
 
+def variable_conditions(source: str, name: str) -> list[str]:
+    """Every `validation { condition = ... }` expression one variable declares."""
+    body = hcl_block(source, f'variable "{name}"')
+    conditions = [
+        attribute(block, "condition") for block in nested_blocks(body, "validation")
+    ]
+
+    assert conditions and all(conditions), f"variable {name} declares no validation"
+    return [str(condition).strip() for condition in conditions]
+
+
+# The POSIX classes the committed validations use, as the Python `re` equivalent.
+# Terraform's `regex` is Go's RE2, which understands `[[:cntrl:]]` inside a
+# bracket expression; Python's `re` reads it as a set of punctuation and
+# letters, so a translation is the difference between checking the rule and
+# checking a typo of it.
+_POSIX_CLASSES = {
+    "[:cntrl:]": "\\x00-\\x1f\\x7f",
+    "[:space:]": " \\t\\n\\r\\f\\v",
+}
+
+
+def _python_pattern(pattern: str) -> str:
+    for posix, replacement in _POSIX_CLASSES.items():
+        pattern = pattern.replace(posix, replacement)
+    return pattern
+
+
+def _unquote(literal: str) -> str:
+    assert literal.startswith('"') and literal.endswith('"'), literal
+    return literal[1:-1].replace('\\"', '"').replace("\\\\", "\\")
+
+
+def _split_conjunction(condition: str) -> list[str]:
+    """`condition` split on its top-level `&&`, strings left intact."""
+    terms: list[str] = []
+    start = 0
+    offset = 0
+
+    while offset < len(condition):
+        if condition[offset] == '"':
+            offset = _end_of_string(condition, offset)
+            continue
+        if condition.startswith("&&", offset):
+            terms.append(condition[start:offset])
+            offset += 2
+            start = offset
+            continue
+        offset += 1
+
+    terms.append(condition[start:])
+    return [term.strip() for term in terms]
+
+
+def _term_accepts(term: str, value: str) -> bool:
+    negated = term.startswith("!")
+    term = term.removeprefix("!").strip()
+
+    if match := re.fullmatch(r"can\(regex\((\".*\"), var\.\w+\)\)", term):
+        held = re.search(_python_pattern(_unquote(match[1])), value) is not None
+    elif match := re.fullmatch(
+        r"length\(regexall\((\".*\"), var\.\w+\)\)\s*==\s*0", term
+    ):
+        held = re.search(_python_pattern(_unquote(match[1])), value) is None
+    elif match := re.fullmatch(r"startswith\(var\.\w+, (\".*\")\)", term):
+        held = value.startswith(_unquote(match[1]))
+    elif match := re.fullmatch(r"endswith\(var\.\w+, (\".*\")\)", term):
+        held = value.endswith(_unquote(match[1]))
+    elif match := re.fullmatch(r"length\(var\.\w+\)\s*<=\s*(\d+)", term):
+        held = len(value) <= int(match[1])
+    elif match := re.fullmatch(r"trimspace\(var\.\w+\)\s*!=\s*\"\"", term):
+        held = value.strip() != ""
+    else:
+        raise AssertionError(f"this reader cannot evaluate the condition {term!r}")
+
+    return not held if negated else held
+
+
+def variable_accepts(source: str, name: str, value: str) -> bool:
+    """Whether every `validation` on one string variable holds for `value`.
+
+    Terraform evaluates these at plan time against real inputs, which needs
+    credentials and a provider no test here has. Reading the committed
+    expression and applying it is what makes the accepted and refused values
+    assertable: the pattern under test is the one in `variables.tf`, so
+    loosening it fails these tests rather than quietly passing them.
+    """
+    return all(
+        all(_term_accepts(term, value) for term in _split_conjunction(condition))
+        for condition in variable_conditions(source, name)
+    )
+
+
 def statements(document_body: str) -> list[str]:
     """Every `statement` block in an `aws_iam_policy_document` body."""
     return nested_blocks(document_body, "statement")

@@ -185,9 +185,9 @@ refused with `403` before the session is touched and before any outbound
 request. Comparison is between parsed origins, not strings, so `https://host`
 and `https://host:443` match and host case is ignored; matching the header
 verbatim would refuse legitimate submissions on those grounds. The header is
-held to a stricter shape than the configuration: a path, query, fragment, or
-credentials in it means it is not something a browser sent, while
-`PUBLIC_BASE_URL` may legitimately carry a sub-path.
+held to a marginally stricter shape than the configuration: a path in it means
+it is not something a browser sent, while `PUBLIC_BASE_URL` may be written with
+the trailing slash a browser shows in the address bar.
 
 A refusal logs only the *shape* of the header — missing, or not this site. The
 value is attacker-chosen and unbounded, so putting it in the log would be
@@ -196,6 +196,31 @@ somebody else writing to your logs, and the response does not echo it either.
 `PUBLIC_BASE_URL` is therefore validated at startup, not at the first logout. A
 value that is not an absolute `http` or `https` URL fails the process
 immediately instead of letting it serve traffic and refuse every sign-out.
+
+#### The Origin, And Nothing Below It
+
+`PUBLIC_BASE_URL` names an origin, optionally with its trailing slash, and a
+deeper path is refused at startup along with a query, a fragment, and
+credentials.
+
+This is a limit, not a preference. Every route the server declares is mounted
+at `/`, the listener rules strip no prefix, and the server appends to this
+value verbatim when it builds the OIDC redirect URI and the post-logout URL. A
+`PUBLIC_BASE_URL` of `https://docs.authifi.io/docs` would therefore register
+`https://docs.authifi.io/docs/_auth/callback` with Authifi and send signed-out
+readers to `https://docs.authifi.io/docs/privacy-policy/`, while the login
+redirect, the sign-out form action, the static asset URLs, and the routes
+themselves all stayed at `/`. The post-deploy probe would ask for
+`/docs/privacy-policy/` and get a `404`.
+
+The same rule is enforced in three places, so a sub-path cannot reach
+production from any direction: the `public_base_url` Terraform variable refuses
+it at plan time — which matters because this value rides in user data, and
+`user_data_replace_on_change` makes correcting it a destroyed and rebuilt
+instance — the server refuses it at startup, and the deployment workflow's
+probe parser refuses it before it connects to anything. Serving the docs under
+a prefix would mean making the routing and every generated URL prefix-aware;
+until something needs that, the narrow contract is the honest one.
 
 #### Write PUBLIC_BASE_URL The Way A Browser Would
 

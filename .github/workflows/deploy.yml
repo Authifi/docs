@@ -245,6 +245,13 @@ jobs:
               raise SystemExit("DOCS_PUBLIC_BASE_URL must include a hostname.")
           if parsed.port not in (None, 443):
               raise SystemExit("DOCS_PUBLIC_BASE_URL must use the default HTTPS port.")
+          # Every route the server declares is mounted at `/` and the listener
+          # rules strip no prefix, so stripping a path here and probing
+          # underneath it produced a 404 the output did not explain. The server
+          # refuses the same value at startup; this agrees with it instead of
+          # normalising it away.
+          if parsed.path not in ("", "/"):
+              raise SystemExit("DOCS_PUBLIC_BASE_URL must not carry a path below the root.")
           try:
               ipaddress.ip_address(parsed.hostname)
           except ValueError:
@@ -255,11 +262,8 @@ jobs:
           if not re.fullmatch(r"(?!-)[A-Za-z0-9-]{1,63}(?<!-)(?:\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))*", alb_dns_name):
               raise SystemExit("DOCS_ALB_DNS_NAME must be a hostname, not shell syntax.")
 
-          base_path = parsed.path.rstrip("/")
-
           def join_url(suffix: str) -> str:
-              path = f"{base_path}{suffix}" if base_path else suffix
-              return urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
+              return urlunsplit((parsed.scheme, parsed.netloc, suffix, "", ""))
 
           connect_to = f"{parsed.hostname}:443:{alb_dns_name}:443"
           public_url = join_url("/privacy-policy/")

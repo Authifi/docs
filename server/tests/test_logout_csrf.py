@@ -394,16 +394,19 @@ def test_anything_that_is_not_an_origin_parses_to_nothing(value: str | None) -> 
     assert normalize_origin(value) is None
 
 
-def test_a_public_base_url_with_a_path_still_has_an_origin() -> None:
-    """The config is ours, and a sub-path deployment is a legitimate shape.
+def test_the_configured_base_url_may_name_the_root_path_and_nothing_deeper() -> None:
+    """`https://host` and `https://host/` are the same deployment.
 
-    Only the header is held to the stricter rule, because browsers never send a
-    path in one and accepting anything looser widens what counts as same-origin.
+    A *deeper* path is not: this application mounts its routes at `/`, so a
+    `PUBLIC_BASE_URL` carrying `/docs` would build callback and post-logout URLs
+    under a prefix nothing serves. `allow_root_path` is the one latitude the
+    configuration gets over the header, which browsers never send a path in.
     """
-    assert normalize_origin("https://docs.example.com/docs/", allow_path=True) == (
-        "https://docs.example.com"
-    )
-    assert normalize_origin("https://docs.example.com/docs/") is None
+    for value in ("https://docs.example.com", "https://docs.example.com/"):
+        assert normalize_origin(value, allow_root_path=True) == "https://docs.example.com"
+
+    assert normalize_origin("https://docs.example.com/docs/", allow_root_path=True) is None
+    assert normalize_origin("https://docs.example.com/") is None
 
 
 # --- The configured host has to be the one the browser sends ------------------
@@ -484,3 +487,52 @@ def test_a_deployment_whose_public_base_url_is_not_an_origin_fails_at_startup(
 
     with pytest.raises(ValueError, match="PUBLIC_BASE_URL"):
         create_app(build_config(site_dir, public_base_url="ftp://docs.example.com"))
+
+
+@pytest.mark.parametrize(
+    "public_base_url",
+    [
+        "https://docs.example.com/docs",
+        "https://docs.example.com/docs/",
+        "https://docs.example.com//",
+        "https://docs.example.com/?probe=1",
+        "https://docs.example.com/#fragment",
+        "https://user:pass@docs.example.com",
+        "https://docs.example.com:notaport",
+    ],
+)
+def test_a_public_base_url_this_deployment_could_not_honour_fails_at_startup(
+    site_dir: Path, public_base_url: str
+) -> None:
+    """Nothing is mounted beneath a prefix, so accepting one is accepting a
+    deployment that cannot work.
+
+    Every route this application declares is rooted at `/`, and the load
+    balancer strips no prefix. A `PUBLIC_BASE_URL` of `https://host/docs` would
+    hand the issuer `https://host/docs/_auth/callback` as the redirect URI and
+    send logged-out users to `https://host/docs/privacy-policy/`, while the
+    login redirect, the sign-out form action, and every static URL stayed at
+    `/` -- and the deployment probe would ask for `/docs/privacy-policy/` and
+    get a 404. Queries, fragments, and credentials are refused for the same
+    reason: none of them survives into the URLs built from this value.
+    """
+    with pytest.raises(ValueError, match="PUBLIC_BASE_URL"):
+        create_app(build_config(site_dir, public_base_url=public_base_url))
+
+
+@pytest.mark.parametrize(
+    "public_base_url", ["https://docs.example.com", "https://docs.example.com/"]
+)
+def test_a_trailing_slash_on_the_base_url_is_still_a_working_deployment(
+    site_dir: Path, public_base_url: str
+) -> None:
+    """The one path an operator writes by accident, and it means the root."""
+    client = authenticated_client(site_dir, public_base_url=public_base_url)
+
+    response = client.post(
+        "/_auth/logout",
+        headers={"origin": "https://docs.example.com"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == LOGOUT_REDIRECT_STATUS

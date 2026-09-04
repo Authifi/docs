@@ -129,12 +129,26 @@ variable "oidc_client_id" {
 }
 
 variable "public_base_url" {
-  description = "Public HTTPS origin users reach the docs through. Must match the ALB's certificate."
+  description = "Public HTTPS origin users reach the docs through, with no path below the root. Must match the ALB's certificate."
   type        = string
 
+  # The origin and nothing below it. `server/app.py` mounts every route at `/`,
+  # the listener rules strip no prefix, and the server appends to this value
+  # verbatim when it builds the OIDC redirect URI and the post-logout URL, so
+  # `https://host/docs` is a deployment whose callback URL, landing page, and
+  # post-deploy probes all name something nothing serves. The server refuses
+  # the same shapes at startup -- and because this value travels in user data,
+  # which `user_data_replace_on_change` makes part of the instance's identity,
+  # correcting it after an apply costs a destroyed and rebuilt host. So the
+  # plan is where it fails.
+  #
+  # A trailing slash is the one path accepted, because it is the root and it is
+  # how a browser shows the address. Credentials, a port, a query, and a
+  # fragment are all excluded by the same pattern rather than by separate
+  # blacklists: the value either is a bare https origin or it is refused.
   validation {
-    condition     = startswith(var.public_base_url, "https://")
-    error_message = "public_base_url must be an https URL."
+    condition     = can(regex("^https://[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+/?$", var.public_base_url))
+    error_message = "public_base_url must be an https URL naming a lowercase DNS host and at most the root path, such as https://docs.authifi.io."
   }
 }
 
