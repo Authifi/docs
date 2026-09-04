@@ -1,5 +1,9 @@
 # AWS OIDC Hosting Notes
 
+**Internal operations material. This file lives outside `docs/` on purpose and is not part of the published site.**
+
+Access to the published site is authentication only: every identity the tenant accepts can read every protected page. This runbook names the instance's directory layout, the Systems Manager document, the release bucket, the deploy role's OIDC claims, and the exact commands that stage code onto the host, so publishing it would hand that map to anyone who can sign in. `server/tests/test_published_site.py` builds the site and fails if any of this content reaches the build or its search index; the reader-facing summary of the access model lives in `docs/index.md`.
+
 This note supplements the repository's [`infra/README.md`](https://github.com/Authifi/docs/blob/main/infra/README.md) with repo-specific operating guidance for the Authifi docs site's AWS and OIDC hosting model. Use that file for the canonical Terraform bootstrap commands.
 
 ## Runtime Overview

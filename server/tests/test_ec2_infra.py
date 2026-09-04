@@ -36,7 +36,9 @@ USER_DATA = (ROOT / "infra" / "templates" / "user-data.sh.tftpl").read_text(enco
 TFVARS_EXAMPLE = (ROOT / "infra" / "terraform.tfvars.example").read_text(encoding="utf-8")
 README = (ROOT / "README.md").read_text(encoding="utf-8")
 INFRA_README = (ROOT / "infra" / "README.md").read_text(encoding="utf-8")
-OPERATIONS_DOC = (ROOT / "docs" / "operations" / "aws-oidc-hosting.md").read_text(encoding="utf-8")
+# Deliberately outside `docs/`: everything under that tree is built, indexed
+# for search, and served to every identity the tenant accepts.
+OPERATIONS_DOC = (ROOT / "operations" / "aws-oidc-hosting.md").read_text(encoding="utf-8")
 DEPLOY_WORKFLOW = yaml.safe_load(
     (ROOT / ".github" / "workflows" / "deploy.yml").read_text(encoding="utf-8")
 )

@@ -483,7 +483,7 @@ def test_an_aged_out_transaction_leaves_no_pending_entry_behind(client: TestClie
 
 
 def test_logout_discards_pending_logins_in_other_tabs(client: TestClient) -> None:
-    """Documented in docs/operations/aws-oidc-hosting.md and CONTRIBUTING.md.
+    """Documented in operations/aws-oidc-hosting.md and CONTRIBUTING.md.
 
     Signing out has to leave nothing behind, in-flight transactions included,
     so a half-finished sign-in in another tab cannot be completed afterwards.

@@ -344,4 +344,4 @@ For infrastructure rollback that is not about the deployed release content, use 
 terraform -chdir=infra apply -var-file=terraform.tfvars
 ```
 
-Historical edge rollback to the previous Cloudflare Pages delivery path is documented in `docs/operations/aws-oidc-hosting.md`.
+Historical edge rollback to the previous Cloudflare Pages delivery path is documented in `operations/aws-oidc-hosting.md`.

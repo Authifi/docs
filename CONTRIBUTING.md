@@ -66,7 +66,7 @@ echo "127.0.0.1 oidc-mock.local.test" | sudo tee -a /etc/hosts
 echo "MOCK_OIDC_HOST=oidc-mock.local.test" >> .env
 ```
 
-The network alias follows whatever `MOCK_OIDC_HOST` you set, so the container needs no matching `/etc/hosts` entry. CI does exactly this, which is why the workflow has no `nip.io` dependency. A failed `make local-mock-up` dumps `docs` and `mock-oidc` container logs before tearing the stack down; see [`docs/operations/aws-oidc-hosting.md`](docs/operations/aws-oidc-hosting.md) for the full dual-resolution rationale.
+The network alias follows whatever `MOCK_OIDC_HOST` you set, so the container needs no matching `/etc/hosts` entry. CI does exactly this, which is why the workflow has no `nip.io` dependency. A failed `make local-mock-up` dumps `docs` and `mock-oidc` container logs before tearing the stack down; see [`operations/aws-oidc-hosting.md`](operations/aws-oidc-hosting.md) for the full dual-resolution rationale.
 
 Two things to expect while poking at the login flow by hand. Several tabs can sign in at once — each keeps its own destination and they can finish in any order — but only four pending sign-ins are kept, and a pending sign-in older than an hour is discarded. Any callback that no longer matches a live sign-in answers `400` rather than signing you in somewhere unexpected. Declining the login at the mock provider answers `400` too, without echoing back what the issuer said, and leaves both the other pending tabs and any existing signed-in session alone.
 

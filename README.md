@@ -132,7 +132,7 @@ Shut down either local stack with:
 make local-down
 ```
 
-For Docker networking details, including how the mock issuer hostname resolves from both the docs container and the host, see [`docs/operations/aws-oidc-hosting.md`](docs/operations/aws-oidc-hosting.md).
+For Docker networking details, including how the mock issuer hostname resolves from both the docs container and the host, see [`operations/aws-oidc-hosting.md`](operations/aws-oidc-hosting.md).
 
 ## Authifi OIDC Client Registration
 
@@ -165,7 +165,7 @@ The post-logout target is always the configured `POST_LOGOUT_PATH`. A `?next=` o
 
 If you run the docs server on a different base URL or port, update `PUBLIC_BASE_URL` and register the matching callback and post-logout destinations in Authifi.
 
-Because sign-out compares the browser's `Origin` against `PUBLIC_BASE_URL` and only forgives host case, that variable must name the host exactly as a browser would send it: no trailing dot, punycode rather than Unicode for an internationalised domain, and the canonical domain users actually browse. During cutover and diagnostics, do not browse the ALB hostname directly unless `PUBLIC_BASE_URL` names it; a browser origin on the ALB hostname is a different origin and logout will be refused there. See [`docs/operations/aws-oidc-hosting.md`](docs/operations/aws-oidc-hosting.md) for the details.
+Because sign-out compares the browser's `Origin` against `PUBLIC_BASE_URL` and only forgives host case, that variable must name the host exactly as a browser would send it: no trailing dot, punycode rather than Unicode for an internationalised domain, and the canonical domain users actually browse. During cutover and diagnostics, do not browse the ALB hostname directly unless `PUBLIC_BASE_URL` names it; a browser origin on the ALB hostname is a different origin and logout will be refused there. See [`operations/aws-oidc-hosting.md`](operations/aws-oidc-hosting.md) for the details.
 
 ## AWS Bootstrap And Deploy
 
@@ -193,7 +193,7 @@ After the deploy succeeds, the workflow requests `/privacy-policy/` and a protec
 
 Rerunning the deploy workflow for a SHA that is already in S3 reuses the existing release artifact and continues to the SSM install, so reruns are safe. For rollback, dispatch the workflow with an earlier 40-character `release_sha`; see [`infra/README.md`](infra/README.md) for the exact procedure and the installer's on-host rollback behavior.
 
-[`docs/operations/aws-oidc-hosting.md`](docs/operations/aws-oidc-hosting.md) captures the repo-specific operating notes that sit on top of the raw infrastructure instructions.
+[`operations/aws-oidc-hosting.md`](operations/aws-oidc-hosting.md) captures the repo-specific operating notes that sit on top of the raw infrastructure instructions.
 
 ## DNS Cutover And Rollback
 

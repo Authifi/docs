@@ -25,7 +25,7 @@ services:
         # on the Compose network, with no host involvement. The host half is the
         # published port below, reached through the same name via nip.io or
         # /etc/hosts. Never route this through host-gateway; see
-        # docs/operations/aws-oidc-hosting.md.
+        # operations/aws-oidc-hosting.md.
         aliases:
           - "${MOCK_OIDC_HOST:-oidc-mock.127.0.0.1.nip.io}"
     ports:
