@@ -35,7 +35,7 @@ Set these values in `.env` first:
 - `SESSION_SECRET`
 - `PUBLIC_BASE_URL`
 
-The matching Authifi confidential Web App must allow the callback URL at `http://localhost:8000/_auth/callback` and the post-logout redirect URI at `http://localhost:8000/privacy-policy/`, unless you intentionally run on another base URL.
+The matching local Authifi application must allow the callback URL at `http://localhost:8000/_auth/callback` and the post-logout redirect URI at `http://localhost:8000/privacy-policy/`, unless you intentionally run on another base URL.
 
 ### Mock OIDC preview
 
@@ -98,7 +98,7 @@ If you add a new public page or public machine-readable asset, update these toge
 
 `server/tests/test_public_boundary.py` compares those sources against each other and against the built site, so leaving one behind fails CI. A new public Markdown page must be listed in `PUBLIC_PAGE_SOURCES`, which marks it `hide: [navigation, search]`. `overrides/main.html` reads that metadata and removes two pieces of chrome that would otherwise reach into protected territory: the navigation, which would advertise every protected guide by title and URL, and the search control, which can only ever fail because the search index is protected.
 
-Search on public pages is removed by swapping in `overrides/partials/header-public.html`, a verbatim copy of Material's header with the search block deleted. Protected pages keep Material's stock header, so search there is untouched. A `mkdocs-material` upgrade that changes the header fails `test_public_header_is_the_material_header_minus_search`, which re-derives the copy from the installed theme; regenerate the file when that happens rather than editing it by hand.
+Search on public pages is removed by the gated logic in `overrides/partials/header.html`, while protected pages keep the normal Material search control. A `mkdocs-material` upgrade that changes the vendored header fails `server/tests/test_public_boundary.py`, which re-derives the expected upstream header from the installed theme and checks that our copy still differs only in the documented auth-related insertions.
 
 ## Pull Request Checks
 
@@ -129,7 +129,7 @@ Reviewers should confirm:
 - public vs. protected behavior still matches `docs/auth.md`, `docs/robots.txt`, and the server allowlist
 - generated assets such as `sitemap.xml` do not leak protected docs
 - local or CI verification covers the changed behavior
-- deploy or operations docs still match the AWS/App Runner/OIDC implementation
+- deploy or operations docs still match the AWS ALB/private EC2/S3/SSM/OIDC implementation
 
 ## Need Help?
 

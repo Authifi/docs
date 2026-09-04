@@ -6,7 +6,9 @@ This note supplements the repository's [`infra/README.md`](https://github.com/Au
 
 - MkDocs produces the static site in `site/`.
 - The Starlette server in `server/` serves that build, keeps specific legal and discovery paths public, and redirects protected content through Authifi OIDC.
-- The production container image is built from `Dockerfile`, pushed to ECR, and run on AWS App Runner.
+- Production runs on a private EC2 instance behind an AWS Application Load Balancer.
+- The instance has no public IP. GitHub-hosted Actions uploads a release archive to S3 and deploys it through SSM.
+- The process runs under `systemd`, and the host generates the session key locally on first boot.
 
 ## What `/health` Means
 
@@ -20,16 +22,16 @@ running. It reads two artifacts out of `SITE_DIR` and answers `200` with
 
 Anything else is `503` with `{"status": "unavailable"}`. That covers a
 `SITE_DIR` pointing at nothing, a runtime stage that shipped without its build,
-an artifact the container's uid cannot read, and a zero-byte page from a failed
+an artifact the process uid cannot read, and a zero-byte page from a failed
 build. Without this, a deployment whose site is missing answers `404` to every
-request while reporting itself healthy, and App Runner routes production traffic
-to it; the Compose healthcheck reads the body, so `503` marks the container
-unhealthy there too.
+request while reporting itself healthy, and the ALB keeps routing production
+traffic to it; the Compose healthcheck reads the body, so `503` marks the local
+stack unhealthy there too.
 
 The response deliberately names neither the paths nor the directory: `/health`
-is served to anyone. The list of artifacts that failed goes to the container
-log instead, so `docker compose logs docs` or the App Runner application log is
-where you find out which one it was.
+is served to anyone. The list of artifacts that failed goes to the process log
+instead, so `docker compose logs docs`, `journalctl -u authifi-docs`, or the
+SSM command output is where you find out which one it was.
 
 ## Authorization Policy
 
@@ -360,17 +362,27 @@ container logs before tearing the stack down; start there.
 
 ## Production OIDC Registration
 
-The Authifi application for this docs host should be a confidential Web App with:
+The Authifi application for this docs host is a **public client**. This server
+still performs discovery, JWKS fetches, and the authorization-code exchange
+itself, so the private subnet still needs NAT egress; public client here means
+"no client secret", not "browser-only".
 
-- callback URL: `https://docs.authifi.io/_auth/callback`
-- post-logout redirect URI: `https://docs.authifi.io/privacy-policy/`
-- scopes: `openid profile email`
+- Client type: public
+- Grant: authorization code
+- PKCE: required, S256
+- Token endpoint authentication method: none
+- Callback: `https://docs.authifi.io/_auth/callback`
+- Post-logout redirect: `https://docs.authifi.io/privacy-policy/`
+- Scopes: `openid profile email`
+
+PKCE S256 is required. For dashboards or API payloads that use the OAuth field
+name, the same setting is `token_endpoint_auth_method=none`.
 
 The server performs RP-initiated logout against the tenant's discovered `end_session_endpoint`, passing `client_id` and `post_logout_redirect_uri`. The redirect URI must therefore be registered with Authifi, and it must be a public path so the user is not bounced straight back into a login. When the tenant publishes no `end_session_endpoint`, the server clears the local session and redirects to that same path.
 
 The landing path is `POST_LOGOUT_PATH`, wired end to end:
 
-- production: the `post_logout_path` Terraform variable, which App Runner passes through as `POST_LOGOUT_PATH`. Terraform validates at plan time that it is site-relative and one of the exact public pages, so a protected path cannot reach production.
+- production: the `post_logout_path` Terraform variable, which the EC2 bootstrap writes into `/etc/authifi-docs/environment` as `POST_LOGOUT_PATH`. Terraform validates at plan time that it is site-relative and one of the exact public pages, so a protected path cannot reach production.
 - local real and mock stacks: `POST_LOGOUT_PATH` in `.env` or the environment, read by `compose.yaml` for both overlays.
 
 The server re-checks the value at startup against the same list and refuses to start if it fails, so a misconfigured local stack fails on `make local-up` rather than silently misbehaving at the first logout. The list is the exact public paths only; the public prefixes serve stylesheets, scripts, and well-known documents, none of which is a page to land on.
@@ -387,17 +399,20 @@ For local real-OIDC work, also register `http://localhost:8000/_auth/callback` a
 ## Deployment Checklist
 
 1. Bootstrap infra per the repository's [`infra/README.md`](https://github.com/Authifi/docs/blob/main/infra/README.md).
-2. Confirm GitHub repository variables match Terraform outputs:
-   - `AWS_REGION`
-   - `AWS_DEPLOY_ROLE_ARN`
-   - `APP_RUNNER_SERVICE_ARN`
-   - `ECR_REPOSITORY_URL`
-   - `APP_RUNNER_SERVICE_URL` (optional; overrides the origin the post-deploy check probes)
-3. Merge to `main` and monitor `.github/workflows/deploy.yml`.
-4. After the App Runner custom domain association is ready, publish the required DNS records.
-5. Verify both public and protected route behavior before announcing success.
+2. On the first rollout, apply with `enable_https_listener=false`, publish the external ACM validation records, wait for the certificate to become `ISSUED`, then apply again with `enable_https_listener=true`.
+3. Confirm GitHub repository variables match the current Terraform outputs and inputs:
+   - `AWS_REGION` from `terraform -chdir=infra output -raw aws_region`
+   - `AWS_DEPLOY_ROLE_ARN` from `terraform -chdir=infra output -raw github_deploy_role_arn`
+   - `RELEASE_BUCKET_NAME` from `terraform -chdir=infra output -raw release_bucket_name`
+   - `DOCS_INSTANCE_ID` from `terraform -chdir=infra output -raw instance_id`
+   - `DOCS_SSM_DOCUMENT_NAME` from `terraform -chdir=infra output -raw ssm_document_name`
+   - `DOCS_TARGET_GROUP_ARN` from `terraform -chdir=infra output -raw target_group_arn`
+   - `DOCS_PUBLIC_BASE_URL` from the same HTTPS origin configured as `public_base_url`
+4. Merge to `main` and monitor `.github/workflows/deploy.yml`, or use `workflow_dispatch` with a 40-character `release_sha` to redeploy an existing release artifact.
+5. Wait for the workflow to finish all three runtime checks: SSM command success, ALB target health, and public/protected route probes.
+6. Point `docs.authifi.io` at the ALB and verify both public and protected route behavior before announcing success.
 
-The ECR repository uses immutable tags, so rerunning the deploy workflow for a commit that was already pushed reuses the existing image and continues on to the App Runner update. Reruns are safe.
+The deploy workflow uses GitHub-hosted runners plus AWS OIDC only. Production does not require Docker, GHCR, ECR image pushes, or a self-hosted runner.
 
 ## Verification Targets
 
@@ -417,13 +432,20 @@ After a deploy or cutover, verify:
   `503` means the deployment is serving an incomplete site and the container log
   names the artifact
 
+When the deploy workflow fails, use the stage name as the first diagnostic:
+
+- `Verify existing release for rollback`: the requested archive or checksum is missing from S3
+- `Wait for installer`: inspect the SSM stdout and stderr the workflow prints
+- `Wait for healthy ALB target`: inspect target health details for the instance
+- `Verify public and protected routes`: inspect the unexpected headers or login redirect the workflow prints
+
 ## Cutover From Cloudflare Pages
 
 The site previously served from Cloudflare Pages at `authifi.pages.dev`. The cutover is not finished until the old delivery path can no longer publish:
 
 1. Lower the `docs.authifi.io` DNS TTL before the change window.
-2. Point `docs.authifi.io` at the App Runner custom domain target and publish the certificate-validation records.
-3. Wait for App Runner to report the domain association as active, then run the verification targets above.
+2. Complete the ACM two-stage process: first apply with `enable_https_listener=false`, publish the certificate-validation records, wait for ACM to issue the certificate, then apply with `enable_https_listener=true`.
+3. Point `docs.authifi.io` at the ALB DNS name and run the verification targets above.
 4. **Disconnect the Cloudflare Pages Git integration** for the docs project (Pages project → Settings → Builds & deployments → disconnect the GitHub repository), or disable automatic production and preview deployments. Leaving it connected means a later push to `main` silently republishes an ungated copy of the docs.
 5. Remove the `docs.authifi.io` custom domain from the Cloudflare Pages project so it cannot reclaim the hostname.
 6. Keep the Pages project itself until the rollback window closes.
@@ -432,5 +454,7 @@ The site previously served from Cloudflare Pages at `authifi.pages.dev`. The cut
 
 Choose the smallest rollback that fixes the issue:
 
+- **Release rollback through GitHub Actions**: use `workflow_dispatch` on the `Deploy` workflow with a previously known-good 40-character `release_sha`. The workflow verifies the S3 archive and checksum exist, then redeploys that release through SSM without rebuilding.
+- **Installer rollback on-host**: the installer stages the candidate release, health-checks it, atomically swaps `/opt/authifi-docs/current`, and restores the previous symlink automatically if the active health check fails after restart. A failed rollout therefore returns to the previous release unless there was no prior release yet.
+- **Instance replacement follow-up**: if Terraform replaces the instance, refresh `DOCS_INSTANCE_ID`, expect all sessions to be signed out because the host generated a new session key, and rerun the deploy workflow to restage a release on the new host.
 - **DNS/edge rollback to Cloudflare Pages**: restore the `docs.authifi.io` `CNAME` to `authifi.pages.dev`, re-add `docs.authifi.io` as a custom domain on the Cloudflare Pages project, and, if it was disconnected in step 4 above, re-enable the Pages Git integration so the project can build again. Note that this restores the fully public, ungated site.
-- **Image rollback**: redeploy App Runner with a previously known-good immutable SHA tag when the issue is in the built site or server. Terraform will not do this for you; use the App Runner procedure in the repository's [`infra/README.md`](https://github.com/Authifi/docs/blob/main/infra/README.md).

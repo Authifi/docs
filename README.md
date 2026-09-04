@@ -6,15 +6,14 @@ Product documentation for the Authifi identity and access management platform.
 
 ## Current Architecture
 
-This repository builds a static MkDocs site, packages it into a container, and serves it behind a Starlette application that enforces Authifi OIDC login for protected docs.
+This repository builds a static MkDocs site and serves it behind a Starlette application that enforces Authifi OIDC login for protected docs.
 
 - `docs/` contains the documentation source plus public discovery/legal assets.
 - `mkdocs build --strict` produces the static site in `site/`.
 - `server/` serves the built site, leaves specific legal/discovery paths public, and redirects protected paths through Authifi OIDC.
-- `Dockerfile` builds the site and runtime image used locally and in AWS.
-- `infra/` provisions ECR, IAM, and AWS App Runner for production hosting.
-- `.github/workflows/ci.yml` validates PRs; `.github/workflows/deploy.yml` builds and deploys the image from `main`.
-
+- `infra/` provisions the production AWS path: an Application Load Balancer in two supplied public subnets, one private EC2 instance in a supplied private application subnet, a release bucket, and the IAM/SSM wiring for GitHub Actions deployments.
+- `.github/workflows/ci.yml` validates PRs; `.github/workflows/deploy.yml` uploads release archives to S3 and deploys them through SSM from `main`.
+- `Dockerfile` and Compose remain for local development and mock testing. They are not the production release path.
 - `overrides/` holds the MkDocs Material theme override that keeps protected navigation out of the public legal pages.
 
 There are **no per-PR hosted preview environments in v1**. Pull requests get CI only. There is also **no Cloudflare Markdown-for-Agents conversion** in this architecture; agents can read the explicitly published public files and any protected HTML they can reach after an interactive browser login.
@@ -85,7 +84,7 @@ make release
 
 ### Production-like OIDC locally
 
-To run the containerized docs server against a real Authifi tenant, copy `.env.example` to `.env`, fill in the OIDC and session values, then start the stack:
+To run the containerized docs server against a real Authifi tenant, copy `.env.example` to `.env`, fill in the local OIDC and session values, then start the stack:
 
 ```bash
 cp .env.example .env
@@ -137,13 +136,22 @@ For Docker networking details, including how the mock issuer hostname resolves f
 
 ## Authifi OIDC Client Registration
 
-Register the docs site in Authifi as a **confidential Web App**.
+Register the production docs site in Authifi as a **public client** using Authorization Code + PKCE. There is no production client secret.
 
 - Redirect URI for local real-OIDC work: `http://localhost:8000/_auth/callback`
 - Redirect URI for production: `https://docs.authifi.io/_auth/callback`
 - Post-logout redirect URI for local work: `http://localhost:8000/privacy-policy/`
 - Post-logout redirect URI for production: `https://docs.authifi.io/privacy-policy/`
 - Requested scopes: `openid profile email`
+
+Production registration values:
+
+- Client type: `public`
+- Grant: `authorization code`
+- PKCE: `required`, `S256`
+- Token endpoint authentication method: `none`
+
+The server still performs OIDC discovery and the code exchange itself, so production keeps the private-subnet NAT egress even though the client is public. Local real-OIDC Compose remains separate: it can still use a local client secret for the tenant registration you choose to test with.
 
 A sign-in lasts **eight hours, measured from the moment it completed**. The callback stamps the session with that time, and every protected request checks it, so using the site all day does not extend the session: at the eight-hour mark the next protected request clears the cookie and sends the user back through the issuer. The cookie's own `max_age` is still eight hours as well, but it answers a different question — Starlette re-issues the cookie on every response, so that clock restarts with each page view and only expires a browser that was left alone. A session with no stamp, an unparseable one, or one dated in the future is not a session: sign-ins predate this rule, and a replayed cookie can claim anything.
 
@@ -161,34 +169,36 @@ Because sign-out compares the browser's `Origin` against `PUBLIC_BASE_URL` and o
 
 ## AWS Bootstrap And Deploy
 
-Use [`infra/README.md`](infra/README.md) for the full Terraform and App Runner bootstrap commands. The short version is:
+Use [`infra/README.md`](infra/README.md) for the full Terraform and EC2/ALB bootstrap commands. The short version is:
 
-1. Apply Terraform with `create_service=false` to create ECR, IAM, and optional GitHub OIDC resources.
-2. Build and push the first immutable image to ECR.
-3. Apply Terraform with `create_service=true` and the pushed image identifier to create App Runner and the optional custom domain association.
+1. Apply Terraform once with `enable_https_listener=false` to create the ALB, private EC2 instance, release bucket, SSM document, IAM roles, and ACM certificate request.
+2. Publish the ACM validation records in external DNS and wait for the certificate to become `ISSUED`.
+3. Apply Terraform again with `enable_https_listener=true` to enable the HTTPS listener.
 4. Configure the production repository variables used by `.github/workflows/deploy.yml`:
    - `AWS_REGION`
    - `AWS_DEPLOY_ROLE_ARN`
-   - `APP_RUNNER_SERVICE_ARN`
-   - `ECR_REPOSITORY_URL`
-   - `APP_RUNNER_SERVICE_URL` (optional; the origin the post-deploy check probes, defaulting to the App Runner hostname)
-5. Merge to `main` to let the deploy workflow build, push, and update the App Runner service.
+   - `RELEASE_BUCKET_NAME`
+   - `DOCS_INSTANCE_ID`
+   - `DOCS_SSM_DOCUMENT_NAME`
+   - `DOCS_TARGET_GROUP_ARN`
+   - `DOCS_PUBLIC_BASE_URL`
+5. Merge to `main` to let the deploy workflow build a release archive, upload it to S3, install it through SSM, wait for ALB target health, and verify public and protected routes.
 
-After the App Runner operation succeeds, the workflow requests `/privacy-policy/` from the live origin and requires HTTP 200 with a `text/html` content type. A container that starts but cannot serve therefore fails the deploy instead of the next visitor.
+After the deploy succeeds, the workflow requests `/privacy-policy/` from the live origin and a protected guide URL, requiring the expected public `200` and protected login redirect. A release that starts but cannot serve therefore fails the deploy instead of the next visitor.
 
-Images are built for `linux/amd64` and pushed under immutable commit-SHA tags. Rerunning the deploy workflow for a SHA that is already in ECR reuses the existing image and continues to the App Runner update, so reruns are safe. Terraform seeds `image_identifier` only when the service is created and then ignores it, so a later `terraform apply` cannot roll the deployed image backwards; see [`infra/README.md`](infra/README.md) for the explicit App Runner rollback procedure.
+Rerunning the deploy workflow for a SHA that is already in S3 reuses the existing release artifact and continues to the SSM install, so reruns are safe. For rollback, dispatch the workflow with an earlier 40-character `release_sha`; see [`infra/README.md`](infra/README.md) for the exact procedure and the installer's on-host rollback behavior.
 
 [`docs/operations/aws-oidc-hosting.md`](docs/operations/aws-oidc-hosting.md) captures the repo-specific operating notes that sit on top of the raw infrastructure instructions.
 
 ## DNS Cutover And Rollback
 
-After App Runner reports the custom domain association details, create the `docs.authifi.io` CNAME and any certificate-validation CNAMEs described in [`infra/README.md`](infra/README.md).
+Create the `docs.authifi.io` record pointing at the ALB and the ACM validation records described in [`infra/README.md`](infra/README.md).
 
 For cutover:
 
 - lower DNS TTLs before the change window if your provider allows it
 - create the new records
-- wait for certificate validation and App Runner domain status to settle
+- wait for certificate validation and the second Terraform apply to settle
 - verify the public and protected paths listed below before announcing completion
 - **disconnect the Cloudflare Pages Git integration** for the docs project, or disable its production and preview deployments, so a later push to `main` cannot silently republish an ungated copy of the site
 - remove `docs.authifi.io` as a custom domain from the Cloudflare Pages project so it cannot reclaim the hostname
@@ -197,7 +207,7 @@ For cutover:
 For rollback:
 
 - edge rollback: restore the `docs.authifi.io` `CNAME` to `authifi.pages.dev`, re-add `docs.authifi.io` as a Cloudflare Pages custom domain, and re-enable the Pages Git integration if it was disconnected during cutover — this restores the fully public, ungated site
-- application rollback: move App Runner back to a previous known-good immutable SHA tag using the procedure in [`infra/README.md`](infra/README.md)
+- application rollback: redeploy a previous known-good 40-character release SHA through the `Deploy` workflow using the procedure in [`infra/README.md`](infra/README.md)
 
 ## Post-Deploy Verification
 

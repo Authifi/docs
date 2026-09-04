@@ -786,3 +786,30 @@ def test_the_example_variables_carry_no_secret_material() -> None:
         "apprunner",
     ):
         assert forbidden not in lowered, forbidden
+
+
+# --- Operator documentation must match the EC2 architecture -------------------
+
+
+def test_operator_docs_name_the_native_ec2_architecture_only() -> None:
+    paths = [
+        ROOT / "README.md",
+        ROOT / "infra" / "README.md",
+        ROOT / "docs" / "operations" / "aws-oidc-hosting.md",
+        ROOT / ".changeset" / "aws-oidc-hosting.md",
+    ]
+    text = "\n".join(path.read_text(encoding="utf-8") for path in paths).lower()
+
+    assert "application load balancer" in text
+    assert "private ec2" in text
+    assert "systemd" in text
+    assert "aws app runner" not in text
+    assert "amazon ecr" not in text
+
+
+def test_docs_describe_public_pkce_registration_without_a_secret() -> None:
+    text = (ROOT / "docs" / "operations" / "aws-oidc-hosting.md").read_text(encoding="utf-8")
+
+    assert "public client" in text
+    assert "PKCE S256" in text
+    assert "token_endpoint_auth_method=none" in text

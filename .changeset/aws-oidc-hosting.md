@@ -1,5 +1,6 @@
 ---
-"authifi-docs": major
+"@authifi/docs": major
 ---
 
-Move the documentation site to AWS App Runner and require Authifi OIDC login for protected documentation while keeping legal and agent-discovery resources public.
+Move the documentation site to an OIDC-protected application on a private EC2
+instance behind an AWS Application Load Balancer, deployed through S3 and SSM.
