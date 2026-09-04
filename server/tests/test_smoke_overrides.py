@@ -151,6 +151,28 @@ def test_a_name_that_does_not_resolve_is_refused() -> None:
     assert not host_is_loopback("nowhere.invalid", resolve=resolver_for({}))
 
 
+def test_a_name_that_resolves_to_nothing_at_all_is_refused() -> None:
+    """An empty answer is not agreement."""
+    assert not host_is_loopback("nowhere.test", resolve=lambda *a, **k: [])
+
+
+def test_an_address_that_will_not_parse_is_refused() -> None:
+    """A scoped IPv6 answer like `fe80::1%en0` fails closed rather than raising."""
+    resolve = resolver_for({"scoped.test": ["fe80::1%en0"]})
+
+    assert not host_is_loopback("scoped.test", resolve=resolve)
+
+
+def test_the_host_is_matched_case_insensitively() -> None:
+    """Hostnames are case-insensitive, and `urlsplit` already lowercases, so
+    this only has to hold for a direct caller."""
+
+    def explode(*args, **kwargs):
+        raise AssertionError("a loopback literal must not be resolved")
+
+    assert host_is_loopback("LOCALHOST", resolve=explode)
+
+
 # --- The public base URL drives the port Compose publishes --------------------
 
 

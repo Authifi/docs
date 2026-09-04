@@ -183,6 +183,7 @@ def host_is_loopback(host: str, resolve: Resolver = socket.getaddrinfo) -> bool:
     since that is the one a client might pick -- and a name that does not
     resolve is refused rather than assumed.
     """
+    host = host.lower()
     if host == "localhost" or host.endswith(".localhost"):
         return True
 
@@ -193,13 +194,23 @@ def host_is_loopback(host: str, resolve: Resolver = socket.getaddrinfo) -> bool:
 
     try:
         addresses = resolve(host, None, 0, socket.SOCK_STREAM)
-    except (OSError, socket.gaierror):
+    except OSError:
         return False
-    if not addresses:
-        return False
-    return all(
-        ipaddress.ip_address(entry[4][0]).is_loopback for entry in addresses
+    return bool(addresses) and all(
+        address_is_loopback(entry[4][0]) for entry in addresses
     )
+
+
+def address_is_loopback(address: str) -> bool:
+    """One resolved address, failing closed on anything unreadable.
+
+    A scoped IPv6 answer such as `fe80::1%en0` will not parse, and a link-local
+    address is not loopback anyway, so there is nothing to salvage.
+    """
+    try:
+        return ipaddress.ip_address(address).is_loopback
+    except ValueError:
+        return False
 
 
 def require_local_http_url(
@@ -279,7 +290,7 @@ def compose_env_for_args(
     # `compose.mock.yaml` builds `OIDC_ISSUER`, the network alias, the published
     # mapping, and the provider's `--port` out of these two, so setting them is
     # what makes the container's issuer and the client's the same URL.
-    env["MOCK_OIDC_HOST"] = issuer_url.hostname or ""
+    env["MOCK_OIDC_HOST"] = issuer_url.hostname
     env["MOCK_OIDC_PORT"] = str(issuer_url.port)
     return env
 
