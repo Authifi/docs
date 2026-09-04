@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import quote
 
 import pytest
 
+from server import local_smoke
 from server.local_smoke import (
     BYPASS_PROBE_PATHS,
     DEFAULT_POST_LOGOUT_PATH,
@@ -18,6 +20,8 @@ from server.local_smoke import (
     assert_registered_post_logout_uri,
     build_mock_compose_env,
     classify_logout_redirect,
+    compose_diagnostics,
+    dump_diagnostics,
     parse_args,
     require_redirect,
     resolve_settings,
@@ -350,3 +354,89 @@ def test_assert_no_existence_disclosure_rejects_differing_bodies() -> None:
 
     with pytest.raises(AssertionError, match="anonymous replies differ"):
         assert_no_existence_disclosure(probes)
+
+
+# --- Failure diagnostics ------------------------------------------------------
+#
+# A CI auth 500 with no container logs cost a full debugging cycle, so a failed
+# run has to leave the evidence behind before compose tears the stack down.
+
+
+class RecordingRunner:
+    def __init__(self, stdout: str = "log line") -> None:
+        self.commands: list[list[str]] = []
+        self.stdout = stdout
+
+    def __call__(self, command, **kwargs):
+        self.commands.append(list(command))
+        return SimpleNamespace(returncode=0, stdout=self.stdout, stderr="")
+
+
+def test_diagnostic_commands_cover_status_and_both_service_logs(tmp_path: Path) -> None:
+    commands = compose_diagnostics(tmp_path)
+
+    joined = [" ".join(command) for command in commands]
+    assert any(command.endswith(" ps") for command in joined)
+    for service in ("docs", "mock-oidc"):
+        assert any(f"logs --no-color --tail" in c and c.endswith(service) for c in joined)
+
+
+def test_diagnostic_commands_use_both_compose_files(tmp_path: Path) -> None:
+    for command in compose_diagnostics(tmp_path):
+        assert str(tmp_path / "compose.yaml") in command
+        assert str(tmp_path / "compose.mock.yaml") in command
+
+
+def test_dump_diagnostics_runs_every_command_and_reports_output(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    runner = RecordingRunner(stdout="docs-1 | ValueError: boom")
+
+    dump_diagnostics(tmp_path, {"PATH": "/usr/bin"}, runner=runner)
+
+    assert runner.commands == compose_diagnostics(tmp_path)
+    assert "docs-1 | ValueError: boom" in capsys.readouterr().err
+
+
+def test_dump_diagnostics_survives_a_failing_docker_command(tmp_path: Path) -> None:
+    def failing(command, **kwargs):
+        raise OSError("docker is gone")
+
+    # Diagnostics must never replace the original failure with their own.
+    dump_diagnostics(tmp_path, {}, runner=failing)
+
+
+def test_a_failed_smoke_dumps_diagnostics_before_tearing_down(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    def fake_run_compose(project_dir, env, *args):
+        calls.append(f"compose {args[0]}")
+
+    def fake_run_smoke(settings):
+        calls.append("smoke")
+        raise AssertionError("smoke failed")
+
+    real_parse_args = local_smoke.parse_args
+    monkeypatch.setattr(local_smoke, "run_compose", fake_run_compose)
+    monkeypatch.setattr(local_smoke, "run_smoke", fake_run_smoke)
+    monkeypatch.setattr(local_smoke, "dump_diagnostics", lambda *a, **k: calls.append("diagnostics"))
+    monkeypatch.setattr(local_smoke, "parse_args", lambda: real_parse_args([]))
+
+    with pytest.raises(AssertionError, match="smoke failed"):
+        local_smoke.main()
+
+    assert calls == ["compose up", "smoke", "diagnostics", "compose down"]
+
+
+def test_a_passing_smoke_dumps_no_diagnostics(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+    real_parse_args = local_smoke.parse_args
+    monkeypatch.setattr(local_smoke, "run_compose", lambda p, e, *a: calls.append(f"compose {a[0]}"))
+    monkeypatch.setattr(local_smoke, "run_smoke", lambda s: calls.append("smoke"))
+    monkeypatch.setattr(local_smoke, "dump_diagnostics", lambda *a, **k: calls.append("diagnostics"))
+    monkeypatch.setattr(local_smoke, "parse_args", lambda: real_parse_args([]))
+
+    assert local_smoke.main() == 0
+    assert calls == ["compose up", "smoke", "compose down"]

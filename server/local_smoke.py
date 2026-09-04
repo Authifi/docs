@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import os
 import subprocess
+import sys
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -22,6 +23,8 @@ DEFAULT_POST_LOGOUT_PATH = "/privacy-policy/"
 DEFAULT_TIMEOUT_SECONDS = 60.0
 POLL_INTERVAL_SECONDS = 0.5
 COMPOSE_FILES = ("compose.yaml", "compose.mock.yaml")
+DIAGNOSTIC_SERVICES = ("docs", "mock-oidc")
+DIAGNOSTIC_LOG_LINES = 200
 
 # httpx normalises literal ".." segments away but leaves "%2e%2e" alone, so
 # these probes reach the server exactly as written and prove that a public
@@ -199,6 +202,38 @@ def run_compose(project_dir: Path, env: dict[str, str], *args: str) -> None:
         check=True,
         env=env,
     )
+
+
+def compose_diagnostics(project_dir: Path) -> list[list[str]]:
+    """Commands whose output explains why a smoke run failed."""
+    commands = [build_compose_command(project_dir, COMPOSE_FILES, ("ps",))]
+    for service in DIAGNOSTIC_SERVICES:
+        commands.append(
+            build_compose_command(
+                project_dir,
+                COMPOSE_FILES,
+                ("logs", "--no-color", f"--tail={DIAGNOSTIC_LOG_LINES}", service),
+            )
+        )
+    return commands
+
+
+def dump_diagnostics(project_dir: Path, env: dict[str, str], runner=subprocess.run) -> None:
+    """Print container state and logs to stderr, before the stack is removed.
+
+    Best effort by design: this runs while an assertion is already propagating,
+    so a failure to collect evidence must never replace the failure that
+    triggered it.
+    """
+    for command in compose_diagnostics(project_dir):
+        print(f"\n$ {' '.join(command)}", file=sys.stderr, flush=True)
+        try:
+            result = runner(command, env=env, check=False, capture_output=True, text=True)
+        except Exception as error:  # noqa: BLE001 - diagnostics must not mask the real error
+            print(f"(could not collect diagnostics: {error})", file=sys.stderr, flush=True)
+            continue
+        output = f"{result.stdout or ''}{result.stderr or ''}".rstrip()
+        print(output or "(no output)", file=sys.stderr, flush=True)
 
 
 def wait_for_response(
@@ -441,6 +476,11 @@ def main() -> int:
     try:
         run_compose(args.project_dir, compose_env, "up", "-d", "--build")
         run_smoke(settings)
+    except BaseException:
+        # Before `down` removes the containers, so a CI failure carries the
+        # evidence for it instead of just an assertion message.
+        dump_diagnostics(args.project_dir, compose_env)
+        raise
     finally:
         run_compose(args.project_dir, compose_env, "down", "--volumes", "--remove-orphans")
     return 0

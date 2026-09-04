@@ -8,15 +8,23 @@ services:
       OIDC_CLIENT_ID: local-docs-client
       OIDC_CLIENT_SECRET: local-docs-secret
       SESSION_SECRET: local-session-secret
-    extra_hosts:
-      - "${MOCK_OIDC_HOST:-oidc-mock.127.0.0.1.nip.io}:host-gateway"
 
   mock-oidc:
     image: ghcr.io/geigerzaehler/oidc-provider-mock@sha256:68fb46a6be1963530fe9ec7ca66be85762f42dc58df9f50b0362eaa37777d6e4
     command:
       - --user-claims-file
       - /config/users.yaml
+    networks:
+      default:
+        # The container half of the issuer hostname: docs reaches the provider
+        # on the Compose network, with no host involvement. The host half is the
+        # published port below, reached through the same name via nip.io or
+        # /etc/hosts. Never route this through host-gateway; see
+        # docs/operations/aws-oidc-hosting.md.
+        aliases:
+          - "${MOCK_OIDC_HOST:-oidc-mock.127.0.0.1.nip.io}"
     ports:
+      # Loopback only: the host smoke client needs this, the LAN does not.
       - "127.0.0.1:${MOCK_OIDC_PORT:-9400}:9400"
     volumes:
       - ./local/mock-oidc-users.yaml:/config/users.yaml:ro

@@ -114,6 +114,9 @@ jobs:
           set -uo pipefail
           docker rm --force "$HEALTH_CONTAINER_NAME" || true
 
+      # Needed only by the host-side smoke client, which reaches the provider
+      # through the loopback-published port. The docs container resolves the
+      # same hostname through a Compose network alias.
       - name: Resolve the mock issuer hostname locally
         run: |
           set -euo pipefail

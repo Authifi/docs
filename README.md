@@ -90,7 +90,7 @@ Shut down either local stack with:
 make local-down
 ```
 
-For Docker networking details, including the `host-gateway` requirement used by the mock issuer hostname, see [`docs/operations/aws-oidc-hosting.md`](docs/operations/aws-oidc-hosting.md).
+For Docker networking details, including how the mock issuer hostname resolves from both the docs container and the host, see [`docs/operations/aws-oidc-hosting.md`](docs/operations/aws-oidc-hosting.md).
 
 ## Authifi OIDC Client Registration
 

@@ -18,25 +18,37 @@ The boundary also hides the shape of the protected tree. Authorization runs befo
 
 ## Local Mock Networking
 
-`make local-mock-up` relies on the `compose.mock.yaml` `extra_hosts` entry that maps the configured mock issuer hostname to Docker's host gateway.
+OIDC requires every party to agree on one issuer URL, so the single hostname in
+`MOCK_OIDC_HOST` has to resolve for two clients that sit on different networks:
+the docs container, and the host running the smoke client. `compose.mock.yaml`
+resolves each half separately.
 
-This works on:
+- **From the docs container**, the hostname is a Compose network alias on the
+  `mock-oidc` service, so it resolves to that container's address on the default
+  network. No host involvement and no DNS lookup.
+- **From the host**, the provider publishes `9400` on `127.0.0.1` only, and the
+  hostname has to resolve to loopback (see below).
 
-- Docker Desktop
-- standard rootful Linux Docker engines that support `host-gateway`
+Both halves therefore answer to `http://$MOCK_OIDC_HOST:9400` while the
+container's traffic stays inside Docker's network.
 
-Rootless Linux engines may require an override, such as:
+This is not merely tidier than the previous `extra_hosts: <host>:host-gateway`
+mapping on the `docs` service — that mapping was broken on Linux. It pointed the
+container at the host's gateway address, but the provider is published on
+loopback, which a container cannot reach through the gateway. Docker Desktop
+routes it to the host's loopback anyway and so masked the bug; a standard Linux
+engine surfaced it as a `500` from `/_auth/login` when Authlib fetched
+discovery. Keep the port loopback-only and let the alias carry container
+traffic. `server/tests/test_compose.py` renders the stack and fails if
+`host-gateway` returns or the alias goes missing.
 
-- using a different reachable hostname or IP for `MOCK_OIDC_HOST`
-- removing the `host-gateway` mapping in a local compose override
+### The Default Mock Hostname Needs Public DNS On The Host
 
-### The Default Mock Hostname Needs Public DNS
-
-`MOCK_OIDC_HOST` defaults to `oidc-mock.127.0.0.1.nip.io`. The issuer URL has to
-resolve identically on the host running the smoke and inside the docs container,
-and `nip.io` gives that for free by resolving any `<anything>.127.0.0.1.nip.io`
-name to `127.0.0.1`. The cost is a dependency on a third-party public resolver,
-which fails in two situations that look like a broken mock:
+`MOCK_OIDC_HOST` defaults to `oidc-mock.127.0.0.1.nip.io`, a public wildcard
+resolver that maps any `<anything>.127.0.0.1.nip.io` name to `127.0.0.1`. Only
+the host side needs this; the container uses the network alias either way. The
+cost is a dependency on a third-party public resolver, which fails in two
+situations that look like a broken mock rather than a broken lookup:
 
 - **Offline or network-restricted machines.** `nip.io` is a real DNS lookup, so
   an air-gapped laptop or a CI runner with egress filtering cannot resolve it.
@@ -53,14 +65,14 @@ echo "127.0.0.1 oidc-mock.local.test" | sudo tee -a /etc/hosts
 echo "MOCK_OIDC_HOST=oidc-mock.local.test" >> .env
 ```
 
-`compose.mock.yaml` maps whatever `MOCK_OIDC_HOST` is set to onto the host
-gateway, so the container resolves the same name without needing the host's
-`/etc/hosts`. CI already does exactly this, which is why the workflow has no
+The alias follows whatever you set, so the container needs no matching
+`/etc/hosts` entry. CI does exactly this, which is why the workflow has no
 `nip.io` dependency. Use `.local.test` or another reserved suffix rather than a
 name that could later resolve publicly.
-- publishing the mock issuer under a host name your engine can already resolve from containers
 
-If the docs container cannot resolve the mock issuer host, the login flow will fail before callback handling.
+A `500` from `/_auth/login` means the docs container could not load discovery
+from the issuer. `make local-mock-up` failures dump `docs` and `mock-oidc`
+container logs before tearing the stack down; start there.
 
 ## Production OIDC Registration
 

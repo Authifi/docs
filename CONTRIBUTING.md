@@ -57,7 +57,7 @@ Bring the local stack down with:
 make local-down
 ```
 
-The mock issuer URL has to resolve to the same place on your machine and inside the docs container, so `MOCK_OIDC_HOST` defaults to `oidc-mock.127.0.0.1.nip.io`, a public wildcard resolver that maps any `*.127.0.0.1.nip.io` name to `127.0.0.1`. That means the default needs working public DNS, and it fails in two ways that look like a broken mock rather than a broken lookup: offline or egress-filtered machines cannot resolve it at all, and DNS rebinding protection on many routers, corporate resolvers, and systemd-resolved setups deliberately drops answers pointing at loopback.
+The mock issuer URL has to resolve for both the docs container and your machine, and `compose.mock.yaml` handles each separately: the container reaches the provider through a Compose network alias, while your machine reaches the port published on `127.0.0.1`. Only your side needs DNS, and `MOCK_OIDC_HOST` defaults to `oidc-mock.127.0.0.1.nip.io`, a public wildcard resolver that maps any `*.127.0.0.1.nip.io` name to `127.0.0.1`. That default therefore needs working public DNS, and it fails in two ways that look like a broken mock rather than a broken lookup: offline or egress-filtered machines cannot resolve it at all, and DNS rebinding protection on many routers, corporate resolvers, and systemd-resolved setups deliberately drops answers pointing at loopback.
 
 If discovery times out or the smoke cannot reach the issuer, use a locally resolved name instead:
 
@@ -66,7 +66,7 @@ echo "127.0.0.1 oidc-mock.local.test" | sudo tee -a /etc/hosts
 echo "MOCK_OIDC_HOST=oidc-mock.local.test" >> .env
 ```
 
-`compose.mock.yaml` maps whatever `MOCK_OIDC_HOST` you set onto the Docker host gateway, so the container follows automatically. CI does exactly this, which is why the workflow has no `nip.io` dependency. Note the separate rootless-Docker caveat about `host-gateway` in [`docs/operations/aws-oidc-hosting.md`](docs/operations/aws-oidc-hosting.md).
+The network alias follows whatever `MOCK_OIDC_HOST` you set, so the container needs no matching `/etc/hosts` entry. CI does exactly this, which is why the workflow has no `nip.io` dependency. A failed `make local-mock-up` dumps `docs` and `mock-oidc` container logs before tearing the stack down; see [`docs/operations/aws-oidc-hosting.md`](docs/operations/aws-oidc-hosting.md) for the full dual-resolution rationale.
 
 ## Writing And Navigation
 
