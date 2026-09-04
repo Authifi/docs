@@ -8,6 +8,29 @@ This note supplements the repository's [`infra/README.md`](https://github.com/Au
 - The Starlette server in `server/` serves that build, keeps specific legal and discovery paths public, and redirects protected content through Authifi OIDC.
 - The production container image is built from `Dockerfile`, pushed to ECR, and run on AWS App Runner.
 
+## What `/health` Means
+
+`/health` reports whether this process can serve the site, not whether it is
+running. It reads two artifacts out of `SITE_DIR` and answers `200` with
+`{"status": "ok"}` only if both open and are non-empty:
+
+- `index.html`, the front page
+- the page `POST_LOGOUT_PATH` names, `privacy-policy/index.html` by default,
+  which is also the compliance document that has to stay publicly reachable
+
+Anything else is `503` with `{"status": "unavailable"}`. That covers a
+`SITE_DIR` pointing at nothing, a runtime stage that shipped without its build,
+an artifact the container's uid cannot read, and a zero-byte page from a failed
+build. Without this, a deployment whose site is missing answers `404` to every
+request while reporting itself healthy, and App Runner routes production traffic
+to it; the Compose healthcheck reads the body, so `503` marks the container
+unhealthy there too.
+
+The response deliberately names neither the paths nor the directory: `/health`
+is served to anyone. The list of artifacts that failed goes to the container
+log instead, so `docker compose logs docs` or the App Runner application log is
+where you find out which one it was.
+
 ## Authorization Policy
 
 Authorization in v1 is **authentication only**: any identity that the configured Authifi tenant accepts through the OIDC flow may read every protected page. The server stores the subject, and optionally the email and name, and grants access on that basis alone.
@@ -217,6 +240,9 @@ After a deploy or cutover, verify:
 - protected guides and security pages are absent from `sitemap.xml`
 - `curl --path-as-is -sI 'https://docs.authifi.io/assets/%2e%2e/index.html'` returns `404`, not protected content
 - protected responses carry `Cache-Control: private, no-store` and `Vary: Cookie`
+- `https://docs.authifi.io/health` returns `200` with `{"status": "ok"}`; a
+  `503` means the deployment is serving an incomplete site and the container log
+  names the artifact
 
 ## Cutover From Cloudflare Pages
 

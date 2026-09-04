@@ -286,8 +286,50 @@ def validate_post_logout_path(path: str) -> str:
     return path
 
 
+# What has to be on disk for this process to be worth routing traffic to: the
+# front page, and the page every logout lands on -- which is also the compliance
+# document that has to stay publicly reachable. A runtime stage that shipped
+# without its built site answers `404` to everything, and reporting that as
+# healthy is how it becomes the live deployment. Written out rather than derived
+# so the list is reviewable; a test holds it equal to the configured target.
+HEALTH_REQUIRED_ARTIFACTS = ("index.html", "privacy-policy/index.html")
+
+
+def artifact_is_readable(path: Path) -> bool:
+    """Whether the process can actually read something from `path`.
+
+    Opening it rather than asking `Path.is_file()`: a file with no read
+    permission for this uid, or a directory wearing the right name, both pass
+    an existence check and then fail every request. A zero-byte read is a
+    failed build too, so emptiness counts as absence.
+    """
+    try:
+        with path.open("rb") as artifact:
+            return bool(artifact.read(1))
+    except OSError:
+        return False
+
+
+def unhealthy_site_artifacts(config: AppConfig) -> list[str]:
+    """The required artifacts this process cannot serve, for the log."""
+    required = dict.fromkeys((*HEALTH_REQUIRED_ARTIFACTS, site_relative_path(config.post_logout_path)))
+    return [
+        relative_path
+        for relative_path in required
+        if not artifact_is_readable(config.site_dir / relative_path)
+    ]
+
+
 async def health_endpoint(request: Request) -> Response:
     set_cache_visibility(request, VISIBILITY_PROTECTED)
+
+    unhealthy = unhealthy_site_artifacts(request.app.state.config)
+    if unhealthy:
+        # The detail goes to the log, not the response: this endpoint is served
+        # to anyone, and the layout of the image is not theirs to learn.
+        logger.error("Health check failed; unreadable site artifacts: %s", ", ".join(unhealthy))
+        return JSONResponse({"status": "unavailable"}, status_code=503)
+
     return JSONResponse({"status": "ok"})
 
 
