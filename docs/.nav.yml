@@ -30,4 +30,8 @@ nav:
     - FedRAMP Compliance Evidence: security/fedramp-compliance-evidence.md
     - glob: "security/*"
       ignore_no_matches: true
+  - Operations:
+    - AWS and OIDC Hosting: operations/aws-oidc-hosting.md
+    - glob: "operations/*"
+      ignore_no_matches: true
   - Feature List: feature-list.html

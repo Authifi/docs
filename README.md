@@ -15,7 +15,13 @@ This repository builds a static MkDocs site, packages it into a container, and s
 - `infra/` provisions ECR, IAM, and AWS App Runner for production hosting.
 - `.github/workflows/ci.yml` validates PRs; `.github/workflows/deploy.yml` builds and deploys the image from `main`.
 
+- `overrides/` holds the MkDocs Material theme override that keeps protected navigation out of the public legal pages.
+
 There are **no per-PR hosted preview environments in v1**. Pull requests get CI only. There is also **no Cloudflare Markdown-for-Agents conversion** in this architecture; agents can read the explicitly published public files and any protected HTML they can reach after an interactive browser login.
+
+## Authorization Policy
+
+Authorization in v1 is **authentication only**. Any identity the configured Authifi tenant accepts may read every protected page, and the server keeps only the subject plus the optional email and name in the session. There is deliberately **no group, role, or email-domain filtering in v1**: access is controlled by controlling who can sign in to the tenant and who is assigned the docs application.
 
 ## Prerequisites
 
@@ -90,11 +96,13 @@ Register the docs site in Authifi as a **confidential Web App**.
 
 - Redirect URI for local real-OIDC work: `http://localhost:8000/_auth/callback`
 - Redirect URI for production: `https://docs.authifi.io/_auth/callback`
-- Logout or post-logout return URL for local work: `http://localhost:8000/`
-- Logout or post-logout return URL for production: `https://docs.authifi.io/`
+- Post-logout redirect URI for local work: `http://localhost:8000/privacy-policy/`
+- Post-logout redirect URI for production: `https://docs.authifi.io/privacy-policy/`
 - Requested scopes: `openid profile email`
 
-If you run the docs server on a different base URL or port, update `PUBLIC_BASE_URL` and register the matching callback and logout destinations in Authifi.
+Logout is RP-initiated: the server clears the local session and, when the tenant publishes an `end_session_endpoint`, redirects there with `client_id` and `post_logout_redirect_uri`. The post-logout target must be a **public** path so users are not bounced straight back into a login; override it with `POST_LOGOUT_PATH` if you prefer a different public landing page. Tenants without an `end_session_endpoint` fall back to a plain local redirect to the same path.
+
+If you run the docs server on a different base URL or port, update `PUBLIC_BASE_URL` and register the matching callback and post-logout destinations in Authifi.
 
 ## AWS Bootstrap And Deploy
 
@@ -110,6 +118,8 @@ Use [`infra/README.md`](infra/README.md) for the full Terraform and App Runner b
    - `ECR_REPOSITORY_URL`
 5. Merge to `main` to let the deploy workflow build, push, and update the App Runner service.
 
+Images are built for `linux/amd64` and pushed under immutable commit-SHA tags. Rerunning the deploy workflow for a SHA that is already in ECR reuses the existing image and continues to the App Runner update, so reruns are safe. Terraform seeds `image_identifier` only when the service is created and then ignores it, so a later `terraform apply` cannot roll the deployed image backwards; see [`infra/README.md`](infra/README.md) for the explicit App Runner rollback procedure.
+
 [`docs/operations/aws-oidc-hosting.md`](docs/operations/aws-oidc-hosting.md) captures the repo-specific operating notes that sit on top of the raw infrastructure instructions.
 
 ## DNS Cutover And Rollback
@@ -122,11 +132,14 @@ For cutover:
 - create the new records
 - wait for certificate validation and App Runner domain status to settle
 - verify the public and protected paths listed below before announcing completion
+- **disconnect the Cloudflare Pages Git integration** for the docs project, or disable its production and preview deployments, so a later push to `main` cannot silently republish an ungated copy of the site
+- remove `docs.authifi.io` as a custom domain from the Cloudflare Pages project so it cannot reclaim the hostname
+- keep the Pages project itself until the rollback window closes
 
 For rollback:
 
-- repoint `docs.authifi.io` back to the previous target if the issue is domain- or edge-related
-- or redeploy / reconfigure App Runner to a previous known-good image tag if the issue is application-specific
+- edge rollback: restore the `docs.authifi.io` `CNAME` to `authifi.pages.dev`, re-add `docs.authifi.io` as a Cloudflare Pages custom domain, and re-enable the Pages Git integration if it was disconnected during cutover — this restores the fully public, ungated site
+- application rollback: move App Runner back to a previous known-good immutable SHA tag using the procedure in [`infra/README.md`](infra/README.md)
 
 ## Post-Deploy Verification
 
@@ -144,12 +157,22 @@ curl -s https://docs.authifi.io/.well-known/agent-skills/index.json
 curl -sI https://docs.authifi.io/.well-known/api-catalog
 ```
 
+Also confirm that a public prefix cannot be used to reach protected content:
+
+```bash
+curl -sI --path-as-is 'https://docs.authifi.io/assets/%2e%2e/index.html'
+curl -sI --path-as-is 'https://docs.authifi.io/assets/%2e%2e/search/search_index.json'
+```
+
 Expected behavior:
 
 - `/` returns an OIDC login redirect for unauthenticated requests
 - `/privacy-policy/`, `/terms-of-service/`, `/sms-opt-in.html`, `/robots.txt`, `/auth.md`, `/sitemap.xml`, and `/.well-known/*` stay public
+- HTML pages are served as `text/html; charset=utf-8`, not `application/octet-stream`
+- encoded traversal probes return `404`
+- protected responses carry `Cache-Control: private, no-store` and `Vary: Cookie`
 - `sitemap.xml` includes only the public legal URLs
-- protected guides and security pages are absent from the sitemap
+- protected guides and security pages are absent from the sitemap and from the public legal pages' navigation
 
 ## Agent-Facing Assets
 

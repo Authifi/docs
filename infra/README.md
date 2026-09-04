@@ -107,7 +107,7 @@ terraform -chdir=infra output -raw github_deploy_role_arn
 
 ### Stage 2: build and push the first image
 
-Build from the repository root, tagging with an immutable commit SHA:
+Build from the repository root, tagging with an immutable commit SHA. App Runner only runs `linux/amd64`, so the platform must be explicit — an image built on an Apple Silicon or other arm64 workstation will fail to start otherwise:
 
 ```bash
 AWS_REGION=us-east-1
@@ -117,9 +117,21 @@ IMAGE_TAG="$(git rev-parse HEAD)"
 aws ecr get-login-password --region "$AWS_REGION" \
   | docker login --username AWS --password-stdin "$(printf '%s' "$ECR_REPOSITORY_URL" | cut -d/ -f1)"
 
-docker build -t "$ECR_REPOSITORY_URL:$IMAGE_TAG" .
-docker push "$ECR_REPOSITORY_URL:$IMAGE_TAG"
+docker buildx build \
+  --platform linux/amd64 \
+  --provenance false \
+  -t "$ECR_REPOSITORY_URL:$IMAGE_TAG" \
+  --push \
+  .
 ```
+
+Confirm the pushed architecture before continuing:
+
+```bash
+docker buildx imagetools inspect "$ECR_REPOSITORY_URL:$IMAGE_TAG"
+```
+
+The repository is configured with `IMMUTABLE` tags, so a given SHA can only be pushed once. The deploy workflow detects an already-pushed SHA and continues straight to the App Runner update, which makes workflow reruns safe.
 
 ### Stage 3: create App Runner and domain association
 
@@ -132,15 +144,36 @@ terraform -chdir=infra apply \
   -var="image_identifier=$IMAGE_IDENTIFIER"
 ```
 
+## Who Owns The Deployed Image
+
+`var.image_identifier` seeds the App Runner service **at creation time only**. After that, GitHub Actions owns the running image, so `aws_apprunner_service.docs` declares:
+
+```hcl
+lifecycle {
+  ignore_changes = [
+    source_configuration[0].image_repository[0].image_identifier,
+  ]
+}
+```
+
+Without that, the next `terraform apply` after any deploy would see the stale SHA still recorded in `terraform.tfvars` and quietly roll production backwards.
+
+Two consequences to keep in mind:
+
+- `terraform plan` will not show image drift, and `terraform apply` will never change the deployed image. This is intentional.
+- Changing the image is an App Runner operation, not a Terraform operation. Use the procedure in [Rollback](#rollback) for both forward and backward moves outside the normal deploy workflow.
+
+If you ever genuinely need Terraform to take the image back, temporarily remove the `ignore_changes` entry in `main.tf`, apply with the desired `image_identifier`, then restore it in the same change. Do not leave it removed.
+
 ## Apply After Bootstrap
 
-After the service exists, keep `image_identifier` aligned with the desired immutable image tag in your tfvars or CLI arguments:
+Routine applies pick up everything except the deployed image:
 
 ```bash
 terraform -chdir=infra apply -var-file=terraform.tfvars
 ```
 
-The GitHub deployment workflow later updates the running service to each new commit SHA without long-lived AWS keys.
+The GitHub deployment workflow updates the running service to each new commit SHA without long-lived AWS keys.
 
 ## GitHub Actions OIDC
 
@@ -177,6 +210,7 @@ Plain App Runner environment variables:
 - `OIDC_CLIENT_ID`
 - `PUBLIC_BASE_URL`
 - `SITE_DIR`
+- `POST_LOGOUT_PATH` (optional; defaults to `/privacy-policy/`)
 
 Secrets injected from Secrets Manager by ARN:
 
@@ -209,20 +243,45 @@ Terraform state will contain infrastructure metadata such as ARNs, service URLs,
 
 ## Rollback
 
-For infrastructure rollback:
+Image rollback is an App Runner operation. Because Terraform ignores
+`image_identifier`, `terraform apply` cannot perform or undo it.
+
+Roll back to a previously pushed immutable SHA tag:
 
 ```bash
-terraform -chdir=infra apply \
-  -var-file=terraform.tfvars \
-  -var="image_identifier=$(terraform -chdir=infra output -raw ecr_repository_url):<previous-good-sha>"
-```
+SERVICE_ARN="$(terraform -chdir=infra output -raw apprunner_service_arn)"
+TARGET_IMAGE="$(terraform -chdir=infra output -raw ecr_repository_url):<previous-good-sha>"
 
-For deployment rollback without changing Terraform, update App Runner back to a previously pushed immutable tag and wait for the operation to succeed:
+aws apprunner describe-service --service-arn "$SERVICE_ARN" --output json > service.json
 
-```bash
+jq --arg image "$TARGET_IMAGE" '
+  .Service.SourceConfiguration
+  | .AutoDeploymentsEnabled = false
+  | .ImageRepository.ImageIdentifier = $image
+' service.json > source-configuration.json
+
 aws apprunner update-service \
-  --service-arn "<service-arn>" \
+  --service-arn "$SERVICE_ARN" \
   --source-configuration file://source-configuration.json
 ```
 
-Reuse the prior workflow's JSON-generation approach, swapping in the older SHA-tagged image.
+Wait for the operation to finish and confirm the running image:
+
+```bash
+aws apprunner describe-service --service-arn "$SERVICE_ARN" \
+  --query 'Service.{Status:Status,Image:SourceConfiguration.ImageRepository.ImageIdentifier}'
+```
+
+The service is rolled back once `Status` is `RUNNING` and `Image` matches
+`$TARGET_IMAGE`. This is the same shape of call the deploy workflow makes, so
+the next merge to `main` will roll forward normally from here.
+
+For infrastructure rollback that is *not* about the image — IAM, autoscaling,
+health checks, domain association — use ordinary Terraform:
+
+```bash
+terraform -chdir=infra apply -var-file=terraform.tfvars
+```
+
+Edge-layer rollback to the previous Cloudflare Pages hosting is documented in
+`docs/operations/aws-oidc-hosting.md`.

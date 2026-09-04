@@ -35,7 +35,7 @@ Set these values in `.env` first:
 - `SESSION_SECRET`
 - `PUBLIC_BASE_URL`
 
-The matching Authifi confidential Web App must allow the callback URL at `http://localhost:8000/_auth/callback` and the local logout return URL at `http://localhost:8000/`, unless you intentionally run on another base URL.
+The matching Authifi confidential Web App must allow the callback URL at `http://localhost:8000/_auth/callback` and the post-logout redirect URI at `http://localhost:8000/privacy-policy/`, unless you intentionally run on another base URL.
 
 ### Mock OIDC preview
 
@@ -72,24 +72,35 @@ Keep the access model in mind while editing:
 
 - Public: legal pages, selected discovery files, static assets, and `sitemap.xml`
 - Protected: the main product documentation, including guides, authorization content, security pages, and the home page
+- Authorization is authentication only: any identity the configured Authifi tenant accepts can read every protected page. There is no group, role, or domain filtering in v1.
 
-If you add a new public page or public machine-readable asset, update the server allowlist, `docs/auth.md`, `docs/robots.txt`, and any sitemap-generation logic together.
+If you add a new public page or public machine-readable asset, update these together:
+
+- `PUBLIC_EXACT_PATHS` / `PUBLIC_PREFIXES` in `server/app.py`
+- the public path list in `docs/auth.md`
+- every `Allow:` block in `docs/robots.txt`
+- `PUBLIC_SITEMAP_PATHS` and, for rendered Markdown pages, `PUBLIC_PAGE_SOURCES` in `docs/hooks/agent_assets.py`
+
+`server/tests/test_public_boundary.py` compares those sources against each other and against the built site, so leaving one behind fails CI. A new public Markdown page must be listed in `PUBLIC_PAGE_SOURCES` or its rendered navigation will advertise every protected guide by title and URL; `overrides/main.html` is what actually removes that markup.
 
 ## Pull Request Checks
 
 PRs do **not** get hosted preview deployments in v1. Instead, `.github/workflows/ci.yml` runs:
 
-- server tests
+- server tests, including the built-artifact public-boundary tests
 - strict MkDocs build
 - container build
+- a rootless, read-only container run that probes `/health`, HTML content types, and encoded-traversal bypasses
+- the credential-free mock OIDC smoke, with teardown guaranteed
 - Terraform format and validate checks for `infra/`
 
 Before opening or updating a PR, run the focused checks that match your change. For broad changes, run the full local set:
 
 ```bash
-PYTHONPATH=. .venv/bin/pytest server/tests
+.venv/bin/python -m pytest server/tests
 make build
 docker build --tag authifi-docs:test .
+make local-smoke
 ```
 
 ## Reviewer Checklist
