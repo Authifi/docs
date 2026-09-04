@@ -1,6 +1,7 @@
 import importlib
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import parse_qs, quote, urlparse
 from unittest.mock import ANY, patch
 
@@ -16,6 +17,7 @@ from server.app import (
     AppConfig,
     create_app,
     create_auth_client,
+    load_ssm_secure_string,
     MAX_NEXT_PATH_BYTES,
     normalize_next_path,
 )
@@ -49,6 +51,8 @@ def test_redirects_unauthenticated_root_to_login_with_safe_next(site_dir: Path) 
 @pytest.mark.parametrize(
     "path",
     [
+        "/logged-off",
+        "/logged-off/",
         "/privacy-policy/",
         "/terms-of-service/",
         "/sms-opt-in.html",
@@ -69,6 +73,16 @@ def test_allows_public_paths_without_session(site_dir: Path, path: str) -> None:
     response = client.get(path, follow_redirects=False)
 
     assert response.status_code == 200
+
+
+def test_logged_off_page_is_public_without_a_trailing_slash(site_dir: Path) -> None:
+    client = build_client(site_dir)
+
+    response = client.get("/logged-off", follow_redirects=False)
+
+    assert response.status_code == 200
+    assert "You’ve been logged off" in response.text
+    assert 'href="/_auth/login"' in response.text
 
 
 def test_redirects_private_search_index_without_session(site_dir: Path) -> None:
@@ -121,6 +135,7 @@ def test_serves_authenticated_root_with_link_headers(site_dir: Path) -> None:
         ),
         ("/.well-known/agent-skills/index.json", "application/json"),
         ("/auth.md", "text/markdown; charset=utf-8"),
+        ("/logged-off", "text/html; charset=utf-8"),
         ("/privacy-policy/", "text/html; charset=utf-8"),
         ("/terms-of-service/", "text/html; charset=utf-8"),
         ("/sms-opt-in.html", "text/html; charset=utf-8"),
@@ -422,7 +437,7 @@ def test_login_redirects_and_persists_safe_next(site_dir: Path) -> None:
 
 @pytest.mark.parametrize(
     ("secret", "expected_method"),
-    [(None, "none"), ("confidential-secret", "client_secret_basic")],
+    [(None, "none"), ("confidential-secret", "client_secret_post")],
 )
 def test_auth_client_selects_token_authentication_from_secret_presence(
     secret: str | None,
@@ -1026,6 +1041,65 @@ def test_oidc_client_secret_is_optional_for_a_pkce_public_client(
         monkeypatch.setenv("OIDC_CLIENT_SECRET", secret)
 
     assert AppConfig.from_env().oidc_client_secret is None
+
+
+def test_app_config_resolves_named_oidc_secret(site_dir: Path) -> None:
+    requested: list[str] = []
+    values = {
+        "OIDC_ISSUER": "https://issuer.example.com",
+        "OIDC_CLIENT_ID": "docs",
+        "OIDC_CLIENT_SECRET_PARAMETER_NAME": "/authifi-docs/oidc-client-secret",
+        "SESSION_SECRET": "session-secret",
+        "PUBLIC_BASE_URL": "https://docs.example.com",
+        "SITE_DIR": str(site_dir),
+    }
+
+    config = AppConfig.from_env(
+        values,
+        parameter_loader=lambda name: requested.append(name) or "resolved-secret",
+    )
+
+    assert requested == ["/authifi-docs/oidc-client-secret"]
+    assert config.oidc_client_secret == "resolved-secret"
+
+
+def test_ssm_secret_loader_supplies_configured_aws_region(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client_calls: list[tuple[str, dict[str, str]]] = []
+
+    class FakeSsmClient:
+        def get_parameter(self, **_kwargs: object) -> dict[str, object]:
+            return {"Parameter": {"Value": "resolved-secret"}}
+
+    def fake_client(service: str, **kwargs: str) -> FakeSsmClient:
+        client_calls.append((service, kwargs))
+        return FakeSsmClient()
+
+    monkeypatch.setenv("AWS_REGION", "us-east-1")
+    monkeypatch.setitem(sys.modules, "boto3", SimpleNamespace(client=fake_client))
+
+    assert load_ssm_secure_string("/authifi-docs/oidc-client-secret") == "resolved-secret"
+    assert client_calls == [("ssm", {"region_name": "us-east-1"})]
+
+
+def test_app_config_rejects_empty_named_oidc_secret_without_exposing_it(
+    site_dir: Path,
+) -> None:
+    parameter_name = "/authifi-docs/oidc-client-secret"
+    values = {
+        "OIDC_ISSUER": "https://issuer.example.com",
+        "OIDC_CLIENT_ID": "docs",
+        "OIDC_CLIENT_SECRET_PARAMETER_NAME": parameter_name,
+        "SESSION_SECRET": "session-secret",
+        "PUBLIC_BASE_URL": "https://docs.example.com",
+        "SITE_DIR": str(site_dir),
+    }
+
+    with pytest.raises(RuntimeError) as error:
+        AppConfig.from_env(values, parameter_loader=lambda _name: "")
+
+    assert parameter_name in str(error.value)
 
 
 def test_app_config_reads_environment_defaults() -> None:

@@ -54,9 +54,10 @@ locals {
   # org or repository rewrites this claim to the
   # `repo:<owner>@<owner-id>/<name>@<repo-id>:environment:<env>` form, and this
   # value has to be updated in the same change.
-  github_repository_subject = "repo:${var.github_repository}:environment:${var.deploy_environment}"
-  github_oidc_provider_arn  = coalesce(var.existing_github_oidc_provider_arn, try(aws_iam_openid_connect_provider.github[0].arn, null))
-  release_bucket_name       = coalesce(var.release_bucket_name, "${var.service_name}-releases-${data.aws_caller_identity.current.account_id}")
+  github_repository_subject        = "repo:${var.github_repository}:environment:${var.deploy_environment}"
+  github_oidc_provider_arn         = coalesce(var.existing_github_oidc_provider_arn, try(aws_iam_openid_connect_provider.github[0].arn, null))
+  release_bucket_name              = coalesce(var.release_bucket_name, "${var.service_name}-releases-${data.aws_caller_identity.current.account_id}")
+  oidc_client_secret_parameter_arn = "arn:${data.aws_partition.current.partition}:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${var.oidc_client_secret_parameter_name}"
 
   common_tags = merge(var.tags, {
     ManagedBy  = "Terraform"
@@ -88,11 +89,13 @@ locals {
   # metadata service by anything that can reach it, and it lands in Terraform
   # state. The session secret is generated on the host for exactly that reason.
   host_config = {
-    OIDC_ISSUER      = var.oidc_issuer
-    OIDC_CLIENT_ID   = var.oidc_client_id
-    PUBLIC_BASE_URL  = var.public_base_url
-    SITE_DIR         = var.site_dir
-    POST_LOGOUT_PATH = var.post_logout_path
+    AWS_REGION                        = var.aws_region
+    OIDC_ISSUER                       = var.oidc_issuer
+    OIDC_CLIENT_ID                    = var.oidc_client_id
+    OIDC_CLIENT_SECRET_PARAMETER_NAME = var.oidc_client_secret_parameter_name
+    PUBLIC_BASE_URL                   = var.public_base_url
+    SITE_DIR                          = var.site_dir
+    POST_LOGOUT_PATH                  = var.post_logout_path
   }
 
   user_data = templatefile("${path.module}/templates/user-data.sh.tftpl", {
@@ -325,7 +328,7 @@ resource "aws_lb" "docs" {
         for subnet_id in var.public_subnet_ids :
         anytrue([
           for route in data.aws_route_table.public[subnet_id].routes :
-          route.cidr_block == "0.0.0.0/0" && route.gateway_id != ""
+          route.cidr_block == "0.0.0.0/0" && startswith(route.gateway_id, "igw-")
         ])
       ])
       error_message = "Every public_subnet_ids entry's route table must send 0.0.0.0/0 to an internet gateway; an internet-facing load balancer in private subnets is reachable only from inside the VPC."
@@ -606,6 +609,13 @@ data "aws_iam_policy_document" "instance_releases" {
     actions   = ["s3:GetObject"]
     resources = ["${aws_s3_bucket.releases.arn}/releases/*"]
   }
+
+  statement {
+    sid       = "AllowReadOidcCredentialParameter"
+    effect    = "Allow"
+    actions   = ["ssm:GetParameter"]
+    resources = [local.oidc_client_secret_parameter_arn]
+  }
 }
 
 resource "aws_iam_policy" "instance_releases" {
@@ -874,6 +884,13 @@ data "aws_iam_policy_document" "github_deploy" {
     effect    = "Allow"
     actions   = ["s3:GetObject", "s3:PutObject"]
     resources = ["${aws_s3_bucket.releases.arn}/releases/*"]
+  }
+
+  statement {
+    sid       = "AllowWriteOidcCredentialParameter"
+    effect    = "Allow"
+    actions   = ["ssm:PutParameter"]
+    resources = [local.oidc_client_secret_parameter_arn]
   }
 
   # Naming both the document and the instance is what keeps this from being

@@ -146,22 +146,22 @@ For Docker networking details, including how the mock issuer hostname resolves f
 
 ## Authifi OIDC Client Registration
 
-Register the production docs site in Authifi as a **public client** using Authorization Code + PKCE. There is no production client secret.
+Register the production docs site in Authifi as a **confidential client** using Authorization Code + PKCE S256.
 
 - Redirect URI for local real-OIDC work: `http://localhost:8000/_auth/callback`
 - Redirect URI for production: `https://docs.authifi.io/_auth/callback`
-- Post-logout redirect URI for local work: `http://localhost:8000/privacy-policy/`
-- Post-logout redirect URI for production: `https://docs.authifi.io/privacy-policy/`
+- Post-logout redirect URI for local work: `http://localhost:8000/logged-off`
+- Post-logout redirect URI for production: `https://docs.authifi.io/logged-off`
 - Requested scopes: `openid profile email`
 
 Production registration values:
 
-- Client type: `public`
+- Client type: `confidential`
 - Grant: `authorization code`
 - PKCE: `required`, `S256`
-- Token endpoint authentication method: `none`
+- Token endpoint authentication method: `client_secret_post`
 
-The server still performs OIDC discovery and the code exchange itself, so production keeps the private-subnet NAT egress even though the client is public. Local real-OIDC Compose remains separate: it can still use a local client secret for the tenant registration you choose to test with.
+Set the Authifi client secret as the `OIDC_CLIENT_SECRET` secret on GitHub's `production` Environment. The deployment workflow synchronizes it to an SSM Parameter Store `SecureString`; operators do not maintain another copy directly in AWS. The EC2 instance resolves it through its instance role at startup, and the value never enters Terraform state or a release artifact.
 
 A sign-in lasts **eight hours, measured from the moment it completed**. The callback stamps the session with that time, and every protected request checks it, so using the site all day does not extend the session: at the eight-hour mark the next protected request clears the cookie and sends the user back through the issuer. The cookie's own `max_age` is still eight hours as well, but it answers a different question — Starlette re-issues the cookie on every response, so that clock restarts with each page view and only expires a browser that was left alone. A session with no stamp, an unparseable one, or one dated in the future is not a session: sign-ins predate this rule, and a replayed cookie can claim anything.
 
@@ -193,9 +193,10 @@ Use [`infra/README.md`](infra/README.md) for the full Terraform and EC2/ALB boot
    - `DOCS_TARGET_GROUP_ARN`
    - `DOCS_ALB_DNS_NAME`
    - `DOCS_PUBLIC_BASE_URL`
-5. Prefer a protected `production` environment so the first post-merge run on `main` waits for approval. The workflow becomes manually dispatchable only once it exists on `main`, so the safest first rollout is: configure the variables first, merge, then approve the pending run or cancel it and use `workflow_dispatch` on `main`.
-6. Use the deploy workflow to build a release archive, upload it to S3, install it through SSM, wait for ALB target health, and probe the new ALB directly while preserving the canonical `DOCS_PUBLIC_BASE_URL` hostname in TLS and HTTP. The direct probes are the authoritative check. The target-health wait returns as soon as the target group reports healthy, and a target healthy before the swap can still be reporting healthy just after it, so the wait does not prove which release answered — a green wait alone is not a successful deployment.
-7. Cut `docs.authifi.io` over from Cloudflare only after those direct-ALB probes pass, then rerun the canonical verification against `https://docs.authifi.io/`.
+5. Add `OIDC_CLIENT_SECRET` as a secret on the protected `production` Environment.
+6. Prefer a protected `production` environment so the first post-merge run on `main` waits for approval. The workflow becomes manually dispatchable only once it exists on `main`, so the safest first rollout is: configure the variables first, merge, then approve the pending run or cancel it and use `workflow_dispatch` on `main`.
+7. Use the deploy workflow to build a release archive, upload it to S3, install it through SSM, wait for ALB target health, and probe the new ALB directly while preserving the canonical `DOCS_PUBLIC_BASE_URL` hostname in TLS and HTTP. The direct probes are the authoritative check. The target-health wait returns as soon as the target group reports healthy, and a target healthy before the swap can still be reporting healthy just after it, so the wait does not prove which release answered — a green wait alone is not a successful deployment.
+8. Cut `docs.authifi.io` over from Cloudflare only after those direct-ALB probes pass, then rerun the canonical verification against `https://docs.authifi.io/`.
 
 If you merge the workflow before setting the required production variables or before protecting the `production` environment, the first push-triggered run may fail fast in `Verify required repository variables`. That failure is operationally honest, but it is avoidable.
 
@@ -233,6 +234,7 @@ Run these checks against production after a cutover or deploy:
 
 ```bash
 curl -sI https://docs.authifi.io/
+curl -sI https://docs.authifi.io/logged-off
 curl -sI https://docs.authifi.io/privacy-policy/
 curl -sI https://docs.authifi.io/terms-of-service/
 curl -sI https://docs.authifi.io/sms-opt-in.html
@@ -253,7 +255,7 @@ curl -sI --path-as-is 'https://docs.authifi.io/assets/%2e%2e/search/search_index
 Expected behavior:
 
 - `/` returns an OIDC login redirect for unauthenticated requests
-- `/privacy-policy/`, `/terms-of-service/`, `/sms-opt-in.html`, `/robots.txt`, `/auth.md`, `/sitemap.xml`, and `/.well-known/*` stay public
+- `/logged-off`, `/privacy-policy/`, `/terms-of-service/`, `/sms-opt-in.html`, `/robots.txt`, `/auth.md`, `/sitemap.xml`, and `/.well-known/*` stay public
 - HTML pages are served as `text/html; charset=utf-8`, not `application/octet-stream`
 - encoded traversal probes return `404`
 - protected responses carry `Cache-Control: private, no-store` and `Vary: Cookie`

@@ -32,6 +32,8 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 logger = logging.getLogger("authifi.docs")
 
 PUBLIC_EXACT_PATHS = {
+    "/logged-off",
+    "/logged-off/",
     "/privacy-policy/",
     "/terms-of-service/",
     "/sms-opt-in.html",
@@ -41,6 +43,7 @@ PUBLIC_EXACT_PATHS = {
 }
 PUBLIC_AUTH_PATHS = {"/_auth/login", "/_auth/callback", "/_auth/logout"}
 PUBLIC_PREFIXES = ("/.well-known/", "/assets/", "/javascripts/", "/stylesheets/")
+EXTENSIONLESS_PAGE_FILES = {"/logged-off": "logged-off/index.html"}
 # POSIX `NAME_MAX`, in bytes. A longer path component cannot name anything on
 # the filesystems this is deployed on, so it is refused before it is probed.
 MAX_PATH_SEGMENT_BYTES = 255
@@ -83,7 +86,7 @@ SESSION_MAX_AGE_SECONDS = 8 * 60 * 60
 # A separate setting from the one above because it answers a separate question:
 # without it, a tab left open and occasionally clicked never expires at all.
 ABSOLUTE_SESSION_LIFETIME_SECONDS = 8 * 60 * 60
-DEFAULT_POST_LOGOUT_PATH = "/privacy-policy/"
+DEFAULT_POST_LOGOUT_PATH = "/logged-off"
 
 # `303 See Other` is the status that ends a POST: it tells the browser the
 # submission is finished and the thing to fetch next is a `GET`. Starlette's
@@ -165,6 +168,42 @@ CONTROL_CHARACTERS = frozenset(chr(code) for code in range(0x20)) | {"\x7f"}
 DOT_SEGMENTS = frozenset({".", ".."})
 
 
+SecretParameterLoader = Callable[[str], str]
+
+
+def load_ssm_secure_string(name: str) -> str:
+    import boto3
+
+    response = boto3.client(
+        "ssm",
+        region_name=os.environ["AWS_REGION"],
+    ).get_parameter(Name=name, WithDecryption=True)
+    value = response["Parameter"]["Value"]
+    if not isinstance(value, str) or not value:
+        raise RuntimeError(f"OIDC client secret parameter {name!r} is empty")
+    return value
+
+
+def resolve_oidc_client_secret(
+    environ: Mapping[str, str],
+    parameter_loader: SecretParameterLoader = load_ssm_secure_string,
+) -> str | None:
+    direct = environ.get("OIDC_CLIENT_SECRET") or None
+    parameter_name = environ.get("OIDC_CLIENT_SECRET_PARAMETER_NAME") or None
+    if direct and parameter_name:
+        raise RuntimeError(
+            "set only one of OIDC_CLIENT_SECRET and "
+            "OIDC_CLIENT_SECRET_PARAMETER_NAME"
+        )
+    if not parameter_name:
+        return direct
+
+    value = parameter_loader(parameter_name)
+    if not value:
+        raise RuntimeError(f"OIDC client secret parameter {parameter_name!r} is empty")
+    return value
+
+
 @dataclass(frozen=True)
 class AppConfig:
     oidc_issuer: str
@@ -186,7 +225,11 @@ class AppConfig:
         return self.public_base_url.startswith("https://")
 
     @classmethod
-    def from_env(cls, environ: Mapping[str, str] | None = None) -> AppConfig:
+    def from_env(
+        cls,
+        environ: Mapping[str, str] | None = None,
+        parameter_loader: SecretParameterLoader = load_ssm_secure_string,
+    ) -> AppConfig:
         env = dict(os.environ if environ is None else environ)
         base_dir = Path(__file__).resolve().parent.parent
         site_dir_value = env.get("SITE_DIR", DEFAULT_SITE_DIR)
@@ -197,7 +240,7 @@ class AppConfig:
         return cls(
             oidc_issuer=env["OIDC_ISSUER"],
             oidc_client_id=env["OIDC_CLIENT_ID"],
-            oidc_client_secret=env.get("OIDC_CLIENT_SECRET") or None,
+            oidc_client_secret=resolve_oidc_client_secret(env, parameter_loader),
             session_secret=env["SESSION_SECRET"],
             public_base_url=env["PUBLIC_BASE_URL"],
             site_dir=site_dir,
@@ -438,7 +481,7 @@ def validate_public_base_url(public_base_url: str) -> str:
     at `/`, the load balancer strips nothing, and `build_public_url` appends to
     this value verbatim -- so `https://host/docs` hands the issuer
     `https://host/docs/_auth/callback` as the redirect URI and sends logged-out
-    readers to `https://host/docs/privacy-policy/`, while the login redirect,
+    readers to `https://host/docs/logged-off`, while the login redirect,
     the sign-out form action, and every stylesheet URL stay rooted at `/`. The
     deployment probe asks for the prefixed path and gets a `404`. Making the
     routing prefix-aware is a larger change than this deployment needs, so the
@@ -482,7 +525,7 @@ def validate_post_logout_path(path: str) -> str:
 # without its built site answers `404` to everything, and reporting that as
 # healthy is how it becomes the live deployment. Written out rather than derived
 # so the list is reviewable; a test holds it equal to the configured target.
-HEALTH_REQUIRED_ARTIFACTS = ("index.html", "privacy-policy/index.html")
+HEALTH_REQUIRED_ARTIFACTS = ("index.html", "logged-off/index.html")
 
 
 def artifact_is_readable(path: Path) -> bool:
@@ -939,6 +982,10 @@ def normalize_next_path(candidate: str | None, default: str = "/") -> str:
 
 
 def site_relative_path(canonical_path: str) -> str:
+    extensionless_page = EXTENSIONLESS_PAGE_FILES.get(canonical_path)
+    if extensionless_page is not None:
+        return extensionless_page
+
     relative_path = canonical_path.lstrip("/")
     if canonical_path.endswith("/") or not relative_path:
         relative_path = f"{relative_path}index.html"
@@ -988,7 +1035,7 @@ def resolve_site_file(site_dir: Path, canonical_path: str) -> Path | None:
 
 def directory_redirect_target(site_dir: Path, canonical_path: str) -> str | None:
     """Return the trailing-slash form for an existing directory page."""
-    if canonical_path.endswith("/"):
+    if canonical_path.endswith("/") or canonical_path in EXTENSIONLESS_PAGE_FILES:
         return None
 
     candidate = resolve_within_site(site_dir, canonical_path.lstrip("/"))
@@ -1194,7 +1241,7 @@ class DocsOAuth(OAuth):
 def create_auth_client(config: AppConfig):
     oauth = DocsOAuth()
     token_auth_method = (
-        "client_secret_basic" if config.oidc_client_secret else "none"
+        "client_secret_post" if config.oidc_client_secret else "none"
     )
     oauth.register(
         name="authifi",

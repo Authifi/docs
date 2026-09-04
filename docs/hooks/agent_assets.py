@@ -41,6 +41,7 @@ STATIC_COPIES = (
     ".well-known/agent-skills/authifi-oauth-concepts/SKILL.md",
 )
 PUBLIC_SITEMAP_PATHS = (
+    "logged-off.md",
     "privacy-policy.md",
     "terms-of-service.md",
     "sms-opt-in.html",
@@ -50,6 +51,7 @@ PUBLIC_SITEMAP_PATHS = (
 # would otherwise advertise every protected guide, authorization, and security
 # page by title and URL, and their search box would query a protected index.
 PUBLIC_PAGE_SOURCES = (
+    "logged-off.md",
     "privacy-policy.md",
     "terms-of-service.md",
 )

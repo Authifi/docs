@@ -54,7 +54,9 @@ SERVER_LOCK = Lock(
     label="server runtime",
     direct=REPO_ROOT / "server" / "requirements.in",
     lock=REPO_ROOT / "server" / "requirements.txt",
-    direct_packages=frozenset({"authlib", "httpx", "itsdangerous", "starlette", "uvicorn"}),
+    direct_packages=frozenset(
+        {"authlib", "boto3", "httpx", "itsdangerous", "starlette", "uvicorn"}
+    ),
 )
 SITE_LOCK = Lock(
     label="site build",
@@ -69,6 +71,7 @@ LOCKS = (SERVER_LOCK, SITE_LOCK)
 REQUIRED_SERVER_PACKAGES = frozenset(
     {
         "authlib",  # OIDC client
+        "boto3",  # encrypted Parameter Store client
         "starlette",  # ASGI framework and session cookie handling
         "uvicorn",  # HTTP server
         "httpx",  # outbound issuer calls

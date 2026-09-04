@@ -27,11 +27,13 @@ DEPLOYER = ROOT / "infra" / "scripts" / "deploy-release.sh"
 # The installer requires this key set and no other, so this is not just a
 # fixture -- it is the contract, and the tests below vary it one key at a time.
 HOST_CONFIGURATION = {
+    "AWS_REGION": "us-east-1",
     "OIDC_ISSUER": "https://issuer.authifi.io/tenants/authifi",
     "OIDC_CLIENT_ID": "authifi-docs",
+    "OIDC_CLIENT_SECRET_PARAMETER_NAME": "/authifi-docs/oidc-client-secret",
     "PUBLIC_BASE_URL": "https://docs.authifi.io",
     "SITE_DIR": "/opt/authifi-docs/current/site",
-    "POST_LOGOUT_PATH": "/privacy-policy/",
+    "POST_LOGOUT_PATH": "/logged-off",
 }
 
 
@@ -406,8 +408,9 @@ Path(os.environ["UVICORN_ENV_FILE"]).write_text(
         {
             name: value
             for name, value in os.environ.items()
-            if name in ("OIDC_ISSUER", "OIDC_CLIENT_ID", "PUBLIC_BASE_URL", "SITE_DIR",
-                        "POST_LOGOUT_PATH", "SESSION_SECRET", "AUTHIFI_ENV", "SESSION_NAME")
+            if name in ("AWS_REGION", "OIDC_ISSUER", "OIDC_CLIENT_ID", "OIDC_CLIENT_SECRET_PARAMETER_NAME",
+                        "PUBLIC_BASE_URL", "SITE_DIR", "POST_LOGOUT_PATH", "SESSION_SECRET",
+                        "AUTHIFI_ENV", "SESSION_NAME")
         }
     ),
     encoding="utf-8",
@@ -1011,20 +1014,22 @@ def signal_during_deploy(
     sha: str,
     *,
     signal_name: str = "SIGTERM",
+    pause_point: str = "after_swap",
 ) -> subprocess.CompletedProcess[str]:
-    """Drive a deployment to the post-swap pause point, then signal it."""
+    """Drive a deployment to a named pause point, then signal it."""
     import signal as signal_module
 
     number = getattr(signal_module, signal_name)
     deploy_harness.test_pause_hold_file.write_text("1\n", encoding="utf-8")
 
+    env = {**deploy_harness.env, "AUTHIFI_DOCS_TEST_PAUSE_POINT": pause_point}
     process = subprocess.Popen(
         [str(DEPLOYER), sha],
         cwd=ROOT,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
-        env=deploy_harness.env,
+        env=env,
     )
     wait_for_path(deploy_harness.test_pause_marker_file)
     process.send_signal(number)
@@ -1155,6 +1160,36 @@ def test_a_signalled_first_deploy_after_swap_leaves_no_active_release(
     assert "systemctl:stop" in deploy_harness.events
 
 
+@pytest.mark.parametrize("signal_name", ["SIGHUP", "SIGINT", "SIGTERM"])
+def test_a_signalled_deployment_after_replace_before_flag_restores_the_previous_release(
+    deploy_harness: DeployHarness, signal_name: str
+) -> None:
+    """`os.replace` can finish before bash sets `candidate_swapped`. Cleanup
+    must resolve `current` against the candidate rather than trust the flag."""
+    import signal as signal_module
+
+    number = getattr(signal_module, signal_name)
+    previous_sha = "0" * 40
+    deploy_harness.seed_active_release()
+    sha = "a" * 37 + "bcd"
+    deploy_harness.publish_archive(sha)
+
+    result = signal_during_deploy(
+        deploy_harness,
+        sha,
+        signal_name=signal_name,
+        pause_point="after_replace_before_flag",
+    )
+
+    assert result.returncode != 0, result.stderr
+    assert result.returncode in (128 + number, -number), result.returncode
+    assert deploy_harness.current.resolve().name == previous_sha
+    assert not (deploy_harness.releases / sha).exists()
+    assert not (deploy_harness.incoming_root / sha).exists()
+    assert "previous release restored" in result.stderr
+    assert "deployment interrupted by SIG" in result.stderr
+
+
 def test_the_cleanup_handler_runs_once_even_when_a_signal_precedes_the_exit(
     deploy_harness: DeployHarness,
 ) -> None:
@@ -1176,6 +1211,23 @@ def test_the_cleanup_handler_runs_once_even_when_a_signal_precedes_the_exit(
     assert len(re.findall(r"trap - EXIT HUP INT TERM", installer)) == 2
     assert "cleanup_done=0" in installer
     assert re.search(r"if \(\( cleanup_done == 1 \)\); then\s+return 0", installer)
+
+
+def test_cleanup_rollback_resolves_current_against_the_candidate() -> None:
+    """The swap latch is set before `os.replace` can finish, and rollback still
+    resolves `current` against the candidate so already-active redeploys do not
+    roll back."""
+    installer = DEPLOYER.read_text(encoding="utf-8")
+
+    assert "current_points_at_candidate()" in installer
+    assert re.search(
+        r"if current_points_at_candidate && \(\( candidate_swapped == 1 \)\)",
+        installer,
+    )
+    swap_index = installer.index('swap_current "$candidate"')
+    swapped_index = installer.rindex("candidate_swapped=1", 0, swap_index)
+    assert swapped_index < swap_index
+    assert "maybe_test_pause after_replace_before_flag" in installer
 
 
 def test_a_relative_current_symlink_is_never_mistaken_for_a_stale_candidate(

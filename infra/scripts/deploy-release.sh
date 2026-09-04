@@ -146,6 +146,16 @@ discard_candidate() {
   rm -rf "$candidate"
 }
 
+current_points_at_candidate() {
+  local active=""
+
+  if [[ ! -e "$current" ]]; then
+    return 1
+  fi
+  active="$(readlink -f "$current" 2>/dev/null || true)"
+  [[ -n "$active" && "$active" == "$(readlink -f "$candidate" 2>/dev/null || echo "$candidate")" ]]
+}
+
 cleanup_done=0
 
 # `incoming/<sha>` is this deployment's staging directory and nothing else's,
@@ -169,7 +179,7 @@ run_cleanup() {
   cleanup_done=1
 
   stop_candidate_server
-  if (( candidate_swapped == 1 )) && (( candidate_activated == 0 )) && (( release_restored == 0 )); then
+  if current_points_at_candidate && (( candidate_swapped == 1 )) && (( candidate_activated == 0 )) && (( release_restored == 0 )); then
     restore_previous_release "deployment interrupted"
   fi
   rm -rf "$incoming"
@@ -371,7 +381,15 @@ from pathlib import Path
 # has to hold if the file is ever written by something other than the
 # bootstrap this repository ships.
 EXPECTED_CONFIG = frozenset(
-    ("OIDC_ISSUER", "OIDC_CLIENT_ID", "PUBLIC_BASE_URL", "SITE_DIR", "POST_LOGOUT_PATH")
+    (
+        "AWS_REGION",
+        "OIDC_ISSUER",
+        "OIDC_CLIENT_ID",
+        "OIDC_CLIENT_SECRET_PARAMETER_NAME",
+        "PUBLIC_BASE_URL",
+        "SITE_DIR",
+        "POST_LOGOUT_PATH",
+    )
 )
 # Generated on the host, and the only thing that file is for.
 EXPECTED_SESSION = frozenset(("SESSION_SECRET",))
@@ -587,8 +605,9 @@ maybe_test_pause() {
   done
 }
 
-swap_current "$candidate"
 candidate_swapped=1
+swap_current "$candidate"
+maybe_test_pause after_replace_before_flag
 maybe_test_pause after_swap
 
 if ! "$systemctl_bin" restart authifi-docs; then

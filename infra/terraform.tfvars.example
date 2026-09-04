@@ -23,9 +23,9 @@ app_port             = 8080
 release_bucket_name    = null
 release_retention_days = 90
 
-# Non-secret. This client is a public PKCE client, so there is no client secret
-# to hold anywhere, and the session secret is generated on the host at first
-# boot rather than passed in.
+# Non-secret client identity. The confidential client's secret is maintained in
+# the GitHub production Environment and synchronized to SSM during deployment;
+# the session secret is generated on the host at first boot.
 oidc_issuer     = "https://issuer.example.com"
 oidc_client_id  = "authifi-docs"
 public_base_url = "https://docs.authifi.io"
@@ -33,7 +33,7 @@ site_dir        = "/opt/authifi-docs/current/site"
 
 # Must be a publicly served path, and must be registered with Authifi as a
 # post-logout redirect URI.
-post_logout_path = "/privacy-policy/"
+post_logout_path = "/logged-off"
 
 custom_domain_name = "docs.authifi.io"
 

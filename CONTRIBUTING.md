@@ -35,7 +35,7 @@ Set these values in `.env` first:
 - `SESSION_SECRET`
 - `PUBLIC_BASE_URL`
 
-The matching local Authifi application must allow the callback URL at `http://localhost:8000/_auth/callback` and the post-logout redirect URI at `http://localhost:8000/privacy-policy/`, unless you intentionally run on another base URL.
+The matching local Authifi application must allow the callback URL at `http://localhost:8000/_auth/callback` and the post-logout redirect URI at `http://localhost:8000/logged-off`, unless you intentionally run on another base URL.
 
 ### Mock OIDC preview
 

@@ -17,6 +17,8 @@ This site uses a mixed access model. It is not wholly public.
 
 These paths are fetchable without credentials:
 
+- `/logged-off`
+- `/logged-off/`
 - `/privacy-policy/`
 - `/terms-of-service/`
 - `/sms-opt-in.html`

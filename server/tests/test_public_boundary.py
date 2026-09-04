@@ -20,6 +20,7 @@ from urllib.parse import urljoin, urlsplit
 import pytest
 
 from server.app import (
+    EXTENSIONLESS_PAGE_FILES,
     MAX_NEXT_PATH_BYTES,
     PUBLIC_AUTH_PATHS,
     PUBLIC_EXACT_PATHS,
@@ -33,6 +34,7 @@ SITE_URL = "https://docs.authifi.io"
 SITEMAP_NAMESPACE = {"sm": "http://www.sitemaps.org/schemas/sitemap/0.9"}
 
 PUBLIC_PAGE_URLS = {
+    "logged-off/index.html": f"{SITE_URL}/logged-off/",
     "privacy-policy/index.html": f"{SITE_URL}/privacy-policy/",
     "terms-of-service/index.html": f"{SITE_URL}/terms-of-service/",
 }
@@ -124,6 +126,13 @@ def test_public_pages_keep_material_styling_and_content(built_site: Path, relati
     assert 'class="md-content__inner md-typeset"' in html
     assert 'data-md-type="toc"' in html
     assert f'<link rel="canonical" href="{PUBLIC_PAGE_URLS[relative_path]}">' in html
+
+
+def test_logged_off_page_confirms_logout_and_links_to_login(built_site: Path) -> None:
+    html = (built_site / "logged-off" / "index.html").read_text(encoding="utf-8")
+
+    assert "You’ve been logged off" in html
+    assert 'href="/_auth/login"' in html
 
 
 def test_protected_pages_still_render_navigation(built_site: Path) -> None:
@@ -283,6 +292,7 @@ def test_sitemap_lists_only_public_urls(built_site: Path) -> None:
     locations = sitemap_locations((built_site / "sitemap.xml").read_text(encoding="utf-8"))
 
     assert locations == [
+        f"{SITE_URL}/logged-off/",
         f"{SITE_URL}/privacy-policy/",
         f"{SITE_URL}/terms-of-service/",
         f"{SITE_URL}/sms-opt-in.html",
@@ -422,7 +432,7 @@ def test_robots_advertises_the_public_sitemap(built_site: Path) -> None:
 
 @pytest.mark.parametrize("path", sorted(PUBLIC_EXACT_PATHS))
 def test_every_public_exact_path_exists_in_the_build(built_site: Path, path: str) -> None:
-    relative = path.lstrip("/")
+    relative = EXTENSIONLESS_PAGE_FILES.get(path, path.lstrip("/"))
     target = built_site / (f"{relative}index.html" if path.endswith("/") else relative)
 
     assert target.is_file(), f"{path} is allowlisted but missing from the build"
@@ -520,6 +530,7 @@ LOGOUT_PATH = "/_auth/logout"
 LOGOUT_LABEL = "Sign out"
 
 PUBLIC_BUILT_PAGES = (
+    "logged-off/index.html",
     "privacy-policy/index.html",
     "terms-of-service/index.html",
     "sms-opt-in.html",

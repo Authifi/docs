@@ -247,7 +247,7 @@ def test_an_expired_session_does_not_get_treated_as_signed_in_by_logout(
 
     response = sign_out(client)
 
-    assert response.headers["location"] == "/privacy-policy/"
+    assert response.headers["location"] == "/logged-off"
     assert auth_client.metadata_requests == 0
 
 

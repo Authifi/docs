@@ -146,7 +146,7 @@ variable "oidc_issuer" {
   # discovery URL the issuer never serves. `server/app.py` re-checks the same
   # shapes at startup via `validate_oidc_issuer`.
   validation {
-    condition     = can(regex("^https://[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+(/[a-z0-9][a-z0-9._-]*(/[a-z0-9][a-z0-9._-]*)*)?/?$", var.oidc_issuer))
+    condition     = can(regex("^https://[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+(/[a-z0-9_][a-z0-9._-]*(/[a-z0-9_][a-z0-9._-]*)*)?/?$", var.oidc_issuer))
     error_message = "oidc_issuer must be an https URL naming a lowercase DNS host and an optional path, such as https://issuer.example.com/tenants/acme."
   }
 
@@ -178,6 +178,17 @@ variable "oidc_client_id" {
   }
 }
 
+variable "oidc_client_secret_parameter_name" {
+  description = "Fixed SSM SecureString name synchronized from the GitHub production environment."
+  type        = string
+  default     = "/authifi-docs/oidc-client-secret"
+
+  validation {
+    condition     = contains(["/authifi-docs/oidc-client-secret"], var.oidc_client_secret_parameter_name)
+    error_message = "oidc_client_secret_parameter_name is fixed to /authifi-docs/oidc-client-secret."
+  }
+}
+
 variable "public_base_url" {
   description = "Public HTTPS origin for this deployment. Fixed to https://docs.authifi.io because MkDocs output and static agent assets are authored for that origin."
   type        = string
@@ -202,7 +213,7 @@ variable "site_dir" {
 variable "post_logout_path" {
   description = "Site-relative path users land on after logout. Must be a publicly served path, and must be registered with Authifi as a post-logout redirect URI."
   type        = string
-  default     = "/privacy-policy/"
+  default     = "/logged-off"
 
   validation {
     condition     = startswith(var.post_logout_path, "/") && !startswith(var.post_logout_path, "//")
@@ -220,7 +231,7 @@ variable "post_logout_path" {
   # land on. server/tests/test_public_boundary.py fails if the two lists drift.
   validation {
     condition = contains(
-      ["/auth.md", "/privacy-policy/", "/robots.txt", "/sitemap.xml", "/sms-opt-in.html", "/terms-of-service/"],
+      ["/auth.md", "/logged-off", "/logged-off/", "/privacy-policy/", "/robots.txt", "/sitemap.xml", "/sms-opt-in.html", "/terms-of-service/"],
       var.post_logout_path
     )
     error_message = "post_logout_path must be one of the publicly served pages in the server allowlist, otherwise logout sends users straight back into a login redirect."

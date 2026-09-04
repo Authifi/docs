@@ -25,7 +25,7 @@ ORIGIN_DEFAULT_PORTS = {"http": 80, "https": 443}
 DEFAULT_MOCK_HOST = "oidc-mock.127.0.0.1.nip.io"
 DEFAULT_MOCK_PORT = "9400"
 DEFAULT_SUBJECT = "alice@example.com"
-DEFAULT_POST_LOGOUT_PATH = "/privacy-policy/"
+DEFAULT_POST_LOGOUT_PATH = "/logged-off"
 DEFAULT_TIMEOUT_SECONDS = 60.0
 POLL_INTERVAL_SECONDS = 0.5
 COMPOSE_FILES = ("compose.yaml", "compose.mock.yaml")
@@ -62,6 +62,8 @@ BYPASS_PROBE_PATHS = (
 )
 PROTECTED_CONTENT_MARKERS = ("md-content__inner", '"docs":', "md-nav__link")
 PUBLIC_MIME_PROBES = (
+    ("/logged-off", "text/html; charset=utf-8"),
+    ("/logged-off/", "text/html; charset=utf-8"),
     ("/privacy-policy/", "text/html; charset=utf-8"),
     ("/terms-of-service/", "text/html; charset=utf-8"),
     ("/sms-opt-in.html", "text/html; charset=utf-8"),
