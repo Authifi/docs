@@ -50,10 +50,12 @@ creates:
 - interface endpoints for `ssm`, `ssmmessages`, and `ec2messages`;
 - the IAM permissions required by the managed SSM agent.
 
-The selected AWS-provided AMI must already contain Python 3, the AWS CLI, and
-the SSM agent. Runtime Python wheels are bundled into each release archive so
-installation uses no package index. This avoids a NAT gateway whose standing
-cost would be disproportionate to a low-volume service.
+The selected AWS-provided Ubuntu 24.04 AMI must already contain Python 3.12 and
+the SSM agent. An SSM Command document downloads the release and checksum from
+S3 using the instance role, so the host does not need the AWS CLI. Runtime
+Python wheels are bundled into each release archive so installation uses no
+package index. This avoids a NAT gateway whose standing cost would be
+disproportionate to a low-volume service.
 
 Operating-system patching is a separate maintenance operation. It can use a
 temporary controlled egress path or instance replacement from a current AMI;
@@ -88,7 +90,8 @@ explicit protected environment:
 1. Build and verify the release archive.
 2. Assume the AWS deployment role using GitHub OIDC.
 3. Upload the SHA-addressed archive to S3.
-4. invoke the instance deployment script through SSM Run Command.
+4. invoke the deployment SSM Command document, which downloads the release and
+   invokes the instance deployment script.
 5. Wait for the command and ALB target health to succeed.
 6. Probe the public compliance page and the protected-page redirect through the
    canonical HTTPS hostname.
