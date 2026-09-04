@@ -5,7 +5,7 @@ COMPOSE_COMMON = $(DOCKER_COMPOSE) -f compose.yaml
 COMPOSE_REAL = $(DOCKER_COMPOSE) -f compose.yaml -f compose.real.yaml
 COMPOSE_MOCK = $(DOCKER_COMPOSE) -f compose.yaml -f compose.mock.yaml
 
-.PHONY: serve test build docker-build local-up local-mock-up local-down local-smoke local-config
+.PHONY: serve test build release docker-build local-up local-mock-up local-down local-smoke local-config
 
 serve:
 	$(MKDOCS_VENV) serve
@@ -15,6 +15,9 @@ test:
 
 build:
 	$(MKDOCS_VENV) build --strict
+
+release:
+	./scripts/build-release.sh "$${RELEASE_SHA:-$$(git rev-parse HEAD)}" "$${RELEASE_DIR:-dist/releases}"
 
 docker-build:
 	docker build --tag authifi-docs:local .
