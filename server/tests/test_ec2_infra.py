@@ -851,6 +851,95 @@ def test_every_trust_condition_is_an_exact_match_on_a_known_claim() -> None:
 # --- Host bootstrap -----------------------------------------------------------
 
 
+def bootstrap_directories() -> dict[str, tuple[str, str, str]]:
+    """Every directory the bootstrap installs, as path -> (mode, owner, group).
+
+    Parsed from the `install -d` invocations rather than searched for, so a
+    directory created without a declared mode or owner shows up as one with an
+    empty field instead of quietly not being checked at all.
+    """
+    found: dict[str, tuple[str, str, str]] = {}
+
+    for raw_line in user_data_statements().splitlines():
+        line = raw_line.strip()
+        if not line.startswith("install -d "):
+            continue
+
+        tokens = line.split()[2:]
+        flags: dict[str, str] = {}
+        paths: list[str] = []
+        index = 0
+        while index < len(tokens):
+            if tokens[index] in ("-m", "-o", "-g") and index + 1 < len(tokens):
+                flags[tokens[index]] = tokens[index + 1]
+                index += 2
+                continue
+            paths.append(tokens[index])
+            index += 1
+
+        for path in paths:
+            assert path not in found, f"{path} is installed twice"
+            found[path] = (flags.get("-m", ""), flags.get("-o", ""), flags.get("-g", ""))
+
+    return found
+
+
+def test_the_release_tree_is_root_owned_and_unwritable_by_the_service_account() -> None:
+    """The service account read the releases it runs, and owned them too.
+
+    A service account that can write to the tree its own code is loaded from
+    can replace that code and have systemd run it on the next restart, which
+    turns any bug in the docs server -- a path traversal, a template injection,
+    an unlucky dependency -- into persistence rather than a read. Nothing on
+    this host needs that: releases are installed by root through Systems
+    Manager, and the service only ever reads them.
+    """
+    directories = bootstrap_directories()
+    release_tree = {
+        path: attributes
+        for path, attributes in directories.items()
+        if path == "/opt/authifi-docs" or path.startswith("/opt/authifi-docs/")
+    }
+
+    assert set(release_tree) == {
+        "/opt/authifi-docs",
+        "/opt/authifi-docs/releases",
+        "/opt/authifi-docs/incoming",
+    }
+
+    for path, (mode, owner, group) in release_tree.items():
+        assert owner == "root", f"{path} is installed owned by {owner!r}"
+        assert re.fullmatch(r"0[0-7]{3}", mode), f"{path} declares no explicit mode"
+        # Read off the mode itself rather than compared to one string, so a
+        # future 0751 or 0705 is judged on whether it grants write access.
+        assert int(mode, 8) & 0o022 == 0, f"{path} is group- or other-writable at {mode}"
+
+    # The service account traverses the top of the tree and reads releases, and
+    # cannot see the staging directory at all: only root ever reads from there.
+    assert release_tree["/opt/authifi-docs"] == ("0750", "root", "authifi-docs")
+    assert release_tree["/opt/authifi-docs/incoming"] == ("0700", "root", "root")
+
+    # And nothing later hands any of it back.
+    bootstrap = user_data_statements()
+    assert "-o authifi-docs" not in bootstrap
+    assert not re.search(r"chown\s[^\n]*authifi-docs", bootstrap)
+
+
+def test_the_service_unit_cannot_write_to_the_release_tree() -> None:
+    """`ReadWritePaths=/opt/authifi-docs` punched a hole straight through
+    `ProtectSystem=strict` for the whole release tree, which is the one
+    directory the service must never be able to modify.
+
+    Read from the unit with comments stripped, so the prose explaining why the
+    setting is gone cannot satisfy the check.
+    """
+    bootstrap = user_data_statements()
+
+    assert "ProtectSystem=strict" in bootstrap
+    assert "ReadWritePaths" not in bootstrap
+    assert "ReadOnlyPaths=/opt/authifi-docs" in bootstrap
+
+
 def test_bootstrap_creates_a_non_root_service_and_root_only_session_key() -> None:
     assert "User=authifi-docs" in USER_DATA
     assert "Group=authifi-docs" in USER_DATA

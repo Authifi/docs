@@ -234,7 +234,11 @@ variables`. That is honest but avoidable.
 
 ## Runtime Configuration
 
-The instance bootstrap writes root-owned environment files and systemd runs the service as the non-root `authifi-docs` user. Terraform passes only non-secret values into user data:
+The instance bootstrap writes root-owned environment files and systemd runs the service as the non-root `authifi-docs` user.
+
+The whole release tree is root-owned and read-only to that user. `/opt/authifi-docs` is `0750 root:authifi-docs` so the service can traverse to `current/`, `releases/` is `0755 root:root`, and `incoming/` is `0700 root:root` because only root ever reads staged archives. The unit names no `ReadWritePaths` and adds `ReadOnlyPaths=/opt/authifi-docs` on top of `ProtectSystem=strict`. Releases are installed by root through Systems Manager, so the service account has no reason to own the code it runs — and a service account that can write there could replace that code and have systemd load it on the next restart.
+
+Terraform passes only non-secret values into user data:
 
 - `OIDC_ISSUER`
 - `OIDC_CLIENT_ID`

@@ -53,7 +53,20 @@ systemctl enable chrony
 systemctl restart chrony
 
 useradd --system --home-dir /opt/authifi-docs --shell /sbin/nologin authifi-docs || true
-install -d -o authifi-docs -g authifi-docs /opt/authifi-docs/releases /opt/authifi-docs/incoming
+
+# Root-owned, and read-only to the service account. Releases are installed by
+# root through Systems Manager and the service only ever reads them, so it has
+# no reason to own the tree its own code is loaded from — and owning it means
+# any bug in the docs server that can write a file becomes persistence rather
+# than a read, by replacing the code systemd loads on the next restart.
+#
+# Modes are explicit rather than left to root's umask. The top of the tree is
+# group-traversable so the service can reach `current/`, and the staging
+# directory is not: only root ever reads from there, and what lands in it comes
+# straight off the network.
+install -d -m 0750 -o root -g authifi-docs /opt/authifi-docs
+install -d -m 0755 -o root -g root /opt/authifi-docs/releases
+install -d -m 0700 -o root -g root /opt/authifi-docs/incoming
 install -d -m 0700 -o root -g root /etc/authifi-docs
 
 cat > /etc/authifi-docs/environment <<'ENV'
@@ -80,6 +93,13 @@ if [[ ! -s /etc/authifi-docs/session.env ]]; then
 fi
 chmod 0600 /etc/authifi-docs/session.env
 
+# `ProtectSystem=strict` makes the whole filesystem read-only to this service,
+# and the unit deliberately names no writable path. It previously granted
+# `/opt/authifi-docs`, which punched a hole through that protection for the one
+# directory the service must never modify: the release tree it loads its own
+# code from. Uvicorn needs nothing writable, and `PrivateTmp` covers the one
+# place anything might. `ReadOnlyPaths` restates the intent so relaxing
+# `ProtectSystem` later does not silently reopen the tree.
 cat > /etc/systemd/system/authifi-docs.service <<'UNIT'
 [Unit]
 Description=Authifi OIDC-protected documentation
@@ -99,7 +119,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/opt/authifi-docs
+ReadOnlyPaths=/opt/authifi-docs
 
 [Install]
 WantedBy=multi-user.target

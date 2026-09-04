@@ -23,12 +23,23 @@ curl_max_time_seconds="${AUTHIFI_DOCS_CURL_MAX_TIME_SECONDS:-5}"
 
 releases="$root/releases"
 current="$root/current"
-incoming="$root/incoming/$sha"
+incoming_root="$root/incoming"
+incoming="$incoming_root/$sha"
 archive="$incoming/$sha.tar.gz"
 checksum_file="$archive.sha256"
 candidate="$releases/$sha"
 
+# This runs as root under the Systems Manager agent, whose umask is not this
+# script's to assume. Everything below — the release directory, the extracted
+# tree, the virtualenv pip populates — inherits it, and a single
+# group-writable file inside a release is enough for the service account to
+# replace the code systemd loads on the next restart.
+umask 022
+
 mkdir -p "$releases" "$incoming" "$(dirname "$lock")"
+chmod 0755 "$releases"
+# Staged archives come straight off the network and only root reads them.
+chmod 0700 "$incoming_root" "$incoming"
 
 if [[ "${AUTHIFI_DOCS_LOCK_HELD:-0}" != "1" ]]; then
   status=0
@@ -158,6 +169,7 @@ fi
 
 rm -rf "$candidate"
 mkdir -p "$candidate"
+chmod 0755 "$candidate"
 tar -xzf "$archive" -C "$candidate"
 
 "$python_bin" -m venv "$candidate/.venv"

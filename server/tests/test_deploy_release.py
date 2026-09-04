@@ -483,6 +483,40 @@ def test_first_deploy_restart_failure_leaves_no_release_active(
     assert "systemctl:stop" in deploy_harness.events
 
 
+def test_the_installed_release_tree_is_never_group_or_other_writable(
+    deploy_harness: DeployHarness,
+) -> None:
+    """The installer runs as root through Systems Manager, and everything it
+    creates is read-only to the service account by construction.
+
+    Every mode here is set explicitly rather than inherited from whatever umask
+    the SSM agent happens to run with: a group-writable release directory, or
+    one group-writable file inside a virtualenv, is enough for the service
+    account to replace the code systemd loads on the next restart.
+    """
+    sha = "3" * 38 + "cd"
+    deploy_harness.publish_archive(sha)
+
+    assert deploy_harness.run(sha).returncode == 0
+
+    release = deploy_harness.releases / sha
+    tree = [
+        deploy_harness.releases,
+        release,
+        *sorted(release.rglob("*")),
+        deploy_harness.incoming_root,
+    ]
+
+    writable = [
+        f"{path}: {oct(path.stat().st_mode & 0o777)}"
+        for path in tree
+        if not path.is_symlink() and path.stat().st_mode & 0o022
+    ]
+
+    assert writable == []
+    assert len(tree) > 5, "the release tree was not actually installed"
+
+
 def test_lock_prevents_concurrent_install(deploy_harness: DeployHarness) -> None:
     with deploy_harness.hold_lock():
         result = deploy_harness.run("6" * 40)
