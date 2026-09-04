@@ -291,7 +291,7 @@ variable "github_repository_subject" {
   default     = "repo:Authifi@37509689/docs@993416679:environment:production"
 
   validation {
-    condition     = can(regex("^repo:[A-Za-z0-9._-]+@[0-9]+/[A-Za-z0-9._-]+@[0-9]+:environment:[A-Za-z0-9._-]+$", var.github_repository_subject))
+    condition     = can(regex("^repo:[A-Za-z0-9._-]+@[0-9]+/[A-Za-z0-9._-]+@[0-9]+:environment:[A-Za-z0-9._ -]+$", var.github_repository_subject))
     error_message = "github_repository_subject must be the exact immutable GitHub OIDC subject for an environment deployment."
   }
 }

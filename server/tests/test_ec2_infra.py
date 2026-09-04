@@ -1505,6 +1505,13 @@ def test_the_immutable_subject_must_match_its_companion_trust_inputs() -> None:
     )
 
 
+def test_immutable_subject_accepts_a_supported_environment_name_with_spaces() -> None:
+    subject = "repo:Authifi@37509689/docs@993416679:environment:production west"
+
+    assert variable_accepts(VARIABLES, "deploy_environment", "production west")
+    assert variable_accepts(VARIABLES, "github_repository_subject", subject)
+
+
 def test_the_deploy_role_binds_the_branch_and_the_repository_identity_too() -> None:
     """The subject alone is one string, and every part of it is a name someone
     can take. `ref` is what keeps a `production` deployment job on a branch
