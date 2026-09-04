@@ -4,9 +4,15 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
+    inputs:
+      release_sha:
+        description: Existing release SHA to deploy without rebuilding
+        required: false
+        type: string
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: authifi-docs-production
   cancel-in-progress: false
 
 permissions:
@@ -16,33 +22,46 @@ permissions:
 env:
   AWS_REGION: ${{ vars.AWS_REGION }}
   AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
-  APP_RUNNER_SERVICE_ARN: ${{ vars.APP_RUNNER_SERVICE_ARN }}
-  ECR_REPOSITORY_URL: ${{ vars.ECR_REPOSITORY_URL }}
-  # Optional. Set it to the public origin (terraform output public_base_url, or
-  # the custom domain) to verify the deploy through the URL real users hit.
-  # Unset, the post-deploy check falls back to the App Runner service hostname
-  # reported by describe-service, which always exists.
-  APP_RUNNER_SERVICE_URL: ${{ vars.APP_RUNNER_SERVICE_URL }}
-  # A page the server returns to anonymous callers, so the check needs no
-  # credentials and no OIDC round trip.
-  POST_DEPLOY_PROBE_PATH: /privacy-policy/
-  BUILDX_BUILDER_NAME: authifi-docs-builder
+  RELEASE_BUCKET_NAME: ${{ vars.RELEASE_BUCKET_NAME }}
+  DOCS_INSTANCE_ID: ${{ vars.DOCS_INSTANCE_ID }}
+  DOCS_SSM_DOCUMENT_NAME: ${{ vars.DOCS_SSM_DOCUMENT_NAME }}
+  DOCS_TARGET_GROUP_ARN: ${{ vars.DOCS_TARGET_GROUP_ARN }}
+  DOCS_PUBLIC_BASE_URL: ${{ vars.DOCS_PUBLIC_BASE_URL }}
 
 jobs:
   deploy:
     name: Build and deploy
     runs-on: ubuntu-latest
+    environment: production
     steps:
       - name: Checkout repo
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install Python dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install -r requirements.txt
 
       - name: Verify required repository variables
+        shell: bash
         run: |
           set -euo pipefail
           : "${AWS_REGION:?Set repository variable AWS_REGION}"
           : "${AWS_DEPLOY_ROLE_ARN:?Set repository variable AWS_DEPLOY_ROLE_ARN}"
-          : "${APP_RUNNER_SERVICE_ARN:?Set repository variable APP_RUNNER_SERVICE_ARN}"
-          : "${ECR_REPOSITORY_URL:?Set repository variable ECR_REPOSITORY_URL}"
+          : "${RELEASE_BUCKET_NAME:?Set repository variable RELEASE_BUCKET_NAME}"
+          : "${DOCS_INSTANCE_ID:?Set repository variable DOCS_INSTANCE_ID}"
+          : "${DOCS_SSM_DOCUMENT_NAME:?Set repository variable DOCS_SSM_DOCUMENT_NAME}"
+          : "${DOCS_TARGET_GROUP_ARN:?Set repository variable DOCS_TARGET_GROUP_ARN}"
+          : "${DOCS_PUBLIC_BASE_URL:?Set repository variable DOCS_PUBLIC_BASE_URL}"
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
@@ -50,273 +69,185 @@ jobs:
           role-to-assume: ${{ env.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Log in to Amazon ECR
-        uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2.1.7
-
-      - name: Resolve immutable image URI
-        id: image
+      - name: Select release
+        id: release
+        shell: bash
         env:
-          IMAGE_TAG: ${{ github.sha }}
+          REQUESTED_RELEASE_SHA: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.release_sha || '' }}
         run: |
           set -euo pipefail
 
-          repository_name="${ECR_REPOSITORY_URL#*/}"
-          image_uri="${ECR_REPOSITORY_URL}:${IMAGE_TAG}"
-
-          # The ECR repository is immutable, so a rerun of this workflow cannot
-          # push the same SHA tag again. Detect the existing image and skip
-          # straight to the App Runner update instead of failing the rerun.
-          #
-          # Only a genuine "not found" means there is nothing to skip. Treating
-          # AccessDenied or throttling as "not found" would push a rebuilt image
-          # over a tag that may already exist, or bury a broken IAM policy under
-          # a confusing push failure, so every other error stops the deploy with
-          # the API's own message.
-          describe_stderr="$(mktemp)"
-          if aws ecr describe-images \
-            --repository-name "$repository_name" \
-            --image-ids "imageTag=${IMAGE_TAG}" \
-            --output json > /dev/null 2> "$describe_stderr"; then
-            echo "Image $image_uri already exists in ECR; skipping build and push."
-            already_pushed=true
-          elif grep -q 'ImageNotFoundException' "$describe_stderr"; then
-            echo "Image $image_uri is not in ECR yet; it will be built and pushed."
-            already_pushed=false
+          requested_sha="${REQUESTED_RELEASE_SHA}"
+          if [[ -n "$requested_sha" ]]; then
+            sha="$requested_sha"
+            build=false
           else
-            echo "Could not determine whether $image_uri exists in ECR." >&2
-            echo "aws ecr describe-images failed with:" >&2
-            cat "$describe_stderr" >&2
-            echo "Repository: $repository_name, region: ${AWS_REGION}, role: ${AWS_DEPLOY_ROLE_ARN}" >&2
+            sha="$GITHUB_SHA"
+            build=true
+          fi
+
+          if [[ ! "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Release SHA must be 40 lowercase hexadecimal characters" >&2
             exit 1
           fi
 
           {
-            echo "image_uri=$image_uri"
-            echo "repository_name=$repository_name"
-            echo "already_pushed=$already_pushed"
+            echo "sha=$sha"
+            echo "build=$build"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Build and push image
-        id: build
-        if: steps.image.outputs.already_pushed != 'true'
-        env:
-          IMAGE_URI: ${{ steps.image.outputs.image_uri }}
+      - name: Build release
+        if: ${{ steps.release.outputs.build == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./scripts/build-release.sh "${{ steps.release.outputs.sha }}" dist/releases
+
+      - name: Publish or verify release
+        if: ${{ steps.release.outputs.build == 'true' }}
+        shell: bash
         run: |
           set -euo pipefail
 
-          # App Runner only runs linux/amd64. Build through a docker-container
-          # buildx builder so the platform is explicit and independent of the
-          # runner's own architecture.
-          #
-          # Reuse the builder if one is already present. `buildx create` fails
-          # on an existing name, which would break any rerun on a self-hosted or
-          # otherwise non-ephemeral runner. Record which case this was so
-          # teardown only removes a builder this run actually created; tearing
-          # down a reused one would delete state the runner owns and lose its
-          # warm cache.
-          if docker buildx inspect "$BUILDX_BUILDER_NAME" > /dev/null 2>&1; then
-            echo "Reusing existing buildx builder $BUILDX_BUILDER_NAME."
-            echo "builder_created=false" >> "$GITHUB_OUTPUT"
-          else
-            docker buildx create --name "$BUILDX_BUILDER_NAME" --driver docker-container
-            echo "builder_created=true" >> "$GITHUB_OUTPUT"
-          fi
-          docker buildx use "$BUILDX_BUILDER_NAME"
-          docker buildx inspect --bootstrap "$BUILDX_BUILDER_NAME"
+          sha="${{ steps.release.outputs.sha }}"
+          prefix="s3://$RELEASE_BUCKET_NAME/releases"
+          remote_checksum="dist/releases/remote.sha256"
 
-          docker buildx build \
-            --platform linux/amd64 \
-            --provenance false \
-            --tag "$IMAGE_URI" \
-            --push \
-            .
-
-      # Skipped when the build step was skipped or reused an existing builder,
-      # since the output is only ever set to true by the branch that created one.
-      - name: Remove buildx builder
-        if: always() && steps.build.outputs.builder_created == 'true'
-        run: |
-          set -euo pipefail
-          docker buildx rm "$BUILDX_BUILDER_NAME" || true
-
-      - name: Update App Runner source image
-        id: deploy
-        env:
-          IMAGE_URI: ${{ steps.image.outputs.image_uri }}
-        run: |
-          set -euo pipefail
-
-          service_json="$(mktemp)"
-          source_json="$(mktemp)"
-
-          aws apprunner describe-service \
-            --service-arn "$APP_RUNNER_SERVICE_ARN" \
-            --output json > "$service_json"
-
-          current_image="$(jq -r '.Service.SourceConfiguration.ImageRepository.ImageIdentifier // empty' "$service_json")"
-
-          if [[ -z "$current_image" ]]; then
-            echo "App Runner service is not configured for an image repository." >&2
-            exit 1
-          fi
-
-          if [[ "$current_image" == "$IMAGE_URI" ]]; then
-            operation_id="$(aws apprunner start-deployment \
-              --service-arn "$APP_RUNNER_SERVICE_ARN" \
-              --query 'OperationId' \
-              --output text)"
-            operation_type="START_DEPLOYMENT"
-          else
-            jq --arg image "$IMAGE_URI" '
-              .Service.SourceConfiguration
-              | .AutoDeploymentsEnabled = false
-              | .ImageRepository.ImageIdentifier = $image
-            ' "$service_json" > "$source_json"
-
-            operation_id="$(aws apprunner update-service \
-              --service-arn "$APP_RUNNER_SERVICE_ARN" \
-              --source-configuration "file://$source_json" \
-              --query 'OperationId' \
-              --output text)"
-            operation_type="UPDATE_SERVICE"
-          fi
-
-          echo "operation_id=$operation_id" >> "$GITHUB_OUTPUT"
-          echo "operation_type=$operation_type" >> "$GITHUB_OUTPUT"
-
-      - name: Wait for App Runner operation
-        env:
-          IMAGE_URI: ${{ steps.image.outputs.image_uri }}
-          OPERATION_ID: ${{ steps.deploy.outputs.operation_id }}
-          OPERATION_TYPE: ${{ steps.deploy.outputs.operation_type }}
-        run: |
-          set -euo pipefail
-
-          deadline=$((SECONDS + 1800))
-
-          while true; do
-            status="$(aws apprunner list-operations \
-              --service-arn "$APP_RUNNER_SERVICE_ARN" \
-              --output json \
-              | jq -r --arg operation_id "$OPERATION_ID" 'first(.OperationSummaryList[] | select(.Id == $operation_id) | .Status) // empty')"
-
-            if [[ -z "$status" ]]; then
-              echo "Waiting for App Runner to surface operation $OPERATION_ID..."
-            else
-              echo "$OPERATION_TYPE status: $status"
-            fi
-
-            case "$status" in
-              SUCCEEDED)
-                break
-                ;;
-              ""|PENDING|IN_PROGRESS|ROLLBACK_IN_PROGRESS)
-                ;;
-              *)
-                echo "App Runner operation $OPERATION_ID failed with status $status" >&2
-                aws apprunner list-operations --service-arn "$APP_RUNNER_SERVICE_ARN" --output json
-                exit 1
-                ;;
-            esac
-
-            if (( SECONDS >= deadline )); then
-              echo "Timed out waiting for App Runner operation $OPERATION_ID" >&2
+          if aws s3api head-object \
+            --bucket "$RELEASE_BUCKET_NAME" \
+            --key "releases/$sha.tar.gz" > /dev/null 2>&1; then
+            aws s3api head-object \
+              --bucket "$RELEASE_BUCKET_NAME" \
+              --key "releases/$sha.tar.gz.sha256" > /dev/null
+            aws s3 cp "$prefix/$sha.tar.gz.sha256" "$remote_checksum"
+            (
+              cd dist/releases
+              sha256sum --check "$(basename "$remote_checksum")"
+            ) || {
+              echo "checksum mismatch for existing release" >&2
               exit 1
-            fi
-
-            sleep 10
-          done
-
-          service_status="$(aws apprunner describe-service \
-            --service-arn "$APP_RUNNER_SERVICE_ARN" \
-            --query 'Service.Status' \
-            --output text)"
-
-          deployed_image="$(aws apprunner describe-service \
-            --service-arn "$APP_RUNNER_SERVICE_ARN" \
-            --query 'Service.SourceConfiguration.ImageRepository.ImageIdentifier' \
-            --output text)"
-
-          if [[ "$service_status" != "RUNNING" ]]; then
-            echo "Expected App Runner service status RUNNING but found $service_status" >&2
-            aws apprunner describe-service --service-arn "$APP_RUNNER_SERVICE_ARN" --output json
-            exit 1
+            }
+          else
+            aws s3 cp "dist/releases/$sha.tar.gz" "$prefix/$sha.tar.gz"
+            aws s3 cp "dist/releases/$sha.tar.gz.sha256" "$prefix/$sha.tar.gz.sha256"
           fi
 
-          if [[ "$deployed_image" != "$IMAGE_URI" ]]; then
-            echo "Expected deployed image $IMAGE_URI but App Runner reports $deployed_image" >&2
-            aws apprunner describe-service --service-arn "$APP_RUNNER_SERVICE_ARN" --output json
-            exit 1
-          fi
-
-      - name: Verify the deployed site answers publicly
+      - name: Install release through SSM
+        id: command
+        shell: bash
         run: |
           set -euo pipefail
 
-          # RUNNING with the right image only says the container started. This
-          # asks the live origin for a page an anonymous visitor gets, so a
-          # broken build, a bad SITE_DIR, or a config that fails startup
-          # validation shows up here rather than in a user's browser.
-          base_url="${APP_RUNNER_SERVICE_URL:-}"
-          if [[ -z "$base_url" ]]; then
-            service_host="$(aws apprunner describe-service \
-              --service-arn "$APP_RUNNER_SERVICE_ARN" \
-              --query 'Service.ServiceUrl' \
-              --output text)"
+          sha="${{ steps.release.outputs.sha }}"
+          command_id="$(aws ssm send-command \
+            --document-name "$DOCS_SSM_DOCUMENT_NAME" \
+            --instance-ids "$DOCS_INSTANCE_ID" \
+            --parameters "ReleaseSha=${sha}" \
+            --query 'Command.CommandId' \
+            --output text)"
+          echo "id=$command_id" >> "$GITHUB_OUTPUT"
 
-            if [[ -z "$service_host" || "$service_host" == "None" ]]; then
-              echo "App Runner did not report a service URL, and APP_RUNNER_SERVICE_URL is unset." >&2
-              exit 1
-            fi
-            base_url="https://${service_host}"
+      - name: Wait for installer
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          command_id="${{ steps.command.outputs.id }}"
+          dump_invocation() {
+            aws ssm get-command-invocation \
+              --command-id "$command_id" \
+              --instance-id "$DOCS_INSTANCE_ID" \
+              --query "$1" \
+              --output text || true
+          }
+
+          if ! aws ssm wait command-executed \
+            --command-id "$command_id" \
+            --instance-id "$DOCS_INSTANCE_ID"; then
+            echo "SSM command $command_id did not finish successfully." >&2
+            echo "Status: $(dump_invocation Status)" >&2
+            echo "Response code: $(dump_invocation ResponseCode)" >&2
+            echo "Installer stdout:" >&2
+            dump_invocation StandardOutputContent >&2
+            echo "Installer stderr:" >&2
+            dump_invocation StandardErrorContent >&2
+            exit 1
           fi
 
-          base_url="${base_url%/}"
+          status="$(dump_invocation Status)"
+          if [[ "$status" != "Success" ]]; then
+            echo "SSM command $command_id ended with status $status." >&2
+            echo "Response code: $(dump_invocation ResponseCode)" >&2
+            echo "Installer stdout:" >&2
+            dump_invocation StandardOutputContent >&2
+            echo "Installer stderr:" >&2
+            dump_invocation StandardErrorContent >&2
+            exit 1
+          fi
+
+      - name: Wait for healthy ALB target
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if ! aws elbv2 wait target-in-service --target-group-arn "$DOCS_TARGET_GROUP_ARN"; then
+            aws elbv2 describe-target-health --target-group-arn "$DOCS_TARGET_GROUP_ARN"
+            exit 1
+          fi
+
+      - name: Verify public and protected routes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          base_url="${DOCS_PUBLIC_BASE_URL%/}"
           if [[ "$base_url" != https://* ]]; then
             base_url="https://${base_url#http://}"
           fi
-          probe_url="${base_url}${POST_DEPLOY_PROBE_PATH}"
-          echo "Probing $probe_url"
-
-          # App Runner can report RUNNING a moment before the new revision is
-          # actually taking traffic, so allow a short window rather than
-          # failing the deploy on a single early request.
+          public_url="${base_url}/privacy-policy/"
+          protected_url="${base_url}/guides/sso-integration-guide/"
           deadline=$((SECONDS + 300))
           attempt=0
+
           while true; do
             attempt=$((attempt + 1))
-            response_headers="$(mktemp)"
-            # Deliberately no --location. The probe has to see what an
-            # anonymous visitor sees at this exact URL, and a public page that
-            # starts redirecting is itself the regression worth catching: a
-            # boundary bug that sends /privacy-policy/ into the login flow
-            # would otherwise pass, because the login page is also a 200 of
-            # text/html. --max-redirs 0 and the url_effective check keep that
-            # true even if someone adds --location later.
-            #
-            # curl writes 000 itself when it never got a response, so keep its
-            # output rather than appending a second placeholder.
-            probe_result="$(curl --silent --show-error --max-time 30 --max-redirs 0 \
-              --output /dev/null --dump-header "$response_headers" \
-              --write-out '%{http_code} %{url_effective}' "$probe_url" || true)"
-            status="${probe_result%% *}"
-            status="${status:-000}"
-            final_url="${probe_result#* }"
-            content_type="$(grep -i '^content-type:' "$response_headers" | tail -n 1 | cut -d: -f2- | tr -d '\r' | xargs || true)"
+            public_headers="$(mktemp)"
+            protected_headers="$(mktemp)"
 
-            if [[ "$status" == "200" && "$content_type" == text/html* && "$final_url" == "$probe_url" ]]; then
-              echo "Post-deploy check passed on attempt $attempt: $status, $content_type"
+            public_result="$(curl --silent --show-error --max-time 30 --max-redirs 0 \
+              --output /dev/null --dump-header "$public_headers" \
+              --write-out '%{http_code} %{url_effective}' "$public_url" || true)"
+            public_status="${public_result%% *}"
+            public_status="${public_status:-000}"
+            public_final_url="${public_result#* }"
+            public_content_type="$(grep -i '^content-type:' "$public_headers" | tail -n 1 | cut -d: -f2- | tr -d '\r' | xargs || true)"
+
+            protected_status="$(curl --silent --show-error --max-time 30 --max-redirs 0 \
+              --output /dev/null --dump-header "$protected_headers" \
+              --write-out '%{http_code}' "$protected_url" || true)"
+            protected_status="${protected_status:-000}"
+            protected_location="$(grep -i '^location:' "$protected_headers" | tail -n 1 | cut -d: -f2- | tr -d '\r' | xargs || true)"
+
+            if [[ "$public_status" == "200" \
+              && "$public_content_type" == text/html* \
+              && "$public_final_url" == "$public_url" \
+              && "$protected_status" == "307" \
+              && "$protected_location" == /_auth/login* ]]; then
+              echo "Post-deploy checks passed on attempt $attempt."
               break
             fi
 
             if (( SECONDS >= deadline )); then
-              echo "Post-deploy check failed for $probe_url" >&2
-              echo "Expected HTTP 200 with Content-Type text/html served from the probe URL itself." >&2
-              echo "Got status $status, content type '${content_type}', final URL '${final_url}'" >&2
-              cat "$response_headers" >&2
+              echo "Post-deploy checks failed." >&2
+              echo "Public URL: $public_url" >&2
+              echo "Expected 200 text/html with no redirect; got status $public_status, content type '${public_content_type}', final URL '${public_final_url}'." >&2
+              cat "$public_headers" >&2
+              echo "Protected URL: $protected_url" >&2
+              echo "Expected 307 redirect to /_auth/login; got status $protected_status, location '${protected_location}'." >&2
+              cat "$protected_headers" >&2
               exit 1
             fi
 
-            echo "Attempt $attempt: status $status, content type '${content_type}', final URL '${final_url}'; retrying..."
+            echo "Attempt $attempt failed; retrying..."
             sleep 10
           done
