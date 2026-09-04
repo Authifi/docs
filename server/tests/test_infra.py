@@ -46,7 +46,9 @@ def committed_terraform_files() -> list[Path]:
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
-        check=True,
+    )
+    assert tracked.returncode == 0, (
+        f"cannot ask git what is committed: {tracked.stderr.strip() or tracked.returncode}"
     )
     paths = [REPO_ROOT / name for name in tracked.stdout.split("\0") if name]
     assert paths, "no tracked Terraform files found; the check would pass vacuously"

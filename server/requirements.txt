@@ -1,18 +1,33 @@
-# Pinned exactly to the versions resolved and verified in the python:3.12-slim
-# runtime image. Ranges here meant two builds of the same commit could ship
-# different security-relevant code.
+# Generated file: the complete runtime dependency closure of
+# `server/requirements.in`, as resolved by a clean install in the same
+# digest-pinned base image the runtime stage uses. Do not edit by hand -- edit
+# `requirements.in` and regenerate:
+#
+#   docker run --rm -v "$PWD/server:/in:ro" \
+#     python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea \
+#     sh -c 'python -m pip install --quiet --no-cache-dir -r /in/requirements.in && python -m pip freeze'
+#
+# Every package the server loads is here, at an exact version, so two builds of
+# the same commit ship the same code. Anything left to the resolver is a version
+# chosen by the calendar. `pip` itself is deliberately absent: the pinned base
+# image already fixes the installer, and this file describes the application.
 
-# Direct runtime dependencies.
+# Direct -- see requirements.in for what each one is for.
 authlib==1.6.12
 httpx==0.28.1
 itsdangerous==2.2.0
 starlette==0.48.0
 uvicorn==0.37.0
 
-# Transitive, but listed deliberately: each sits on a security-critical path,
-# so it is pinned and reviewed here rather than resolved silently.
-certifi==2026.7.22
-cryptography==50.0.1
-h11==0.16.0
-httpcore==1.0.9
-idna==3.19
+# Transitive, resolved above. The `via` notes are the edges that put each one
+# here; they are checked against the installed metadata by test_requirements.
+anyio==4.15.0  # via httpx, starlette
+certifi==2026.7.22  # via httpcore, httpx -- TLS trust store
+cffi==2.1.1  # via cryptography
+click==8.5.0  # via uvicorn
+cryptography==50.0.1  # via authlib -- JWS/JWT verification
+h11==0.16.0  # via httpcore, uvicorn -- HTTP/1.1 parsing
+httpcore==1.0.9  # via httpx -- connection pooling and TLS handshake
+idna==3.19  # via anyio, httpx -- hostname parsing
+pycparser==3.0  # via cffi
+typing_extensions==4.16.0  # via anyio, starlette

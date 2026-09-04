@@ -37,9 +37,20 @@ Set up the local Python environment:
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt -r server/requirements.txt pytest
+python -m pip install -r requirements.txt -r server/requirements-dev.txt
 ```
+
+Every version comes from the checkout, including pip's own: upgrading it would
+resolve whatever is newest on PyPI today, and the runtime image is built on a
+digest-pinned base precisely so it does not depend on the day.
+
+The server's dependencies live in two files. `server/requirements.in` holds the
+five distributions the server imports, at reviewed versions; edit that one.
+`server/requirements.txt` is the complete closure resolved from it in that same
+pinned base image -- transitives included -- and is what the image and CI
+install. Regenerate it with the command in its header after changing the direct
+set; the tests in `server/tests/test_requirements.py` build the closure in a
+clean container and fail if the two disagree.
 
 ## Local Development
 

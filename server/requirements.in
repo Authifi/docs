@@ -1,0 +1,13 @@
+# The server's direct dependencies -- the five distributions its own modules
+# import. Edit this file, then regenerate the closure in `requirements.txt`
+# using the command in that file's header.
+#
+# Pinned rather than ranged on purpose: a range here means the lock's contents
+# depend on when it was last regenerated, and a bump to any of these is a
+# review, not a side effect of running a command.
+
+authlib==1.6.12  # OIDC client: discovery, authorization code flow, token exchange
+httpx==0.28.1  # outbound issuer calls made by Authlib
+itsdangerous==2.2.0  # session cookie signing
+starlette==0.48.0  # ASGI framework, routing, session middleware
+uvicorn==0.37.0  # HTTP server

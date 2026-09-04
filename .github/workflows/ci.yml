@@ -33,8 +33,12 @@ jobs:
       - name: Install Python dependencies
         run: |
           set -euo pipefail
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt -r server/requirements.txt pytest
+          # No bare package names, and no pip upgrade: every version installed
+          # here comes from the checkout, and pip stays the one setup-python
+          # provides for 3.12 rather than whatever PyPI has this morning, so a
+          # validation run reflects this commit and not the day it ran. The
+          # server's dependencies arrive as the full closure via requirements-dev.
+          python -m pip install -r requirements.txt -r server/requirements-dev.txt
 
       - name: Run server tests
         run: |
