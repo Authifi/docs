@@ -73,7 +73,7 @@ jobs:
         id: release
         shell: bash
         env:
-          REQUESTED_RELEASE_SHA: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.release_sha || '' }}
+          REQUESTED_RELEASE_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.release_sha || '' }}
         run: |
           set -euo pipefail
 
@@ -130,6 +130,30 @@ jobs:
           else
             aws s3 cp "dist/releases/$sha.tar.gz" "$prefix/$sha.tar.gz"
             aws s3 cp "dist/releases/$sha.tar.gz.sha256" "$prefix/$sha.tar.gz.sha256"
+          fi
+
+      - name: Verify existing release for rollback
+        if: ${{ steps.release.outputs.build != 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sha="${{ steps.release.outputs.sha }}"
+          archive_key="releases/$sha.tar.gz"
+          checksum_key="releases/$sha.tar.gz.sha256"
+
+          if ! aws s3api head-object \
+            --bucket "$RELEASE_BUCKET_NAME" \
+            --key "$archive_key" > /dev/null 2>&1; then
+            echo "Existing release archive not found in s3://$RELEASE_BUCKET_NAME/$archive_key" >&2
+            exit 1
+          fi
+
+          if ! aws s3api head-object \
+            --bucket "$RELEASE_BUCKET_NAME" \
+            --key "$checksum_key" > /dev/null 2>&1; then
+            echo "Existing release checksum not found in s3://$RELEASE_BUCKET_NAME/$checksum_key" >&2
+            exit 1
           fi
 
       - name: Install release through SSM
