@@ -54,6 +54,12 @@ ending that session here would be a denial of service dressed up as caution.
 
 ### Signing Out Ends Everything, Not Just This Tab
 
+Every page Material renders carries a **Sign out** link in the header, next to
+the palette and search controls, pointing at `/_auth/logout`. Public pages omit
+it — there is no session to end there. `feature-list.html` is copied HTML rather
+than a rendered page, so it has no header and no link; readers there reach
+`/_auth/logout` directly.
+
 `/_auth/logout` clears the whole session cookie: the signed-in identity and
 every in-flight sign-in in every other tab. That is deliberate — signing out
 must not leave a half-finished transaction behind that could still be completed

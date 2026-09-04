@@ -13,12 +13,18 @@ import subprocess
 import sys
 import xml.etree.ElementTree as ET
 from collections.abc import Iterator
+from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urljoin, urlsplit
 
 import pytest
 
-from server.app import PUBLIC_EXACT_PATHS, PUBLIC_PREFIXES, is_public_path
+from server.app import (
+    PUBLIC_AUTH_PATHS,
+    PUBLIC_EXACT_PATHS,
+    PUBLIC_PREFIXES,
+    is_public_path,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SITE_URL = "https://docs.authifi.io"
@@ -133,18 +139,6 @@ def test_protected_pages_still_render_navigation(built_site: Path) -> None:
 # check below is also the check that no failing request is issued.
 
 MATERIAL_TEMPLATES = Path(__import__("material").__file__).resolve().parent / "templates"
-
-MATERIAL_HEADER_SEARCH_BLOCK = """    {% if "material/search" in config.plugins %}
-      {% set search = config.plugins["material/search"] | attr("config") %}
-      {% if search.enabled %}
-        <label class="md-header__button md-icon" for="__search">
-          {% set icon = config.theme.icon.search or "material/magnify" %}
-          {% include ".icons/" ~ icon ~ ".svg" %}
-        </label>
-        {% include "partials/search.html" %}
-      {% endif %}
-    {% endif %}
-"""
 
 SEARCH_CONTROL_MARKERS = (
     'data-md-component="search"',
@@ -273,24 +267,6 @@ def test_site_nav_override_keeps_materials_secondary_sidebar() -> None:
         '{% include "partials/toc.html" %}',
     ):
         assert collapse_whitespace(fragment) in override
-
-
-def test_public_header_is_the_material_header_minus_search() -> None:
-    """A mkdocs-material upgrade that touches the header must fail here.
-
-    ``overrides/partials/header-public.html`` is a verbatim copy of Material's
-    header with exactly one block removed. Re-deriving it from the installed
-    theme means the vendored copy cannot drift silently.
-    """
-    material_header = (MATERIAL_TEMPLATES / "partials" / "header.html").read_text(encoding="utf-8")
-    expected = material_header.replace(MATERIAL_HEADER_SEARCH_BLOCK, "")
-    assert expected != material_header, "Material's header search block changed shape"
-
-    vendored = (REPO_ROOT / "overrides" / "partials" / "header-public.html").read_text(encoding="utf-8")
-    _, separator, body = vendored.partition("-#}\n")
-
-    assert separator, "vendored header is missing its provenance comment"
-    assert body == expected
 
 
 # --- Generated sitemaps -------------------------------------------------------
@@ -511,3 +487,239 @@ def test_the_oauth_skill_denies_an_oauth_server_on_the_docs_domain() -> None:
 
     assert "not an oauth authorization server" in text
     assert "token endpoint" in text
+
+
+# --- Signing out -------------------------------------------------------------
+#
+# A protected page is reached through an OIDC login, so it needs a way back out
+# that does not involve guessing a URL. Public pages have no session to end and
+# must not offer one.
+
+LOGOUT_PATH = "/_auth/logout"
+LOGOUT_LABEL = "Sign out"
+
+PUBLIC_BUILT_PAGES = (
+    "privacy-policy/index.html",
+    "terms-of-service/index.html",
+    "sms-opt-in.html",
+)
+
+# Hand-written HTML copied into the site rather than rendered by Material, so
+# there is no header template to hang a link off.
+HEADERLESS_BUILT_PAGES = ("feature-list.html", "sms-opt-in.html")
+
+
+class AnchorCollector(HTMLParser):
+    """Anchors matching one href, with the tags open around them and their text."""
+
+    def __init__(self, href: str) -> None:
+        super().__init__(convert_charrefs=True)
+        self.href = href
+        self.open_tags: list[str] = []
+        self.matches: list[dict[str, object]] = []
+        self._collecting: dict[str, object] | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag not in ("br", "hr", "img", "input", "meta", "link", "source", "path"):
+            self.open_tags.append(tag)
+        if tag == "a" and dict(attrs).get("href") == self.href:
+            self._collecting = {
+                "attrs": dict(attrs),
+                "ancestors": list(self.open_tags[:-1]),
+                "text": "",
+            }
+            self.matches.append(self._collecting)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "a":
+            self._collecting = None
+        if tag in self.open_tags:
+            del self.open_tags[len(self.open_tags) - 1 - self.open_tags[::-1].index(tag) :]
+
+    def handle_data(self, data: str) -> None:
+        if self._collecting is not None:
+            self._collecting["text"] = f"{self._collecting['text']}{data}"
+
+
+def logout_links(html: str) -> list[dict[str, object]]:
+    collector = AnchorCollector(LOGOUT_PATH)
+    collector.feed(html)
+    return collector.matches
+
+
+def unclosed_tags(fragment: str) -> list[str]:
+    collector = AnchorCollector(href="")
+    collector.feed(fragment)
+    return collector.open_tags
+
+
+def built_html_pages(built_site: Path) -> list[str]:
+    return sorted(path.relative_to(built_site).as_posix() for path in built_site.rglob("*.html"))
+
+
+def test_every_protected_page_offers_exactly_one_way_out(built_site: Path) -> None:
+    rendered = [
+        page
+        for page in built_html_pages(built_site)
+        if page not in PUBLIC_BUILT_PAGES and page not in HEADERLESS_BUILT_PAGES
+    ]
+
+    assert rendered, "no built pages found"
+    for page in rendered:
+        found = logout_links((built_site / page).read_text(encoding="utf-8"))
+        assert len(found) == 1, f"{page} has {len(found)} sign-out links"
+
+
+def test_the_pages_with_no_header_to_put_a_link_in_are_the_known_ones(
+    built_site: Path,
+) -> None:
+    """Copied HTML has no Material header, so a new one must be noticed.
+
+    `feature-list.html` is generated upstream in idbroker and carries a notice
+    not to edit it here, so it gets no link and its readers have to reach
+    `/_auth/logout` another way.
+    """
+    headerless = [
+        page
+        for page in built_html_pages(built_site)
+        if 'class="md-header' not in (built_site / page).read_text(encoding="utf-8")
+    ]
+
+    assert sorted(headerless) == sorted(HEADERLESS_BUILT_PAGES)
+
+
+@pytest.mark.parametrize("page", PUBLIC_BUILT_PAGES)
+def test_public_pages_offer_no_way_out_of_a_session_they_never_had(
+    built_site: Path, page: str
+) -> None:
+    html = (built_site / page).read_text(encoding="utf-8")
+
+    assert logout_links(html) == []
+    assert LOGOUT_PATH not in html
+
+
+def test_the_sign_out_link_matches_the_route_the_server_actually_serves() -> None:
+    """The template and the server must not drift apart on the path."""
+    assert LOGOUT_PATH in PUBLIC_AUTH_PATHS
+
+
+def test_the_sign_out_link_is_a_plain_link_with_visible_text(built_site: Path) -> None:
+    """Native semantics and a name taken from content.
+
+    An icon-only control would need `aria-label`, and a `title` is not a naming
+    mechanism at all. Real text is the accessible name, needs no ARIA, and
+    survives translation.
+    """
+    (link,) = logout_links((built_site / "index.html").read_text(encoding="utf-8"))
+
+    assert str(link["text"]).strip() == LOGOUT_LABEL
+    assert "aria-label" not in link["attrs"]
+    assert "role" not in link["attrs"]
+    assert "onclick" not in link["attrs"]
+
+
+def test_the_sign_out_link_uses_materials_own_header_control_styling(built_site: Path) -> None:
+    """`md-header__button` is what the palette toggle and search use.
+
+    Reusing it means the link inherits the header's own foreground colour in
+    both the default and slate schemes, and Material's `outline-color` for
+    `:focus-visible`, rather than needing contrast and focus styles of its own.
+    """
+    (link,) = logout_links((built_site / "index.html").read_text(encoding="utf-8"))
+
+    assert "md-header__button" in str(link["attrs"].get("class", ""))
+
+
+@pytest.mark.parametrize(
+    "page", ["index.html", "guides/sso-integration-guide/index.html", "security/index.html"]
+)
+def test_the_sign_out_link_sits_in_the_header_navigation(built_site: Path, page: str) -> None:
+    (link,) = logout_links((built_site / page).read_text(encoding="utf-8"))
+
+    ancestors = link["ancestors"]
+    assert "header" in ancestors, ancestors
+    assert "nav" in ancestors, ancestors
+
+
+@pytest.mark.parametrize("page", ["index.html", "privacy-policy/index.html"])
+def test_the_header_element_is_still_well_formed(built_site: Path, page: str) -> None:
+    """Inserting a link must not leave a tag open or land outside the element."""
+    html = (built_site / page).read_text(encoding="utf-8")
+
+    assert html.count("<header") == html.count("</header>") == 1
+    header = html[html.index("<header") : html.index("</header>") + len("</header>")]
+
+    assert 'class="md-header__inner md-grid"' in header
+    assert unclosed_tags(header) == []
+
+
+@pytest.mark.parametrize(
+    "page", ["index.html", "guides/sso-integration-guide/index.html", "security/index.html"]
+)
+def test_protected_pages_keep_their_navigation_alongside_the_new_link(
+    built_site: Path, page: str
+) -> None:
+    html = (built_site / page).read_text(encoding="utf-8")
+
+    assert 'data-md-component="sidebar" data-md-type="navigation"' in html
+    assert '{% include "partials/nav.html" %}' not in html
+    assert 'data-md-component="search"' in html
+
+
+# --- Vendored header drift ----------------------------------------------------
+
+VENDORED_HEADER = REPO_ROOT / "overrides" / "partials" / "header.html"
+
+# Everything above this line in the vendored file is ours; everything below is
+# Material's, transformed only by the two replacements below.
+VENDORED_HEADER_SENTINEL = "{# --- vendored mkdocs-material header follows --- #}\n"
+
+MATERIAL_HEADER_SEARCH_CONDITION = '    {% if "material/search" in config.plugins %}\n'
+GATED_HEADER_SEARCH_CONDITION = (
+    '    {% if "material/search" in config.plugins and not authifi_public_page %}\n'
+)
+
+MATERIAL_HEADER_SOURCE_CONDITION = "    {% if config.repo_url %}\n"
+SIGN_OUT_LINK = """    {% if not authifi_public_page %}
+      <a href="/_auth/logout" class="md-header__button">Sign out</a>
+    {% endif %}
+"""
+
+
+def expected_vendored_header() -> str:
+    stock = (MATERIAL_TEMPLATES / "partials" / "header.html").read_text(encoding="utf-8")
+
+    gated = stock.replace(MATERIAL_HEADER_SEARCH_CONDITION, GATED_HEADER_SEARCH_CONDITION)
+    assert gated != stock, "Material's header search condition changed shape"
+
+    with_link = gated.replace(
+        MATERIAL_HEADER_SOURCE_CONDITION, SIGN_OUT_LINK + MATERIAL_HEADER_SOURCE_CONDITION
+    )
+    assert with_link != gated, "Material's header no longer has the anchor we insert at"
+    return with_link
+
+
+def test_the_vendored_header_is_materials_header_with_only_our_two_changes() -> None:
+    """A mkdocs-material upgrade that touches the header must fail here.
+
+    ``overrides/partials/header.html`` shadows the theme's own partial, so it
+    has to be re-derived from the installed theme rather than trusted to stay
+    current. Deriving the expectation from the installed template is what makes
+    silent drift impossible.
+    """
+    vendored = VENDORED_HEADER.read_text(encoding="utf-8")
+    ours, separator, theirs = vendored.partition(VENDORED_HEADER_SENTINEL)
+
+    assert separator, "vendored header is missing its provenance sentinel"
+    assert theirs == expected_vendored_header()
+    assert "authifi_public_page" in ours, "the public-page flag is not set before it is used"
+
+
+def test_only_one_copy_of_materials_header_is_vendored() -> None:
+    """Two copies would be two things to keep in step with the theme."""
+    vendored = sorted(
+        path.name
+        for path in (REPO_ROOT / "overrides" / "partials").glob("header*.html")
+    )
+
+    assert vendored == ["header.html"]
