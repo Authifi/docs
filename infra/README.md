@@ -206,23 +206,22 @@ That keeps the first apply unblocked on external DNS and makes the cutover a sec
 
 `enable_alb_deletion_protection` defaults to `true`. The load balancer owns the name users reach the docs through and serves the certificate that name is covered by, so deleting it is a DNS-visible outage that one misdirected `terraform destroy` or stray `-target` can cause — and it is not recoverable in place, because the replacement has a different DNS name and the external record has to be moved again.
 
-The release bucket is versioned and holds every release archive. `release_bucket_force_destroy` defaults to `false`, so Terraform refuses to delete it while any object remains. Ordinary applies are unaffected; teardown is one apply longer and names both opt-ins:
+The release bucket is versioned and holds every release archive. `release_bucket_force_destroy` defaults to `false`, so Terraform refuses to delete it while any object remains. Ordinary applies are unaffected; teardown is one apply longer and names both opt-ins.
+
+The client-secret parameter is workflow-managed so its value never enters
+Terraform state. Capture its region before destroying that state, then delete
+the final runtime setting after Terraform finishes:
 
 ```bash
+aws_region="$(terraform -chdir=infra output -raw aws_region)"
 terraform -chdir=infra apply -var-file=terraform.tfvars \
   -var='enable_alb_deletion_protection=false' \
   -var='release_bucket_force_destroy=true'
 terraform -chdir=infra destroy -var-file=terraform.tfvars \
   -var='enable_alb_deletion_protection=false' \
   -var='release_bucket_force_destroy=true'
-```
-
-The client-secret parameter is workflow-managed so its value never enters
-Terraform state. Delete that final runtime setting explicitly during teardown:
-
-```bash
 aws ssm delete-parameter \
-  --region "$(terraform -chdir=infra output -raw aws_region)" \
+  --region "$aws_region" \
   --name /authifi-docs/oidc-client-secret
 ```
 
