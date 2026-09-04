@@ -121,6 +121,20 @@ def test_release_preserves_root_link_header_behavior(extracted_release: Path) ->
     assert response.headers.get_list("link") == expected_root_links()
 
 
+def test_the_release_output_directory_is_not_committable() -> None:
+    """`make release` writes a seven-megabyte archive, its checksum, and a
+    wheelhouse into `dist/`, and the CI job expands a runtime beside them.
+    Ignored like `site/`, that output stays out of the way; untracked, it shows
+    up in every `git status` and is one `git add -A` from the history.
+    """
+    for path in ("dist/releases/0.tar.gz", "dist/expanded/site/index.html"):
+        completed = subprocess.run(
+            ["git", "check-ignore", "--quiet", path], cwd=ROOT, check=False
+        )
+
+        assert completed.returncode == 0, f"{path} is not ignored"
+
+
 def test_release_checksum_matches_archive(release: tuple[Path, str]) -> None:
     output, sha = release
     archive = output / f"{sha}.tar.gz"
