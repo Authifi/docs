@@ -725,10 +725,10 @@ def test_waiters_and_probes_use_only_the_release_sha_and_structured_checks() -> 
     assert 'aws elbv2 describe-target-health --target-group-arn "$DOCS_TARGET_GROUP_ARN"' in alb_lines
     assert any("/privacy-policy/" in line for line in probe_lines)
     assert any("/guides/sso-integration-guide/" in line for line in probe_lines)
-    assert sum("--max-redirs 0" in line for line in probe_lines) == 2
+    assert sum("--max-redirs 0" in line for line in probe_lines) == 3
     assert any("%{http_code}" in line for line in probe_lines)
     assert any("/_auth/login" in line for line in probe_lines)
-    assert sum('--connect-to "$connect_to"' in line for line in probe_lines) == 2
+    assert sum('--connect-to "$connect_to"' in line for line in probe_lines) == 3
 
     for forbidden in ("OIDC_CLIENT_SECRET", "SESSION_SECRET", "client_secret", "session_secret"):
         assert forbidden not in send_run
@@ -776,18 +776,46 @@ def test_route_probes_parse_the_canonical_https_origin_and_connect_directly_to_t
 ALB_DNS_NAME = "docs-alb-1234567890.us-east-1.elb.amazonaws.com"
 
 
-def probe_settings_program() -> str:
-    """The Python the probe step feeds to the interpreter on its heredoc.
+def heredoc_bodies(run: str, tag: str = "PY") -> list[str]:
+    """Every quoted-heredoc body in a `run:` block, in the order written.
 
-    Reading the fragments of this program proves it is written down; running it
-    is the only thing that proves what it accepts and what it refuses.
+    Reading the fragments of a program proves it is written down; running it is
+    the only thing that proves what it accepts and what it refuses.
     """
-    run = step_run("Verify public and protected routes")
-    body = run[run.index("\n", run.index("<<'PY'")) + 1 :]
-    terminator = re.search(r"(?m)^PY$", body)
+    bodies: list[str] = []
+    marker = f"<<'{tag}'"
+    terminator = re.compile(rf"(?m)^{re.escape(tag)}$")
+    offset = 0
 
-    assert terminator, "the probe heredoc is not terminated"
-    return body[: terminator.start()]
+    while (start := run.find(marker, offset)) != -1:
+        body_start = run.index("\n", start) + 1
+        end = terminator.search(run, body_start)
+        assert end, f"a <<'{tag}' heredoc in this step is not terminated"
+        bodies.append(run[body_start : end.start()])
+        offset = end.end()
+
+    return bodies
+
+
+def probe_programs() -> list[str]:
+    programs = heredoc_bodies(step_run("Verify public and protected routes"))
+
+    assert len(programs) == 2, "the probe step is two Python programs"
+    return programs
+
+
+def probe_settings_program() -> str:
+    program = probe_programs()[0]
+
+    assert "connect_to=" in program
+    return program
+
+
+def login_redirect_program() -> str:
+    program = probe_programs()[1]
+
+    assert "code_challenge" in program
+    return program
 
 
 def run_probe_settings(
@@ -808,8 +836,11 @@ def test_the_probe_parser_derives_settings_for_a_canonical_origin() -> None:
     assert completed.returncode == 0, completed.stderr
     assert completed.stdout.splitlines() == [
         f"connect_to=docs.authifi.io:443:{ALB_DNS_NAME}:443",
+        "docs_host=docs.authifi.io",
         "public_url=https://docs.authifi.io/privacy-policy/",
         "protected_url=https://docs.authifi.io/guides/sso-integration-guide/",
+        "login_url=https://docs.authifi.io/_auth/login",
+        "callback_url=https://docs.authifi.io/_auth/callback",
     ]
 
 
@@ -881,6 +912,211 @@ def test_the_probe_parser_refuses_a_base_url_carrying_a_path(
     assert completed.returncode != 0
     assert "path" in completed.stderr
     assert "public_url=" not in completed.stdout
+
+
+def test_the_probe_parser_derives_the_login_and_callback_urls_the_check_needs() -> None:
+    completed = run_probe_settings("https://docs.authifi.io")
+
+    assert completed.returncode == 0, completed.stderr
+    assert "docs_host=docs.authifi.io" in completed.stdout
+    assert "login_url=https://docs.authifi.io/_auth/login" in completed.stdout
+    assert "callback_url=https://docs.authifi.io/_auth/callback" in completed.stdout
+
+
+# --- Production OIDC discovery ------------------------------------------------
+#
+# `site_endpoint` never contacts the OIDC client, so a protected page answers
+# its local 307 whether or not the configured issuer exists. With an
+# unreachable issuer or a wrong discovery URL, the public probe stayed green,
+# the protected probe stayed green, the workflow declared the deployment ready,
+# and every reader then failed at the next `/_auth/login`. The authorization
+# redirect is the only evidence a deployment has that discovery ran and that
+# the private subnet's route out works.
+
+DOCS_HOST = "docs.authifi.io"
+CALLBACK_URL = f"https://{DOCS_HOST}/_auth/callback"
+
+# Values a real redirect carries that must never reach a workflow log.
+PROBE_STATE = "state-value-that-must-not-be-logged"
+PROBE_NONCE = "nonce-value-that-must-not-be-logged"
+PROBE_CHALLENGE = "challenge-value-that-must-not-be-logged"
+
+AUTHORIZATION_PARAMETERS = {
+    "client_id": "authifi-docs",
+    "redirect_uri": CALLBACK_URL,
+    "response_type": "code",
+    "scope": "openid profile email",
+    "state": PROBE_STATE,
+    "nonce": PROBE_NONCE,
+    "code_challenge": PROBE_CHALLENGE,
+    "code_challenge_method": "S256",
+}
+
+
+def authorization_redirect(
+    host: str = "login.authifi.io",
+    scheme: str = "https",
+    **overrides: str | None,
+) -> str:
+    """The `Location` an issuer's authorization endpoint redirect carries."""
+    from urllib.parse import urlencode
+
+    parameters = {**AUTHORIZATION_PARAMETERS}
+    for name, value in overrides.items():
+        if value is None:
+            parameters.pop(name, None)
+        else:
+            parameters[name] = value
+
+    return f"{scheme}://{host}/oauth2/authorize?{urlencode(parameters)}"
+
+
+def run_login_redirect_check(
+    location: str | None,
+    tmp_path: Path,
+    docs_host: str = DOCS_HOST,
+    callback_url: str = CALLBACK_URL,
+) -> str:
+    """The verdict the probe step reads, from the headers curl would dump."""
+    headers = tmp_path / "login-headers.txt"
+    dumped = ["HTTP/2 302", "content-length: 0", "set-cookie: authifi-session=opaque; Path=/"]
+    if location is not None:
+        dumped.insert(1, f"location: {location}")
+    headers.write_text("\r\n".join(dumped) + "\r\n\r\n", encoding="utf-8")
+
+    completed = subprocess.run(
+        [sys.executable, "-", str(headers), docs_host, callback_url],
+        input=login_redirect_program(),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    return completed.stdout.strip()
+
+
+def test_a_real_authorization_redirect_passes_the_discovery_check(tmp_path: Path) -> None:
+    assert run_login_redirect_check(authorization_redirect(), tmp_path) == "ok"
+
+
+@pytest.mark.parametrize(
+    "location",
+    [
+        None,
+        "",
+        # Relative, which is what our own login page would send.
+        f"/_auth/login?next=%2F&state={PROBE_STATE}",
+        # Our own host, which means discovery never reached the issuer.
+        authorization_redirect(host=DOCS_HOST),
+        authorization_redirect(host=DOCS_HOST.upper()),
+        # Not TLS to the issuer.
+        authorization_redirect(scheme="http"),
+        # Present but empty is the same as absent for every one of these.
+        authorization_redirect(client_id=None),
+        authorization_redirect(client_id=""),
+        authorization_redirect(redirect_uri=None),
+        authorization_redirect(state=None),
+        authorization_redirect(state=""),
+        authorization_redirect(nonce=None),
+        authorization_redirect(code_challenge=None),
+        authorization_redirect(code_challenge=""),
+        # The wrong flow, or PKCE downgraded to the mode S256 exists to replace.
+        authorization_redirect(response_type="token"),
+        authorization_redirect(response_type="code id_token"),
+        authorization_redirect(code_challenge_method="plain"),
+        authorization_redirect(code_challenge_method=None),
+        # An authorization endpoint told to send the code somewhere else.
+        authorization_redirect(redirect_uri="https://attacker.example/callback"),
+    ],
+)
+def test_a_redirect_that_does_not_prove_discovery_ran_is_refused(
+    location: str | None, tmp_path: Path
+) -> None:
+    verdict = run_login_redirect_check(location, tmp_path)
+
+    assert verdict != "ok"
+    assert verdict, "a refusal has to say something an operator can act on"
+
+
+@pytest.mark.parametrize(
+    "location",
+    [
+        authorization_redirect(),
+        authorization_redirect(host=DOCS_HOST),
+        authorization_redirect(scheme="http"),
+        authorization_redirect(code_challenge_method="plain"),
+        authorization_redirect(response_type="token"),
+        f"/_auth/login?state={PROBE_STATE}&nonce={PROBE_NONCE}",
+    ],
+)
+def test_the_verdict_never_carries_the_redirect_it_is_judging(
+    location: str, tmp_path: Path
+) -> None:
+    """The check runs against the live production deployment and its output
+    lands in a workflow log.
+
+    `state` and `nonce` are single-use anti-forgery material for a transaction
+    nobody completes, and the PKCE challenge is a digest of a verifier this
+    probe throws away, so none of it is worth much to an attacker. It is worth
+    nothing at all if it never leaves the runner, which costs only naming the
+    parameters rather than echoing them -- and the same restraint is what keeps
+    the whole URL, redirect chain included, out of the log.
+    """
+    verdict = run_login_redirect_check(location, tmp_path)
+
+    for secret in (PROBE_STATE, PROBE_NONCE, PROBE_CHALLENGE):
+        assert secret not in verdict
+    assert location not in verdict
+
+
+def test_the_login_probe_is_credential_free_and_does_not_follow_redirects() -> None:
+    """It has to exercise discovery and the NAT route out, and nothing else.
+
+    No cookie jar, no credentials, and no `--location`: following the redirect
+    would put a request to the issuer's authorization endpoint inside a
+    deployment check, which is somebody else's availability deciding whether
+    ours passes.
+    """
+    probe_run = step_run("Verify public and protected routes")
+    login_probe = anchored_line(probe_run, r'^login_status="\$\(curl ')
+
+    assert '--connect-to "$connect_to"' in login_probe
+    assert "--max-redirs 0" in login_probe
+    assert '--dump-header "$login_headers"' in login_probe
+    assert '"$login_url"' in login_probe
+    for forbidden in ("--location", "--cookie", "--user", "--header 'Authorization", "-L "):
+        assert forbidden not in login_probe
+
+    # The whole step, so no other request grows credentials either.
+    for forbidden in ("OIDC_CLIENT_SECRET", "SESSION_SECRET", "--cookie", "--user "):
+        assert forbidden not in probe_run
+
+
+def test_the_login_response_headers_are_never_dumped_into_the_log() -> None:
+    """The public and protected header dumps are printed on failure, because
+    nothing in them is secret. The login response's `Location` carries this
+    transaction's `state` and `nonce`, so its diagnostics name the verdict
+    instead."""
+    probe_run = step_run("Verify public and protected routes")
+    lines = executable_lines(probe_run)
+
+    assert 'cat "$public_headers" >&2' in lines
+    assert 'cat "$protected_headers" >&2' in lines
+    assert 'cat "$login_headers" >&2' not in lines
+    assert not any('login_headers' in line and line.startswith("cat ") for line in lines)
+    assert any('$login_verdict' in line for line in lines)
+
+
+def test_the_deployment_is_not_declared_ready_without_the_discovery_check() -> None:
+    """The success condition, read as one expression: a green public probe and
+    a green protected probe are no longer enough to break out of the loop."""
+    condition = anchored_line(step_run("Verify public and protected routes"), r"^if \[\[ ")
+
+    assert '"$public_status" == "200"' in condition
+    assert '"$protected_status" == "307"' in condition
+    assert '"$login_verdict" == ok' in condition
+    assert re.search(r'"\$login_status" =~ \^30', condition)
 
 
 def test_the_probe_parser_refuses_an_alb_name_carrying_shell_syntax() -> None:

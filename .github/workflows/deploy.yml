@@ -405,28 +405,119 @@ jobs:
           connect_to = f"{parsed.hostname}:443:{alb_dns_name}:443"
           public_url = join_url("/privacy-policy/")
           protected_url = join_url("/guides/sso-integration-guide/")
+          login_url = join_url("/_auth/login")
+          callback_url = join_url("/_auth/callback")
 
           print(f"connect_to={connect_to}")
+          print(f"docs_host={parsed.hostname}")
           print(f"public_url={public_url}")
           print(f"protected_url={protected_url}")
+          print(f"login_url={login_url}")
+          print(f"callback_url={callback_url}")
           PY
           )"
           connect_to=""
+          docs_host=""
           public_url=""
           protected_url=""
+          login_url=""
+          callback_url=""
           while IFS='=' read -r key value; do
             case "$key" in
               connect_to) connect_to="$value" ;;
+              docs_host) docs_host="$value" ;;
               public_url) public_url="$value" ;;
               protected_url) protected_url="$value" ;;
+              login_url) login_url="$value" ;;
+              callback_url) callback_url="$value" ;;
             esac
           done <<EOF
           $probe_settings
           EOF
 
           : "${connect_to:?probe connect-to was not derived}"
+          : "${docs_host:?docs hostname was not derived}"
           : "${public_url:?public probe URL was not derived}"
           : "${protected_url:?protected probe URL was not derived}"
+          : "${login_url:?login probe URL was not derived}"
+          : "${callback_url:?callback URL was not derived}"
+
+          # Written out here rather than inside the loop below: a quoted
+          # heredoc keeps whatever indentation it is written with, YAML strips
+          # only the block's own, and an indented terminator never closes one.
+          login_check="$(mktemp)"
+          cat > "$login_check" <<'PY'
+          """Judge the authorization redirect `/_auth/login` answered with.
+
+          The only evidence a deployment has that the configured issuer was
+          reachable, that its discovery document parsed, and that the private
+          subnet's route out works. `site_endpoint` never contacts the OIDC
+          client, so a protected page answers its local 307 whether or not the
+          issuer exists at all.
+
+          Parsed rather than matched in the shell: the value is a URL with a
+          query string, and grep-and-cut on one is how a check ends up passing
+          on a redirect back to our own login page.
+
+          Nothing printed here carries a parameter *value*. `state` and `nonce`
+          are single-use anti-forgery material for a transaction nobody
+          completes and the challenge is a digest of a verifier this probe
+          throws away, but they would land in a public workflow log, so only
+          the names appear.
+          """
+
+          import sys
+          from urllib.parse import parse_qs, urlsplit
+
+          headers_path, docs_host, callback_url = sys.argv[1:4]
+
+          location = ""
+          with open(headers_path, encoding="utf-8", errors="replace") as headers:
+              for line in headers:
+                  name, separator, value = line.partition(":")
+                  if separator and name.strip().lower() == "location":
+                      location = value.strip()
+
+          if not location:
+              print("the login endpoint sent no Location header")
+              raise SystemExit(0)
+
+          redirect = urlsplit(location)
+
+          if redirect.scheme != "https":
+              print("the authorization endpoint is not an absolute https URL")
+              raise SystemExit(0)
+          if not redirect.hostname:
+              print("the authorization redirect names no host")
+              raise SystemExit(0)
+          if redirect.hostname.lower() == docs_host.lower():
+              print("the login endpoint redirected back to the docs host, so discovery never reached the issuer")
+              raise SystemExit(0)
+
+          parameters = parse_qs(redirect.query, keep_blank_values=True)
+          carried = {name for name, values in parameters.items() if any(values)}
+          missing = [
+              name
+              for name in ("client_id", "redirect_uri", "state", "nonce", "code_challenge")
+              if name not in carried
+          ]
+
+          if missing:
+              print(f"the authorization redirect carries no {', '.join(missing)}")
+              raise SystemExit(0)
+          if parameters.get("response_type") != ["code"]:
+              print("the authorization redirect does not ask for response_type=code")
+              raise SystemExit(0)
+          if parameters.get("code_challenge_method") != ["S256"]:
+              print("the authorization redirect does not carry an S256 PKCE challenge")
+              raise SystemExit(0)
+          if parameters.get("redirect_uri") != [callback_url]:
+              print("the authorization redirect names a redirect_uri that is not this deployment's callback")
+              raise SystemExit(0)
+
+          print("ok")
+          PY
+
           deadline=$((SECONDS + 300))
           attempt=0
 
@@ -449,11 +540,25 @@ jobs:
             protected_status="${protected_status:-000}"
             protected_location="$(grep -i '^location:' "$protected_headers" | tail -n 1 | cut -d: -f2- | tr -d '\r' | xargs || true)"
 
+            # Credential-free, and deliberately not followed. This request is
+            # what makes the deployment prove that discovery reached the
+            # issuer and that the NAT route out works; following the redirect
+            # would put the issuer's own availability inside our readiness
+            # check instead.
+            login_headers="$(mktemp)"
+            login_status="$(curl --silent --show-error --max-time 30 --max-redirs 0 --connect-to "$connect_to" \
+              --output /dev/null --dump-header "$login_headers" \
+              --write-out '%{http_code}' "$login_url" || true)"
+            login_status="${login_status:-000}"
+            login_verdict="$(python "$login_check" "$login_headers" "$docs_host" "$callback_url")"
+
             if [[ "$public_status" == "200" \
               && "$public_content_type" == text/html* \
               && "$public_final_url" == "$public_url" \
               && "$protected_status" == "307" \
-              && "$protected_location" == /_auth/login* ]]; then
+              && "$protected_location" == /_auth/login* \
+              && "$login_status" =~ ^30[1237]$ \
+              && "$login_verdict" == ok ]]; then
               echo "Post-deploy checks passed on attempt $attempt."
               break
             fi
@@ -466,6 +571,11 @@ jobs:
               echo "Protected URL: $protected_url" >&2
               echo "Expected 307 redirect to /_auth/login; got status $protected_status, location '${protected_location}'." >&2
               cat "$protected_headers" >&2
+              # The headers themselves stay out of the log: this response's
+              # `Location` carries the transaction's state, nonce, and PKCE
+              # challenge, and the verdict names what was wrong without them.
+              echo "Login URL: $login_url" >&2
+              echo "Expected a redirect to the issuer's authorization endpoint; got status $login_status, and $login_verdict." >&2
               exit 1
             fi
 
