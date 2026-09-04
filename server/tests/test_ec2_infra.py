@@ -2187,9 +2187,11 @@ def test_operator_docs_do_not_send_first_rollout_probes_to_the_old_origin() -> N
     assert "rerun canonical verification" in text
 
 
-def test_docs_describe_public_pkce_registration_without_a_secret() -> None:
+def test_docs_describe_confidential_pkce_registration_and_secret_source() -> None:
     text = OPERATIONS_DOC
 
-    assert "public client" in text
+    assert "confidential client" in text
     assert "PKCE S256" in text
-    assert "token_endpoint_auth_method=none" in text
+    assert "client_secret_post" in text
+    assert "https://docs.authifi.io/logged-off" in text
+    assert "OIDC_CLIENT_SECRET" in INFRA_README

@@ -478,7 +478,7 @@ def validate_public_base_url(public_base_url: str) -> str:
     at `/`, the load balancer strips nothing, and `build_public_url` appends to
     this value verbatim -- so `https://host/docs` hands the issuer
     `https://host/docs/_auth/callback` as the redirect URI and sends logged-out
-    readers to `https://host/docs/privacy-policy/`, while the login redirect,
+    readers to `https://host/docs/logged-off`, while the login redirect,
     the sign-out form action, and every stylesheet URL stay rooted at `/`. The
     deployment probe asks for the prefixed path and gets a `404`. Making the
     routing prefix-aware is a larger change than this deployment needs, so the

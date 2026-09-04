@@ -32,7 +32,7 @@ HOST_CONFIGURATION = {
     "OIDC_CLIENT_SECRET_PARAMETER_NAME": "/authifi-docs/oidc-client-secret",
     "PUBLIC_BASE_URL": "https://docs.authifi.io",
     "SITE_DIR": "/opt/authifi-docs/current/site",
-    "POST_LOGOUT_PATH": "/privacy-policy/",
+    "POST_LOGOUT_PATH": "/logged-off",
 }
 
 

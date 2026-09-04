@@ -31,7 +31,7 @@ The Terraform root intentionally does **not** configure a backend, so each calle
   - `private_app_subnet_id`: an existing private application subnet for the EC2 instance
 - A route from the private subnet to the shared NAT gateway
 - Control of external DNS for `docs.authifi.io`, because ACM validation records are created outside Terraform
-- An Authifi application registration for the docs site as a **public** client using Authorization Code + PKCE, with **no client secret**
+- An Authifi application registration for the docs site as a **confidential** client using Authorization Code + PKCE S256 and `client_secret_post`
 
 ## Variables
 
@@ -174,6 +174,11 @@ Repository variables for `.github/workflows/deploy.yml` map to those values exac
 - `DOCS_ALB_DNS_NAME` from `alb_dns_name`
 - `DOCS_PUBLIC_BASE_URL` from the same HTTPS origin you set in `public_base_url`
 
+Add `OIDC_CLIENT_SECRET` as a secret on the GitHub `production` Environment.
+The workflow synchronizes it to `/authifi-docs/oidc-client-secret` as an SSM
+Parameter Store `SecureString` before every deployment. Operators do not create
+or edit that parameter directly in AWS.
+
 ### Stage 2: publish DNS validation records, then enable HTTPS
 
 Create the ACM validation records in your external DNS provider from `certificate_validation_records`, but do **not** move `docs.authifi.io` yet:
@@ -210,6 +215,15 @@ terraform -chdir=infra apply -var-file=terraform.tfvars \
 terraform -chdir=infra destroy -var-file=terraform.tfvars \
   -var='enable_alb_deletion_protection=false' \
   -var='release_bucket_force_destroy=true'
+```
+
+The client-secret parameter is workflow-managed so its value never enters
+Terraform state. Delete that final runtime setting explicitly during teardown:
+
+```bash
+aws ssm delete-parameter \
+  --region us-east-1 \
+  --name /authifi-docs/oidc-client-secret
 ```
 
 ALB access logs are deliberately **not** enabled. An access log of this load balancer is a per-request record of which protected documentation page each session read, which is a more sensitive artifact than the documentation itself: it would need its own bucket, a region-specific log-delivery policy, a retention decision, and an access model at least as tight as the docs. The questions access logs usually answer here — is the target healthy, how many 5xx — are already answered by target health and the load balancer's CloudWatch metrics, and the application's own request handling is logged to the journal on the host (`journalctl -u authifi-docs`). If a genuine requirement for request-level audit appears, add it as a deliberate change with a retention policy rather than as a default.
@@ -272,9 +286,13 @@ This replaced interpolating the five values into a file that the installer loade
 
 Control characters are the one thing refused rather than encoded, at plan time and again on the host. An `EnvironmentFile` assignment cannot represent a newline, so a value carrying one would silently become a shorter value plus a second assignment.
 
-`post_logout_path` defaults to `/privacy-policy/` and is validated at plan time: it must be site-relative, free of backslashes and control characters, and one of the paths the server actually serves publicly.
+`post_logout_path` defaults to `/logged-off` and is validated at plan time: it must be site-relative, free of backslashes and control characters, and one of the paths the server actually serves publicly.
 
-There is intentionally **no** `OIDC_CLIENT_SECRET` anywhere in production. This Authlib application is server-side and still needs outbound NAT egress, but the Authifi registration is a public client that uses PKCE instead of a secret. The session key is generated on the host at first boot and is never written into Terraform state.
+Terraform passes only `OIDC_CLIENT_SECRET_PARAMETER_NAME`, never the secret
+value. The application decrypts that parameter through its instance role at
+startup and authenticates the token request with `client_secret_post`; PKCE S256
+remains enabled. The session key is generated separately on the host at first
+boot and is never written into Terraform state.
 
 ### Migrating an existing instance to `config.json`
 
@@ -306,7 +324,9 @@ The ALB record and the ACM validation records are both created outside Terraform
 
 ## State Caveat
 
-Terraform state will contain infrastructure metadata such as subnet IDs, ARNs, bucket names, and the public base URL. It does **not** contain an OIDC client secret or the session secret, because production uses a public OIDC client and the session key is generated on the host.
+Terraform state will contain infrastructure metadata such as subnet IDs, ARNs,
+bucket names, the public base URL, and the fixed client-secret parameter name.
+It does **not** contain the OIDC client secret or session secret.
 
 ## Deploying Releases
 

@@ -510,7 +510,7 @@ def test_the_overrides_leave_the_pinned_mock_values_alone(tmp_path: Path) -> Non
 
     env = compose_env_for_args(args, environ={})
 
-    assert env["POST_LOGOUT_PATH"] == "/privacy-policy/"
+    assert env["POST_LOGOUT_PATH"] == "/logged-off"
     for key in ("OIDC_ISSUER", "OIDC_CLIENT_ID", "OIDC_CLIENT_SECRET", "SESSION_SECRET"):
         assert key not in env
 

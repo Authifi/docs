@@ -21,8 +21,7 @@ running. It reads two artifacts out of `SITE_DIR` and answers `200` with
 `{"status": "ok"}` only if both open and are non-empty:
 
 - `index.html`, the front page
-- the page `POST_LOGOUT_PATH` names, `privacy-policy/index.html` by default,
-  which is also the compliance document that has to stay publicly reachable
+- the page `POST_LOGOUT_PATH` names, `logged-off/index.html` by default
 
 Anything else is `503` with `{"status": "unavailable"}`. That covers a
 `SITE_DIR` pointing at nothing, a runtime stage that shipped without its build,
@@ -208,10 +207,10 @@ at `/`, the listener rules strip no prefix, and the server appends to this
 value verbatim when it builds the OIDC redirect URI and the post-logout URL. A
 `PUBLIC_BASE_URL` of `https://docs.authifi.io/docs` would therefore register
 `https://docs.authifi.io/docs/_auth/callback` with Authifi and send signed-out
-readers to `https://docs.authifi.io/docs/privacy-policy/`, while the login
+readers to `https://docs.authifi.io/docs/logged-off`, while the login
 redirect, the sign-out form action, the static asset URLs, and the routes
 themselves all stayed at `/`. The post-deploy probe would ask for
-`/docs/privacy-policy/` and get a `404`.
+`/docs/logged-off` and get a `404`.
 
 The same rule is enforced in three places, so a sub-path cannot reach
 production from any direction: the `public_base_url` Terraform variable refuses
@@ -390,21 +389,28 @@ container logs before tearing the stack down; start there.
 
 ## Production OIDC Registration
 
-The Authifi application for this docs host is a **public client**. This server
-still performs discovery, JWKS fetches, and the authorization-code exchange
-itself, so the private subnet still needs NAT egress; public client here means
-"no client secret", not "browser-only".
+The Authifi application for this docs host is a **confidential client**. The
+server performs discovery, JWKS fetches, and the authorization-code exchange,
+so the private subnet needs NAT egress.
 
-- Client type: public
+- Client type: confidential
 - Grant: authorization code
 - PKCE: required, S256
-- Token endpoint authentication method: none
+- Token endpoint authentication method: `client_secret_post`
 - Callback: `https://docs.authifi.io/_auth/callback`
-- Post-logout redirect: `https://docs.authifi.io/privacy-policy/`
+- Post-logout redirect: `https://docs.authifi.io/logged-off`
 - Scopes: `openid profile email`
 
-PKCE S256 is required. For dashboards or API payloads that use the OAuth field
-name, the same setting is `token_endpoint_auth_method=none`.
+PKCE S256 remains required: it binds the authorization code to the login that
+started it. `client_secret_post` separately authenticates this server to the
+token endpoint.
+
+The operator stores the client secret once as `OIDC_CLIENT_SECRET` on GitHub's
+protected `production` Environment. Before deployment, the workflow writes it
+to `/authifi-docs/oidc-client-secret` as an SSM Parameter Store `SecureString`.
+The instance reads it through its exact-parameter IAM grant at process startup.
+Do not maintain the parameter directly in AWS; rotate it by updating Authifi,
+updating the GitHub secret, and deploying.
 
 The server performs RP-initiated logout against the tenant's discovered `end_session_endpoint`, passing `client_id` and `post_logout_redirect_uri`. The redirect URI must therefore be registered with Authifi, and it must be a public path so the user is not bounced straight back into a login. When the tenant publishes no `end_session_endpoint`, the server clears the local session and redirects to that same path.
 
@@ -422,7 +428,9 @@ Two behaviours worth knowing when reading logs:
 
 Change it in one place per environment and register the matching absolute URL with Authifi.
 
-For local real-OIDC work, also register `http://localhost:8000/_auth/callback` and `http://localhost:8000/privacy-policy/`, or the equivalent base URL you actually use.
+For local real-OIDC work, also register `http://localhost:8000/_auth/callback`
+and `http://localhost:8000/logged-off`, or the equivalent base URL you actually
+use.
 
 ## Deployment Checklist
 
@@ -452,6 +460,7 @@ The deploy workflow uses GitHub-hosted runners plus AWS OIDC only.
 After a deploy or cutover, verify:
 
 - `https://docs.authifi.io/` redirects to `/_auth/login` when unauthenticated
+- `https://docs.authifi.io/logged-off` returns `200` and links to `/_auth/login`
 - `https://docs.authifi.io/privacy-policy/` returns `200` with `Content-Type: text/html; charset=utf-8`
 - `https://docs.authifi.io/terms-of-service/` returns `200`
 - `https://docs.authifi.io/sms-opt-in.html` returns `200`
