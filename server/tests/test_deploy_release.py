@@ -14,7 +14,7 @@ import tarfile
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterator
+from typing import Callable, Iterator
 
 import pytest
 
@@ -332,6 +332,29 @@ while True:
         path.write_text(body, encoding="utf-8")
         path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
+    def make_python_venv_failure_shim(self) -> Path:
+        """An interpreter whose `-m venv` fails and whose everything else works.
+
+        The installer uses this same binary for the lock wrapper, the checksum
+        check, the port probe, the symlink swap, and the prune, so failing the
+        whole interpreter would not reach the step under test.
+        """
+        shim = self.fake_bin / "python-venv-failure-shim"
+        self._write_executable(
+            shim,
+            f"""#!/usr/bin/env python3
+import subprocess
+import sys
+
+if sys.argv[1:3] == ["-m", "venv"]:
+    print("could not create a virtualenv", file=sys.stderr)
+    sys.exit(1)
+
+sys.exit(subprocess.run([{sys.executable!r}, *sys.argv[1:]]).returncode)
+""",
+        )
+        return shim
+
     def make_python_venv_activation_copymode_shim(self) -> Path:
         """Simulate CPython's template-mode copy leaking write bits into a venv.
 
@@ -379,30 +402,55 @@ sys.exit(completed.returncode)
         self.current.symlink_to(current_release)
         return current_release
 
-    def publish_archive(self, sha: str, checksum: str | None = None) -> Path:
+    def publish_archive(
+        self,
+        sha: str,
+        checksum: str | None = None,
+        requirements: str = "",
+    ) -> Path:
         incoming = self.incoming_root / sha
         incoming.mkdir(parents=True, exist_ok=True)
 
         with tempfile.TemporaryDirectory() as staging_dir:
             staged = Path(staging_dir) / "release"
-            self._build_release_tree(staged, sha)
+            self._build_release_tree(staged, sha, requirements)
             archive = incoming / f"{sha}.tar.gz"
             with tarfile.open(archive, "w:gz") as bundle:
                 bundle.add(staged, arcname=".")
 
-        digest = hashlib.sha256(archive.read_bytes()).hexdigest()
-        recorded = checksum or digest
-        (incoming / f"{sha}.tar.gz.sha256").write_text(
-            f"{recorded}  {sha}.tar.gz\n",
-            encoding="utf-8",
-        )
+        self._record_checksum(incoming, sha, checksum or self._digest_of(archive))
         return archive
 
-    def _build_release_tree(self, root: Path, sha: str) -> None:
+    def publish_unextractable_archive(self, sha: str) -> Path:
+        """An archive whose checksum is right and whose contents are not a tar.
+
+        `aws:downloadContent` verifies nothing, so a truncated download or a
+        corrupted object reaches the installer looking exactly like this: the
+        checksum step passes, `releases/<sha>` is created, and `tar` fails.
+        """
+        incoming = self.incoming_root / sha
+        incoming.mkdir(parents=True, exist_ok=True)
+        archive = incoming / f"{sha}.tar.gz"
+        archive.write_bytes(b"this is not a gzip stream")
+        self._record_checksum(incoming, sha, self._digest_of(archive))
+        return archive
+
+    @staticmethod
+    def _digest_of(archive: Path) -> str:
+        return hashlib.sha256(archive.read_bytes()).hexdigest()
+
+    @staticmethod
+    def _record_checksum(incoming: Path, sha: str, digest: str) -> None:
+        (incoming / f"{sha}.tar.gz.sha256").write_text(
+            f"{digest}  {sha}.tar.gz\n",
+            encoding="utf-8",
+        )
+
+    def _build_release_tree(self, root: Path, sha: str, requirements: str = "") -> None:
         (root / "site").mkdir(parents=True)
         (root / "server").mkdir()
         (root / "wheelhouse").mkdir()
-        (root / "requirements.txt").write_text("", encoding="utf-8")
+        (root / "requirements.txt").write_text(requirements, encoding="utf-8")
         (root / "site" / "index.html").write_text(f"<h1>{sha}</h1>\n", encoding="utf-8")
         (root / "server" / "__init__.py").write_text("", encoding="utf-8")
         (root / "server" / "main.py").write_text("app = object()\n", encoding="utf-8")
@@ -686,6 +734,228 @@ def test_an_already_active_release_clears_its_staging_directory(
     assert result.returncode == 0
     assert "already active" in result.stderr
     assert not (deploy_harness.incoming_root / sha).exists()
+
+
+# --- What a failed deployment leaves in the release tree ----------------------
+#
+# `releases/<sha>` is created before anything is extracted into it, so every
+# failure between there and activation left a release tree behind: extracted,
+# virtualenv and all. Repeated failures on the same commit accumulated them,
+# and the next successful prune counted them as recent releases -- keeping
+# incomplete trees by mtime while deleting the known-good release a rollback
+# would have needed.
+
+
+@dataclass
+class FailedDeployment:
+    """A deployment that fails at one named step, and what has to survive it."""
+
+    harness: DeployHarness
+    sha: str
+    previous: Path
+    unrelated: Path
+    result: subprocess.CompletedProcess[str]
+
+    @property
+    def candidate(self) -> Path:
+        return self.harness.releases / self.sha
+
+
+def deploy_that_fails(
+    harness: DeployHarness,
+    sha: str,
+    arrange: Callable[[DeployHarness, str], None],
+) -> FailedDeployment:
+    """Run one deployment arranged to fail, alongside releases it must not touch."""
+    previous = harness.seed_active_release()
+    unrelated = harness.make_release("3" * 39 + "f")
+    arrange(harness, sha)
+
+    result = harness.run(sha)
+
+    return FailedDeployment(harness, sha, previous, unrelated, result)
+
+
+def stage_corrupt_archive(harness: DeployHarness, sha: str) -> None:
+    harness.publish_unextractable_archive(sha)
+
+
+def stage_failing_venv(harness: DeployHarness, sha: str) -> None:
+    harness.publish_archive(sha)
+    harness.env["AUTHIFI_DOCS_PYTHON_BIN"] = str(harness.make_python_venv_failure_shim())
+
+
+def stage_uninstallable_requirements(harness: DeployHarness, sha: str) -> None:
+    # `--no-index --find-links wheelhouse`, and the wheelhouse is empty, so pip
+    # has nowhere to resolve this from. A release built without its wheels is
+    # exactly this failure.
+    harness.publish_archive(sha, requirements="a-package-no-wheelhouse-has==1.0\n")
+
+
+def stage_occupied_candidate_port(harness: DeployHarness, sha: str) -> None:
+    harness.publish_archive(sha)
+    holder = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    holder.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    holder.bind(("127.0.0.1", 0))
+    holder.listen(1)
+    harness.candidate_port = holder.getsockname()[1]
+    # Held for the rest of the test, and closed when the process exits.
+    harness.port_holder = holder  # type: ignore[attr-defined]
+
+
+def stage_unhealthy_candidate(harness: DeployHarness, sha: str) -> None:
+    harness.publish_archive(sha)
+    harness.fail_candidate_health = True
+
+
+def stage_failing_restart(harness: DeployHarness, sha: str) -> None:
+    harness.publish_archive(sha)
+    harness.fail_first_restart = True
+
+
+def stage_unhealthy_active_release(harness: DeployHarness, sha: str) -> None:
+    harness.publish_archive(sha)
+    harness.fail_active_health_once = True
+
+
+FAILURE_STEPS: dict[str, Callable[[DeployHarness, str], None]] = {
+    "extraction": stage_corrupt_archive,
+    "virtualenv": stage_failing_venv,
+    "dependency-install": stage_uninstallable_requirements,
+    "candidate-port": stage_occupied_candidate_port,
+    "candidate-health": stage_unhealthy_candidate,
+    "service-restart": stage_failing_restart,
+    "active-health": stage_unhealthy_active_release,
+}
+
+
+@pytest.mark.parametrize("step", sorted(FAILURE_STEPS))
+def test_a_failed_deployment_leaves_no_release_tree_behind(
+    deploy_harness: DeployHarness, step: str
+) -> None:
+    """Every failure, before the swap and after it, and the same outcome.
+
+    The two post-swap failures roll `current` back to the previous release
+    first, which is what makes the abandoned candidate removable by the same
+    rule as the pre-activation ones: it is not what the host is serving.
+    """
+    failed = deploy_that_fails(deploy_harness, "c" * 38 + "de", FAILURE_STEPS[step])
+
+    assert failed.result.returncode != 0, failed.result.stdout
+    assert not failed.candidate.exists(), f"{step} left {failed.candidate}"
+
+
+@pytest.mark.parametrize("step", sorted(FAILURE_STEPS))
+def test_cleaning_up_a_failed_deployment_touches_nothing_else(
+    deploy_harness: DeployHarness, step: str
+) -> None:
+    """Removing the candidate is only safe if it is *only* the candidate.
+
+    `rm -rf` over the release tree, or over `incoming`, would be a
+    correct-looking fix that deletes the release the host is serving or an
+    archive Systems Manager staged for a deployment this run knows nothing
+    about.
+    """
+    other_staging = stage_unrelated_deployment(deploy_harness)
+    failed = deploy_that_fails(deploy_harness, "c" * 38 + "de", FAILURE_STEPS[step])
+
+    assert failed.result.returncode != 0
+    assert deploy_harness.current.resolve() == failed.previous
+    assert (failed.previous / "site" / "index.html").is_file()
+    assert failed.unrelated.is_dir()
+    assert other_staging.is_dir()
+    assert not (deploy_harness.incoming_root / failed.sha).exists()
+
+
+def test_repeated_failures_never_become_releases_a_prune_would_keep(
+    deploy_harness: DeployHarness,
+) -> None:
+    """The consequence the accumulated trees actually had.
+
+    `prune_releases` keeps the two most recently modified non-active
+    directories whose names look like a SHA. Three failed attempts left three
+    such directories, all newer than the release a rollback needed, so the next
+    successful deployment pruned the good one and kept the wreckage.
+    """
+    rollback_target = "1" * 40
+    deploy_harness.publish_archive(rollback_target)
+    assert deploy_harness.run(rollback_target).returncode == 0
+
+    live = "2" * 40
+    deploy_harness.publish_archive(live)
+    assert deploy_harness.run(live).returncode == 0
+
+    for digit in "345":
+        failed_sha = digit * 40
+        deploy_harness.publish_unextractable_archive(failed_sha)
+        assert deploy_harness.run(failed_sha).returncode != 0
+
+    successor = "6" * 40
+    deploy_harness.publish_archive(successor)
+
+    assert deploy_harness.run(successor).returncode == 0
+    assert sorted(path.name for path in deploy_harness.releases.iterdir()) == sorted(
+        [rollback_target, live, successor]
+    )
+    assert deploy_harness.current.resolve().name == successor
+
+
+def test_redeploying_the_active_release_keeps_the_tree_it_is_serving(
+    deploy_harness: DeployHarness,
+) -> None:
+    """The early exit that reports "already active" returns zero, and the
+    directory it declines to reinstall is the one systemd is running from."""
+    sha = "7" * 38 + "de"
+    deploy_harness.publish_archive(sha)
+    assert deploy_harness.run(sha).returncode == 0
+
+    deploy_harness.publish_archive(sha)
+    result = deploy_harness.run(sha)
+
+    assert result.returncode == 0
+    assert "already active" in result.stderr
+    assert (deploy_harness.releases / sha / "site" / "index.html").is_file()
+    assert deploy_harness.current.resolve().name == sha
+
+
+def test_a_successful_deployment_keeps_the_tree_it_just_activated(
+    deploy_harness: DeployHarness,
+) -> None:
+    """The guard is a status check, not a blanket removal: a zero exit after a
+    healthy activation must leave the release the host is now serving."""
+    deploy_harness.seed_active_release()
+    sha = "8" * 38 + "de"
+    deploy_harness.publish_archive(sha)
+
+    assert deploy_harness.run(sha).returncode == 0
+    assert (deploy_harness.releases / sha / ".venv").is_dir()
+    assert deploy_harness.current.resolve().name == sha
+
+
+def test_a_failed_prune_after_activation_still_keeps_the_live_release(
+    deploy_harness: DeployHarness,
+) -> None:
+    """Pruning runs after activation and is allowed to fail, so the exit status
+    is zero and the cleanup must not fire -- but the ordering is worth pinning
+    directly, because a cleanup keyed on anything other than "did this become
+    the live release" would delete the release that is serving traffic."""
+    stale = [deploy_harness.make_release(digit * 40) for digit in "123"]
+    for offset, release in enumerate(stale, start=20):
+        deploy_harness.set_mtime(release, offset)
+    unprunable = stale[0]
+    unprunable.chmod(0o555)
+
+    sha = "9" * 38 + "de"
+    deploy_harness.publish_archive(sha)
+
+    try:
+        result = deploy_harness.run(sha)
+    finally:
+        unprunable.chmod(0o755)
+
+    assert result.returncode == 0, result.stderr
+    assert (deploy_harness.releases / sha / "site" / "index.html").is_file()
+    assert deploy_harness.current.resolve().name == sha
 
 
 def test_the_candidate_server_is_probed_as_the_service_account(

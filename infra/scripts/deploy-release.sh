@@ -79,6 +79,9 @@ PY
 fi
 
 candidate_pid=""
+# Whether this candidate became the release the host is serving. Set once, at
+# the point everything that could still roll it back has succeeded.
+candidate_activated=0
 
 stop_candidate_server() {
   if [[ -n "$candidate_pid" ]]; then
@@ -86,6 +89,33 @@ stop_candidate_server() {
     wait "$candidate_pid" 2>/dev/null || true
     candidate_pid=""
   fi
+}
+
+# `releases/<sha>` is created before anything is extracted into it, so every
+# failure from there to activation used to leave a release tree behind:
+# unpacked, virtualenv and all. Repeated failures on the same commit
+# accumulated them, and `prune_releases` then counted them as recent releases
+# -- it keeps the two most recently modified non-active directories whose names
+# look like a SHA, and three failed attempts are three such directories, all
+# newer than the release a rollback needed. The next successful deployment
+# pruned the good one and kept the wreckage.
+#
+# Only this run's candidate, and only while it is not what the host is serving.
+# That one condition covers every path: a SHA that was already active takes the
+# early exit with a zero status and keeps its tree, an activated release is
+# what `current` points at, and a rolled-back one is not -- `abandon_activation`
+# restores the previous release before this runs.
+discard_candidate() {
+  local active=""
+
+  if [[ -L "$current" ]]; then
+    active="$(readlink "$current")"
+  fi
+  if [[ "$active" == "$candidate" ]]; then
+    return 0
+  fi
+
+  rm -rf "$candidate"
 }
 
 # One exit handler for the whole run, installed before anything is staged or
@@ -103,6 +133,9 @@ on_exit() {
 
   stop_candidate_server
   rm -rf "$incoming"
+  if (( status != 0 )) && (( candidate_activated == 0 )); then
+    discard_candidate
+  fi
 
   return "$status"
 }
@@ -266,8 +299,9 @@ SITE_DIR="$candidate/site" "$timeout_bin" 30 \
 candidate_pid=$!
 
 if ! poll_health "http://127.0.0.1:$candidate_port/health" "$candidate_attempts"; then
+  # The exit handler discards the candidate, the way it does for every other
+  # failure that never reached activation.
   echo "candidate release failed health check" >&2
-  rm -rf "$candidate"
   exit 1
 fi
 
@@ -311,6 +345,10 @@ fi
 if ! poll_health "http://127.0.0.1:8080/health" "$active_attempts"; then
   abandon_activation "active release failed health check"
 fi
+
+# Swapped in, restarted, and answering. Nothing below this line can roll the
+# release back, so nothing below it may discard the tree the host is running.
+candidate_activated=1
 
 # Best effort, and deliberately the only step here that is. Everything above
 # either succeeded or exited non-zero already, so reaching this line means the
