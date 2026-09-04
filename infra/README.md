@@ -241,6 +241,8 @@ The deploy role trusts **only** the `Authifi/docs` `main` branch:
 
 Even during `create_service=false` bootstrap, the deploy policy is scoped to the predictable App Runner ARN pattern for this AWS account, region, and `service_name` instead of falling back to a global `*` resource.
 
+The policy also grants `iam:PassRole` on the App Runner *access* role. `apprunner update-service` reposts the service's own source configuration, and that payload carries `AuthenticationConfiguration.AccessRoleArn` — so the call is a role hand-off and fails without it. The grant names that one role and is conditioned on `iam:PassedToService = build.apprunner.amazonaws.com`, the principal the role's trust policy admits; an unconditioned `iam:PassRole` would be a privilege-escalation primitive.
+
 If the AWS account already has a shared GitHub OIDC provider, set `existing_github_oidc_provider_arn`. Otherwise this module creates the account-level provider for `https://token.actions.githubusercontent.com`.
 
 Recommended GitHub repository variables after bootstrap:

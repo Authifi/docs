@@ -236,6 +236,25 @@ data "aws_iam_policy_document" "github_deploy" {
     ]
     resources = [local.service_arn_for_policy]
   }
+
+  # `apprunner update-service` reposts the service's own source configuration,
+  # which carries `AuthenticationConfiguration.AccessRoleArn`. That makes the
+  # call a role hand-off, and App Runner rejects it without `iam:PassRole`.
+  statement {
+    sid       = "AllowPassAppRunnerAccessRole"
+    effect    = "Allow"
+    actions   = ["iam:PassRole"]
+    resources = [aws_iam_role.apprunner_access.arn]
+
+    # Without this the grant would let the deploy role attach that role to any
+    # service willing to assume it. The value has to stay in step with the
+    # role's own trust policy above.
+    condition {
+      test     = "StringEquals"
+      variable = "iam:PassedToService"
+      values   = ["build.apprunner.amazonaws.com"]
+    }
+  }
 }
 
 resource "aws_iam_policy" "github_deploy" {
