@@ -247,6 +247,24 @@ resource "aws_lb" "docs" {
 
   drop_invalid_header_fields = true
 
+  # This load balancer owns the name users reach the docs through and serves the
+  # certificate that name is covered by. Deleting it is a DNS-visible outage
+  # that one misdirected `terraform destroy` or stray `-target` can cause, and
+  # nothing about it is recoverable in place: the replacement has a different
+  # DNS name, so the external record has to be moved again.
+  #
+  # Ordinary applies are unaffected. Teardown is one apply longer: set
+  # `enable_alb_deletion_protection = false`, apply, then destroy.
+  enable_deletion_protection = var.enable_alb_deletion_protection
+
+  # Access logs are deliberately absent. An access log of this load balancer is
+  # a per-request record of which protected page each session read, which is a
+  # more sensitive artifact than the documentation itself and would need a
+  # bucket, a region-specific delivery policy, and a retention decision of its
+  # own. The questions access logs usually answer here — is the target healthy,
+  # how many 5xx — are already answered by target health and load balancer
+  # metrics, and the application's own log goes to the journal on the host.
+
   tags = local.common_tags
 
   lifecycle {
@@ -393,6 +411,62 @@ resource "aws_s3_bucket_public_access_block" "releases" {
   block_public_policy     = true
   ignore_public_acls      = true
   restrict_public_buckets = true
+}
+
+# The public access block stops an ACL from making an object public. It says
+# nothing about one granting a named account or the authenticated-users group,
+# and an object ACL is an access decision made outside the two IAM policies in
+# this file. This removes the mechanism rather than constraining it.
+resource "aws_s3_bucket_ownership_controls" "releases" {
+  bucket = aws_s3_bucket.releases.id
+
+  rule {
+    object_ownership = "BucketOwnerEnforced"
+  }
+}
+
+# S3 answers plain HTTP, and nothing in an IAM policy or an endpoint URL stops
+# a client from using it. What travels through this bucket is the code this host
+# runs, so a request carrying one in the clear is both readable and modifiable
+# in flight, and the bucket is the only place that can refuse it for every
+# caller — including ones whose IAM policy this root does not own.
+#
+# The condition is what makes a `Deny` on `s3:*` with a wildcard principal safe
+# to write: without it, the same statement locks the account out of its own
+# bucket. A deny-only policy is also not a public policy, so it does not
+# collide with `block_public_policy`.
+data "aws_iam_policy_document" "releases_bucket" {
+  statement {
+    sid    = "DenyRequestsNotOverTLS"
+    effect = "Deny"
+
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+
+    actions = ["s3:*"]
+
+    # Both ARNs: bucket-level operations are authorised against the bucket, and
+    # object-level ones against the keys, so naming one leaves the other
+    # reachable in the clear.
+    resources = [aws_s3_bucket.releases.arn, "${aws_s3_bucket.releases.arn}/*"]
+
+    condition {
+      test     = "Bool"
+      variable = "aws:SecureTransport"
+      values   = ["false"]
+    }
+  }
+}
+
+resource "aws_s3_bucket_policy" "releases" {
+  bucket = aws_s3_bucket.releases.id
+  policy = data.aws_iam_policy_document.releases_bucket.json
+
+  # PutBucketPolicy is evaluated against the public access block, so the two
+  # are ordered rather than left to race on a first apply.
+  depends_on = [aws_s3_bucket_public_access_block.releases]
 }
 
 resource "aws_s3_bucket_server_side_encryption_configuration" "releases" {

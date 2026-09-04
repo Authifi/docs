@@ -44,6 +44,10 @@ custom_domain_name = "docs.authifi.io"
 # for the certificate to report ISSUED, then apply again with this set to true.
 enable_https_listener = false
 
+# The load balancer owns the name users reach the docs through. Leave this true;
+# tearing the stack down is one apply longer, with this set to false first.
+enable_alb_deletion_protection = true
+
 # Set this only if the account already has a shared GitHub OIDC provider.
 existing_github_oidc_provider_arn = null
 

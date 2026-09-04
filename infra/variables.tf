@@ -188,6 +188,12 @@ variable "custom_domain_name" {
   }
 }
 
+variable "enable_alb_deletion_protection" {
+  description = "Refuse to delete the load balancer. Teardown means applying with this false first, then destroying."
+  type        = bool
+  default     = true
+}
+
 variable "enable_https_listener" {
   description = "Enable redirect and HTTPS listeners after ACM DNS validation succeeds."
   type        = bool

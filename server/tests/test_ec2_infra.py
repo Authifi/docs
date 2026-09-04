@@ -25,6 +25,7 @@ from server.tests.hcl_support import (
     nested_blocks,
     resource_bodies,
     statement_with_action,
+    statements,
     strip_comments,
 )
 
@@ -735,6 +736,96 @@ def test_release_bucket_is_private_encrypted_versioned_and_expiring() -> None:
     assert 'resource "aws_s3_bucket_server_side_encryption_configuration" "releases"' in MAIN
     assert 'resource "aws_s3_bucket_versioning" "releases"' in MAIN
     assert 'resource "aws_s3_bucket_lifecycle_configuration" "releases"' in MAIN
+    assert 'resource "aws_s3_bucket_ownership_controls" "releases"' in MAIN
+    assert 'resource "aws_s3_bucket_policy" "releases"' in MAIN
+
+
+def test_the_release_bucket_disables_object_acls_entirely() -> None:
+    """The public access block stops an ACL from making an object *public*. It
+    says nothing about one granting a named account or an authenticated-users
+    group, and an object ACL is an access decision made outside the two IAM
+    policies this file enumerates. `BucketOwnerEnforced` removes the mechanism.
+    """
+    rule = hcl_block(
+        hcl_block(MAIN, 'resource "aws_s3_bucket_ownership_controls" "releases"'), "rule"
+    )
+
+    assert attribute(rule, "object_ownership") == '"BucketOwnerEnforced"'
+
+
+def test_the_release_bucket_refuses_requests_that_are_not_over_tls() -> None:
+    """S3 answers plain HTTP, and nothing in an IAM policy or an endpoint URL
+    prevents a client from using it. Releases are the code this host runs, so a
+    request carrying one in the clear is both eavesdroppable and modifiable in
+    flight; the bucket is the only place that can refuse it for every caller.
+
+    The condition is what makes this safe to write as `Deny` on `s3:*` with a
+    wildcard principal: without it, the same statement locks the account out of
+    its own bucket.
+    """
+    policy = hcl_block(MAIN, 'data "aws_iam_policy_document" "releases_bucket"')
+    blocks = statements(strip_comments(policy))
+
+    # Deny-only, enumerated. An `Allow` in a resource policy is a grant that
+    # none of the IAM assertions in this file would ever see.
+    assert len(blocks) == 1
+    assert [attribute(block, "effect") for block in blocks] == ['"Deny"']
+
+    statement = blocks[0]
+    condition = hcl_block(statement, "condition")
+
+    assert attribute(condition, "test") == '"Bool"'
+    assert attribute(condition, "variable") == '"aws:SecureTransport"'
+    assert attribute(condition, "values") == '["false"]'
+
+    # Both the bucket and its contents: a statement naming only one of the two
+    # ARNs leaves the other reachable in the clear.
+    assert attribute(statement, "resources") == (
+        '[aws_s3_bucket.releases.arn, "${aws_s3_bucket.releases.arn}/*"]'
+    )
+    assert hcl_list(statement, "actions") == ["s3:*"]
+
+    principals = hcl_block(statement, "principals")
+    assert attribute(principals, "type") == '"*"'
+
+    attachment = hcl_block(MAIN, 'resource "aws_s3_bucket_policy" "releases"')
+    assert attribute(attachment, "policy") == "data.aws_iam_policy_document.releases_bucket.json"
+
+
+# --- The public edge, continued -----------------------------------------------
+
+
+def test_the_load_balancer_cannot_be_deleted_by_accident() -> None:
+    """The ALB owns the name users reach the docs through and the certificate
+    that name is served under. Deleting it is a DNS-visible outage that a
+    misdirected `terraform destroy` or a stray `-target` can cause in one
+    command, and nothing about it is recoverable in place: the replacement has
+    a different DNS name and needs the external record moved again.
+
+    Teardown stays a normal Terraform operation, one apply longer.
+    """
+    alb = hcl_block(MAIN, 'resource "aws_lb" "docs"')
+
+    assert attribute(alb, "enable_deletion_protection") == "var.enable_alb_deletion_protection"
+    assert variable_default("enable_alb_deletion_protection") == "true"
+    assert "enable_alb_deletion_protection" in TFVARS_EXAMPLE
+
+
+def test_the_absence_of_alb_access_logs_is_a_recorded_decision() -> None:
+    """Not an oversight, and worth stating rather than leaving to be rediscovered.
+
+    An access log of this load balancer is a per-request record of which
+    protected documentation page each session read, which is a more sensitive
+    artifact than the docs themselves and would live in a bucket with a
+    different access model. The operational questions access logs usually
+    answer -- is the target healthy, how many 5xx -- are already answered by
+    target health and load balancer metrics, and the application's own log goes
+    to the journal on the host.
+    """
+    alb = hcl_block(MAIN, 'resource "aws_lb" "docs"')
+
+    assert not nested_blocks(strip_comments(alb), "access_logs")
+    assert "access log" in operator_docs_text()
 
 
 def test_every_public_access_block_flag_is_set() -> None:

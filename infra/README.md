@@ -197,6 +197,18 @@ The listener shape is deliberate:
 
 That keeps the first apply unblocked on external DNS and makes the cutover a second, explicit step instead of a half-working one.
 
+### Deletion protection and access logs
+
+`enable_alb_deletion_protection` defaults to `true`. The load balancer owns the name users reach the docs through and serves the certificate that name is covered by, so deleting it is a DNS-visible outage that one misdirected `terraform destroy` or stray `-target` can cause — and it is not recoverable in place, because the replacement has a different DNS name and the external record has to be moved again. Ordinary applies are unaffected; teardown is one apply longer:
+
+```bash
+terraform -chdir=infra apply -var-file=terraform.tfvars \
+  -var='enable_alb_deletion_protection=false'
+terraform -chdir=infra destroy -var-file=terraform.tfvars
+```
+
+ALB access logs are deliberately **not** enabled. An access log of this load balancer is a per-request record of which protected documentation page each session read, which is a more sensitive artifact than the documentation itself: it would need its own bucket, a region-specific log-delivery policy, a retention decision, and an access model at least as tight as the docs. The questions access logs usually answer here — is the target healthy, how many 5xx — are already answered by target health and the load balancer's CloudWatch metrics, and the application's own request handling is logged to the journal on the host (`journalctl -u authifi-docs`). If a genuine requirement for request-level audit appears, add it as a deliberate change with a retention policy rather than as a default.
+
 ## GitHub Actions OIDC
 
 The deploy role trusts **only** the deployment job in `Authifi/docs`, on `main`, in the `production` environment. Every claim is bound with `StringEquals`:
