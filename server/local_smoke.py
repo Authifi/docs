@@ -39,7 +39,6 @@ DIAGNOSTIC_LOG_LINES = 200
 # bind. 1024 is where binding stops needing them.
 LOWEST_UNPRIVILEGED_PORT = 1024
 HIGHEST_PORT = 65535
-LOWEST_PORT = 1
 LOCAL_URL_SCHEME = "http"
 
 # `303 See Other` is what the logout route answers, so that a browser which had
@@ -672,7 +671,8 @@ def origin_on_another_port(origin: str) -> str:
 
     A host is re-bracketed if it needs it, since `http://::1:8001` is not a URL.
     The neighbour is one above, or one below at the top of the range, so the
-    result is always a port that could exist.
+    result is always a port that could exist -- `urlsplit` will not hand back
+    anything outside 0 to 65535, so there is no floor to guard.
     """
     parts = urlsplit(origin)
     host = parts.hostname
@@ -687,8 +687,6 @@ def origin_on_another_port(origin: str) -> str:
         port = ORIGIN_DEFAULT_PORTS.get(parts.scheme, LOWEST_UNPRIVILEGED_PORT)
 
     other = port - 1 if port >= HIGHEST_PORT else port + 1
-    if other < LOWEST_PORT:
-        other = LOWEST_PORT
     if ":" in host:
         host = f"[{host}]"
     return f"{parts.scheme}://{host}:{other}"
