@@ -71,6 +71,7 @@ existing_github_oidc_provider_arn = null
 # cannot inherit.
 github_repository         = "Authifi/docs"
 github_repository_subject = "repo:Authifi@37509689/docs@993416679:environment:production"
+github_repository_owner_id = "37509689"
 github_repository_id      = "993416679"
 deploy_branch             = "main"
 deploy_environment        = "production"

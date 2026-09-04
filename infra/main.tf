@@ -865,6 +865,13 @@ resource "aws_iam_role" "github_deploy" {
   name               = "${var.service_name}-github-deploy"
   assume_role_policy = data.aws_iam_policy_document.github_deploy_assume_role.json
   tags               = local.common_tags
+
+  lifecycle {
+    precondition {
+      condition     = var.github_repository_subject == "repo:${split("/", var.github_repository)[0]}@${var.github_repository_owner_id}/${split("/", var.github_repository)[1]}@${var.github_repository_id}:environment:${var.deploy_environment}"
+      error_message = "github_repository_subject must match github_repository, github_repository_owner_id, github_repository_id, and deploy_environment."
+    }
+  }
 }
 
 data "aws_iam_policy_document" "github_deploy" {

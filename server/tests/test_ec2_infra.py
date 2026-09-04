@@ -1489,6 +1489,22 @@ def test_the_deploy_role_trusts_exactly_the_subject_the_workflow_presents() -> N
     assert ":ref:" not in subject
 
 
+def test_the_immutable_subject_must_match_its_companion_trust_inputs() -> None:
+    role = hcl_block(MAIN, 'resource "aws_iam_role" "github_deploy"')
+    lifecycle = hcl_block(role, "lifecycle")
+    precondition = hcl_block(lifecycle, "precondition")
+    condition = attribute(precondition, "condition")
+
+    assert variable_default("github_repository_owner_id") == "37509689"
+    assert condition == (
+        'var.github_repository_subject == '
+        '"repo:${split("/", var.github_repository)[0]}'
+        '@${var.github_repository_owner_id}/'
+        '${split("/", var.github_repository)[1]}'
+        '@${var.github_repository_id}:environment:${var.deploy_environment}"'
+    )
+
+
 def test_the_deploy_role_binds_the_branch_and_the_repository_identity_too() -> None:
     """The subject alone is one string, and every part of it is a name someone
     can take. `ref` is what keeps a `production` deployment job on a branch

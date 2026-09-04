@@ -1303,6 +1303,9 @@ def test_redeploying_the_active_release_keeps_the_tree_it_is_serving(
     assert "already active" in result.stderr
     assert deploy_harness.events.count("systemctl:restart") == 1
     assert "active-health" in deploy_harness.events
+    assert deploy_harness.events.index("candidate-health") < deploy_harness.events.index(
+        "systemctl:restart"
+    )
     assert (deploy_harness.releases / sha / "site" / "index.html").is_file()
     assert deploy_harness.current.resolve().name == sha
 

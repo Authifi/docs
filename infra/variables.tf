@@ -296,6 +296,17 @@ variable "github_repository_subject" {
   }
 }
 
+variable "github_repository_owner_id" {
+  description = "Numeric GitHub owner ID encoded in github_repository_subject."
+  type        = string
+  default     = "37509689"
+
+  validation {
+    condition     = can(regex("^[0-9]+$", var.github_repository_owner_id))
+    error_message = "github_repository_owner_id must be the numeric organization or user ID returned by the GitHub API."
+  }
+}
+
 variable "github_repository_id" {
   description = "Numeric GitHub repository ID of github_repository, bound as the OIDC repository_id claim. Numeric IDs are never reused, so this is what a repository deleted and recreated under the same name cannot inherit."
   type        = string
