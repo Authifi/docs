@@ -3,12 +3,13 @@ from __future__ import annotations
 import logging
 import mimetypes
 import os
+import secrets
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import quote, urlencode, urlsplit, urlunsplit
 
-from authlib.integrations.starlette_client import OAuth
+from authlib.integrations.starlette_client import OAuth, StarletteIntegration
 from starlette.applications import Starlette
 from starlette.datastructures import MutableHeaders
 from starlette.middleware.sessions import SessionMiddleware
@@ -39,8 +40,20 @@ PUBLIC_PREFIXES = ("/.well-known/", "/assets/", "/javascripts/", "/stylesheets/"
 SESSION_COOKIE_NAME = "authifi-session"
 DEFAULT_SITE_DIR = "site"
 DEFAULT_OIDC_SCOPE = "openid profile email"
-SESSION_NEXT_KEY = "next"
+SESSION_PENDING_LOGINS_KEY = "pending_logins"
 SESSION_USER_KEY = "user"
+
+OAUTH_CLIENT_NAME = "authifi"
+# Authlib's Starlette integration files each transaction's redirect URI, PKCE
+# verifier, and nonce under this prefix, keyed by the OAuth state. Return paths
+# are keyed by the same state so the two halves stay in step.
+OAUTH_STATE_SESSION_PREFIX = f"_state_{OAUTH_CLIENT_NAME}_"
+OAUTH_STATE_BYTES = 32
+
+# Anyone can open `/_auth/login`, and every pending transaction costs space in
+# a signed cookie the browser will silently drop once it grows past ~4KB. Four
+# concurrent tabs is generous for a docs site; older ones are evicted.
+MAX_PENDING_LOGINS = 4
 
 SESSION_MAX_AGE_SECONDS = 8 * 60 * 60
 DEFAULT_POST_LOGOUT_PATH = "/privacy-policy/"
@@ -262,16 +275,101 @@ async def health_endpoint(request: Request) -> Response:
     return JSONResponse({"status": "ok"})
 
 
+def oauth_state_session_key(state: str) -> str:
+    return f"{OAUTH_STATE_SESSION_PREFIX}{state}"
+
+
+def pending_logins(session: Mapping[str, Any]) -> dict[str, str]:
+    stored = session.get(SESSION_PENDING_LOGINS_KEY)
+    return dict(stored) if isinstance(stored, dict) else {}
+
+
+def remember_pending_login(session: Any, state: str, next_path: str) -> None:
+    """File this login's return path under its own OAuth state.
+
+    A single ``next`` slot meant a second tab overwrote the first one's
+    destination, so whichever login finished last decided where both went.
+    """
+    pending = pending_logins(session)
+    pending[state] = next_path
+
+    # Dicts keep insertion order, so the oldest transaction is evicted first.
+    while len(pending) > MAX_PENDING_LOGINS:
+        pending.pop(next(iter(pending)))
+
+    # Authlib's half of an evicted transaction is the bulky half, and it would
+    # otherwise linger in the cookie for the full hour until its own expiry.
+    for key in [key for key in session if key.startswith(OAUTH_STATE_SESSION_PREFIX)]:
+        if key.removeprefix(OAUTH_STATE_SESSION_PREFIX) not in pending:
+            session.pop(key)
+
+    session[SESSION_PENDING_LOGINS_KEY] = pending
+
+
+def consume_pending_login(session: Any, state: str | None) -> str | None:
+    """Take this state's return path, leaving every other transaction intact."""
+    if not state:
+        return None
+
+    pending = pending_logins(session)
+    next_path = pending.pop(state, None)
+    if next_path is None:
+        return None
+
+    session[SESSION_PENDING_LOGINS_KEY] = pending
+    return next_path
+
+
+def reset_session_preserving_pending_logins(session: Any) -> None:
+    """Start a fresh session, keeping only still-pending login transactions.
+
+    Clearing outright is the session-fixation defence, and it has to stay: a
+    pre-existing ``user`` must not survive a callback. It cannot take the other
+    tabs' in-flight OAuth transactions with it, though, so those are carried
+    over and nothing else is.
+    """
+    pending = pending_logins(session)
+    preserved: dict[str, Any] = {}
+    if pending:
+        preserved[SESSION_PENDING_LOGINS_KEY] = pending
+        for state in pending:
+            key = oauth_state_session_key(state)
+            if key in session:
+                preserved[key] = session[key]
+
+    session.clear()
+    session.update(preserved)
+
+
 async def login_endpoint(request: Request) -> Response:
     set_cache_visibility(request, VISIBILITY_PROTECTED)
-    request.session[SESSION_NEXT_KEY] = normalize_next_path(request.query_params.get("next"))
+    # Generated here rather than left to Authlib so the return path can be
+    # stored under the same key Authlib uses for its verifier and nonce.
+    state = secrets.token_urlsafe(OAUTH_STATE_BYTES)
+    remember_pending_login(
+        request.session, state, normalize_next_path(request.query_params.get("next"))
+    )
     redirect_uri = build_public_url(request.app.state.config.public_base_url, "/_auth/callback")
-    return await request.app.state.auth_client.authorize_redirect(request, redirect_uri)
+    return await request.app.state.auth_client.authorize_redirect(
+        request, redirect_uri, state=state
+    )
 
 
 async def callback_endpoint(request: Request) -> Response:
     set_cache_visibility(request, VISIBILITY_PROTECTED)
-    next_path = normalize_next_path(request.session.pop(SESSION_NEXT_KEY, "/"))
+
+    next_path = consume_pending_login(request.session, request.query_params.get("state"))
+    if next_path is None:
+        # No pending transaction under that state: expired, already used, or
+        # never ours. Refuse before exchanging anything, and leave the other
+        # tabs' transactions alone so a forged callback cannot cancel them.
+        logger.warning("Rejecting Authifi OIDC callback with an unrecognised state")
+        return PlainTextResponse(
+            "Authentication failed: this sign-in request is unknown or has expired. "
+            "Start again from the page you wanted.",
+            status_code=400,
+        )
+
     token = await request.app.state.auth_client.authorize_access_token(request)
 
     try:
@@ -280,15 +378,15 @@ async def callback_endpoint(request: Request) -> Response:
         # Fail closed. The message is deliberately claim-shaped only: it must
         # never carry ID or access token material into logs or the response.
         logger.error("Rejecting Authifi OIDC callback: %s", error)
-        request.session.clear()
+        reset_session_preserving_pending_logins(request.session)
         return PlainTextResponse(
             "Authentication failed: the identity provider did not return a subject claim.",
             status_code=500,
         )
 
-    request.session.clear()
+    reset_session_preserving_pending_logins(request.session)
     request.session[SESSION_USER_KEY] = user
-    return RedirectResponse(url=next_path)
+    return RedirectResponse(url=normalize_next_path(next_path))
 
 
 async def logout_endpoint(request: Request) -> Response:
@@ -548,8 +646,54 @@ def extract_minimal_user(userinfo: Mapping[str, Any] | None) -> dict[str, str]:
     return user
 
 
+class BoundedStateStorage(StarletteIntegration):
+    """Keep several in-flight OAuth transactions, not just the newest one.
+
+    Authlib's Starlette integration deletes every stored transaction each time
+    a new one starts, to stop the signed cookie growing without bound. The side
+    effect is that opening a second login tab destroys the first tab's PKCE
+    verifier and nonce, so its callback can never complete. Bound the store by
+    count instead of emptying it, which keeps the cookie small and lets
+    concurrent logins finish in any order.
+    """
+
+    async def set_state_data(self, session, state, data) -> None:
+        if isinstance(data, dict) and "url" in data:
+            # The full authorization URL is by far the largest field in a
+            # transaction and is never read back out of the session: the
+            # redirect is built from the return value, and the callback needs
+            # only the redirect URI, PKCE verifier, and nonce. Dropping it is
+            # what makes several concurrent logins fit in one signed cookie.
+            data = {key: value for key, value in data.items() if key != "url"}
+
+        prefix = f"_state_{self.name}_"
+        preserved = (
+            {key: value for key, value in session.items() if key.startswith(prefix)}
+            if session is not None
+            else {}
+        )
+
+        await super().set_state_data(session, state, data)
+
+        if session is None:
+            return
+
+        # super() emptied the store and wrote this transaction. Reinsert the
+        # most recent others ahead of it, so insertion order still tracks age.
+        new_key = f"{prefix}{state}"
+        new_value = session.pop(new_key)
+        for key, value in list(preserved.items())[-(MAX_PENDING_LOGINS - 1) :]:
+            if key != new_key:
+                session[key] = value
+        session[new_key] = new_value
+
+
+class DocsOAuth(OAuth):
+    framework_integration_cls = BoundedStateStorage
+
+
 def create_auth_client(config: AppConfig):
-    oauth = OAuth()
+    oauth = DocsOAuth()
     oauth.register(
         name="authifi",
         client_id=config.oidc_client_id,

@@ -338,7 +338,7 @@ def test_login_redirects_are_not_cached(site_dir: Path, path: str) -> None:
 
 @pytest.mark.parametrize("path", ["/_auth/login", "/_auth/logout", "/_auth/callback"])
 def test_auth_responses_are_not_cached(site_dir: Path, path: str) -> None:
-    client = authenticated_client(site_dir, session={"next": "/"})
+    client = authenticated_client(site_dir, session={"pending_logins": {"def": "/"}})
 
     response = client.get(path, follow_redirects=False)
 
@@ -404,9 +404,14 @@ def test_login_redirects_and_persists_safe_next(site_dir: Path) -> None:
 
     assert response.status_code == 307
     assert response.headers["location"] == "https://issuer.example.com/authorize"
-    assert auth_client.redirect_calls == [{"redirect_uri": "https://docs.example.com/_auth/callback"}]
+    [redirect_call] = auth_client.redirect_calls
+    assert redirect_call["redirect_uri"] == "https://docs.example.com/_auth/callback"
     session = decode_session_cookie(client.cookies["authifi-session"])
-    assert session["next"] == "/guides/sso-integration-guide/"
+    # The return path is filed under this login's own OAuth state, so a second
+    # tab adds an entry instead of overwriting this one.
+    assert session["pending_logins"] == {
+        redirect_call["state"]: "/guides/sso-integration-guide/"
+    }
 
 
 def test_login_with_real_authlib_client_generates_pkce_challenge_and_persists_verifier(site_dir: Path) -> None:
@@ -430,7 +435,9 @@ def test_login_with_real_authlib_client_generates_pkce_challenge_and_persists_ve
     assert params["code_challenge"] == [ANY]
     session = decode_session_cookie(client.cookies["authifi-session"])
     state_key = f"_state_authifi_{params['state'][0]}"
-    assert session["next"] == "/guides/sso-integration-guide/"
+    assert session["pending_logins"] == {
+        params["state"][0]: "/guides/sso-integration-guide/"
+    }
     assert session[state_key]["data"]["code_verifier"] == ANY
     assert session[state_key]["data"]["nonce"] == params["nonce"][0]
 
@@ -457,7 +464,7 @@ def test_login_rejects_unsafe_next_values(site_dir: Path, unsafe_next: str) -> N
 
     assert response.status_code == 307
     session = decode_session_cookie(client.cookies["authifi-session"])
-    assert session["next"] == "/"
+    assert list(session["pending_logins"].values()) == ["/"]
 
 
 @pytest.mark.parametrize(
@@ -491,7 +498,7 @@ def test_normalize_next_path_honours_custom_default() -> None:
 
 def test_callback_stores_minimal_identity_and_redirects_to_next(site_dir: Path) -> None:
     auth_client = DummyAuthClient()
-    client = authenticated_client(site_dir, auth_client=auth_client, session={"next": "/security/"})
+    client = authenticated_client(site_dir, auth_client=auth_client, session={"pending_logins": {"def": "/security/"}})
 
     response = client.get("/_auth/callback?code=abc&state=def", follow_redirects=False)
 
@@ -510,7 +517,7 @@ def test_callback_stores_minimal_identity_and_redirects_to_next(site_dir: Path) 
 
 def test_callback_does_not_persist_raw_tokens(site_dir: Path) -> None:
     auth_client = DummyAuthClient()
-    client = authenticated_client(site_dir, auth_client=auth_client, session={"next": "/"})
+    client = authenticated_client(site_dir, auth_client=auth_client, session={"pending_logins": {"def": "/"}})
 
     response = client.get("/_auth/callback?code=abc&state=def", follow_redirects=False)
 
@@ -523,7 +530,7 @@ def test_callback_does_not_persist_raw_tokens(site_dir: Path) -> None:
 
 def test_callback_rejects_unsafe_stored_next(site_dir: Path) -> None:
     auth_client = DummyAuthClient()
-    client = authenticated_client(site_dir, auth_client=auth_client, session={"next": "//evil.example"})
+    client = authenticated_client(site_dir, auth_client=auth_client, session={"pending_logins": {"def": "//evil.example"}})
 
     response = client.get("/_auth/callback?code=abc&state=def", follow_redirects=False)
 
@@ -541,7 +548,7 @@ def test_callback_fails_closed_when_subject_claim_is_missing(
             "access_token": "super-secret-access-token",
         }
     )
-    client = authenticated_client(site_dir, auth_client=auth_client, session={"next": "/"})
+    client = authenticated_client(site_dir, auth_client=auth_client, session={"pending_logins": {"def": "/"}})
 
     with caplog.at_level("ERROR"):
         response = client.get("/_auth/callback?code=abc&state=def", follow_redirects=False)
@@ -559,7 +566,7 @@ def test_callback_fails_closed_when_subject_claim_is_missing(
 def test_callback_clears_session_when_subject_claim_is_missing(site_dir: Path) -> None:
     auth_client = DummyAuthClient(token={"userinfo": {"email": "user@example.com"}})
     client = authenticated_client(
-        site_dir, auth_client=auth_client, session={"next": "/", "user": {"sub": "stale"}}
+        site_dir, auth_client=auth_client, session={"pending_logins": {"def": "/"}, "user": {"sub": "stale"}}
     )
 
     callback_response = client.get("/_auth/callback?code=abc&state=def", follow_redirects=False)

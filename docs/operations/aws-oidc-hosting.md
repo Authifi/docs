@@ -16,6 +16,21 @@ There is deliberately **no group, role, or email-domain filtering in v1**. Contr
 
 The boundary also hides the shape of the protected tree. Authorization runs before trailing-slash canonicalisation for protected routes, so an anonymous request for `/guides/sso-integration-guide` and one for a page that does not exist both answer `307` to `/_auth/login`, with `next` echoing the path exactly as requested. Signed-in callers get the usual `308` to the canonical form, and public pages canonicalise without a login. If you ever see an anonymous `308` for a protected path, the boundary has regressed.
 
+### Several Login Tabs At Once
+
+Opening two gated pages starts two logins against one session cookie, and they
+may finish in either order. Each login gets its own OAuth state; the page it
+should return to is stored under that state, and a callback consumes only its
+own entry, so both tabs land where they started.
+
+Four concurrent logins are kept. Starting a fifth evicts the oldest, because
+each pending transaction costs space in a signed cookie that the browser
+silently discards once it passes roughly 4KB. A callback for an evicted,
+already-used, or unrecognised state answers `400` and leaves the other pending
+logins untouched — a forged callback must not be able to cancel someone else's
+sign-in. Users see this only if they leave more than four sign-ins half-finished
+at once; the fix is to start again from the page they wanted.
+
 ## Local Mock Networking
 
 OIDC requires every party to agree on one issuer URL, so the single hostname in
