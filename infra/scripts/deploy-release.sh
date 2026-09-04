@@ -1,0 +1,196 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+sha="${1:?usage: deploy-release.sh SHA}"
+if [[ ! "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "SHA must be 40 lowercase hexadecimal characters" >&2
+  exit 2
+fi
+
+root="${AUTHIFI_DOCS_ROOT:-/opt/authifi-docs}"
+etc_dir="${AUTHIFI_DOCS_ETC:-/etc/authifi-docs}"
+lock="${AUTHIFI_DOCS_LOCK:-/run/lock/authifi-docs-deploy.lock}"
+python_bin="${AUTHIFI_DOCS_PYTHON_BIN:-python3}"
+uvicorn_bin="${AUTHIFI_DOCS_UVICORN_BIN:-}"
+curl_bin="${AUTHIFI_DOCS_CURL_BIN:-curl}"
+systemctl_bin="${AUTHIFI_DOCS_SYSTEMCTL_BIN:-systemctl}"
+timeout_bin="${AUTHIFI_DOCS_TIMEOUT_BIN:-timeout}"
+candidate_attempts="${AUTHIFI_DOCS_CANDIDATE_HEALTH_ATTEMPTS:-30}"
+active_attempts="${AUTHIFI_DOCS_ACTIVE_HEALTH_ATTEMPTS:-15}"
+health_sleep_seconds="${AUTHIFI_DOCS_HEALTH_SLEEP_SECONDS:-1}"
+
+releases="$root/releases"
+current="$root/current"
+incoming="$root/incoming/$sha"
+archive="$incoming/$sha.tar.gz"
+checksum_file="$archive.sha256"
+candidate="$releases/$sha"
+
+mkdir -p "$releases" "$incoming" "$(dirname "$lock")"
+
+if [[ "${AUTHIFI_DOCS_LOCK_HELD:-0}" != "1" ]]; then
+  status=0
+  "$python_bin" - "$lock" "$BASH" "$0" "$sha" <<'PY' || status=$?
+import fcntl
+import os
+import subprocess
+import sys
+
+lock_path, *command = sys.argv[1:]
+env = os.environ.copy()
+env["AUTHIFI_DOCS_LOCK_HELD"] = "1"
+
+with open(lock_path, "w", encoding="utf-8") as lock_file:
+    try:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        sys.exit(75)
+
+    completed = subprocess.run(command, env=env)
+    sys.exit(completed.returncode)
+PY
+
+  if [[ "$status" -ne 0 ]]; then
+    if [[ "$status" -eq 75 ]]; then
+      echo "deployment already running" >&2
+    fi
+    exit "$status"
+  fi
+  exit 0
+fi
+
+if [[ ! -s "$archive" || ! -s "$checksum_file" ]]; then
+  echo "SSM did not stage the release archive and checksum" >&2
+  exit 1
+fi
+
+"$python_bin" - "$archive" "$checksum_file" <<'PY'
+from pathlib import Path
+import hashlib
+import sys
+
+archive = Path(sys.argv[1])
+checksum_path = Path(sys.argv[2])
+parts = checksum_path.read_text(encoding="utf-8").split()
+if len(parts) != 2:
+    raise SystemExit("checksum file must contain '<sha256>  <filename>'")
+
+expected, filename = parts
+if filename != archive.name:
+    raise SystemExit(f"checksum filename {filename!r} does not match {archive.name!r}")
+
+actual = hashlib.sha256(archive.read_bytes()).hexdigest()
+if actual != expected:
+    raise SystemExit(f"checksum mismatch for {archive.name}")
+PY
+
+poll_health() {
+  local url="$1"
+  local attempts="$2"
+  local attempt
+
+  for ((attempt = 1; attempt <= attempts; attempt += 1)); do
+    if "$curl_bin" --fail --silent "$url" >/dev/null; then
+      return 0
+    fi
+    if (( attempt < attempts )); then
+      sleep "$health_sleep_seconds"
+    fi
+  done
+  return 1
+}
+
+swap_current() {
+  local target="$1"
+  local next="$current.next"
+
+  rm -f "$next"
+  ln -s "$target" "$next"
+  "$python_bin" - "$next" "$current" <<'PY'
+import os
+import sys
+
+os.replace(sys.argv[1], sys.argv[2])
+PY
+}
+
+prune_releases() {
+  "$python_bin" - "$releases" <<'PY'
+from pathlib import Path
+import shutil
+import sys
+
+releases = Path(sys.argv[1])
+entries = [path for path in releases.iterdir() if path.is_dir()]
+for stale in sorted(entries, key=lambda path: path.stat().st_mtime, reverse=True)[3:]:
+    shutil.rmtree(stale)
+PY
+}
+
+previous=""
+if [[ -L "$current" ]]; then
+  previous="$(readlink "$current")"
+fi
+
+if [[ "$previous" == "$candidate" ]]; then
+  echo "release $sha is already active" >&2
+  exit 0
+fi
+
+rm -rf "$candidate"
+mkdir -p "$candidate"
+tar -xzf "$archive" -C "$candidate"
+
+"$python_bin" -m venv "$candidate/.venv"
+"$candidate/.venv/bin/pip" install --no-index \
+  --find-links "$candidate/wheelhouse" \
+  -r "$candidate/requirements.txt"
+
+set -a
+# shellcheck disable=SC1090,SC1091
+source "$etc_dir/environment"
+# shellcheck disable=SC1090,SC1091
+source "$etc_dir/session.env"
+set +a
+
+if [[ -z "$uvicorn_bin" ]]; then
+  uvicorn_bin="$candidate/.venv/bin/uvicorn"
+fi
+
+SITE_DIR="$candidate/site" "$timeout_bin" 30 \
+  "$uvicorn_bin" server.main:app \
+  --app-dir "$candidate" \
+  --host 127.0.0.1 \
+  --port 18080 &
+candidate_pid=$!
+
+cleanup_candidate_server() {
+  kill "$candidate_pid" 2>/dev/null || true
+  wait "$candidate_pid" 2>/dev/null || true
+}
+
+trap cleanup_candidate_server EXIT
+
+if ! poll_health "http://127.0.0.1:18080/health" "$candidate_attempts"; then
+  echo "candidate release failed health check" >&2
+  rm -rf "$candidate"
+  exit 1
+fi
+
+cleanup_candidate_server
+trap - EXIT
+
+swap_current "$candidate"
+"$systemctl_bin" restart authifi-docs
+
+if ! poll_health "http://127.0.0.1:8080/health" "$active_attempts"; then
+  if [[ -n "$previous" ]]; then
+    swap_current "$previous"
+    "$systemctl_bin" restart authifi-docs
+  fi
+  echo "active release failed health check; previous release restored" >&2
+  exit 1
+fi
+
+prune_releases
+rm -rf "$incoming"
