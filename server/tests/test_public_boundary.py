@@ -125,6 +125,89 @@ def test_protected_pages_still_render_navigation(built_site: Path) -> None:
     assert "Tenant Administration" in html
 
 
+# --- Search control -----------------------------------------------------------
+#
+# The search index lives at the protected /search/ prefix, so a search box on a
+# public page can only ever fail. Material starts the search worker (and fetches
+# the index) only when a form named "search" is in the document, so the markup
+# check below is also the check that no failing request is issued.
+
+MATERIAL_TEMPLATES = Path(__import__("material").__file__).resolve().parent / "templates"
+
+MATERIAL_HEADER_SEARCH_BLOCK = """    {% if "material/search" in config.plugins %}
+      {% set search = config.plugins["material/search"] | attr("config") %}
+      {% if search.enabled %}
+        <label class="md-header__button md-icon" for="__search">
+          {% set icon = config.theme.icon.search or "material/magnify" %}
+          {% include ".icons/" ~ icon ~ ".svg" %}
+        </label>
+        {% include "partials/search.html" %}
+      {% endif %}
+    {% endif %}
+"""
+
+SEARCH_CONTROL_MARKERS = (
+    'data-md-component="search"',
+    'name="search"',
+    'data-md-component="search-query"',
+    'for="__search"',
+)
+
+
+@pytest.mark.parametrize("relative_path", sorted(PUBLIC_PAGE_URLS))
+@pytest.mark.parametrize("marker", SEARCH_CONTROL_MARKERS)
+def test_public_pages_omit_the_search_control(built_site: Path, relative_path: str, marker: str) -> None:
+    html = (built_site / relative_path).read_text(encoding="utf-8")
+
+    assert marker not in html
+
+
+@pytest.mark.parametrize("relative_path", sorted(PUBLIC_PAGE_URLS))
+def test_public_pages_do_not_reference_the_protected_search_index(
+    built_site: Path, relative_path: str
+) -> None:
+    html = (built_site / relative_path).read_text(encoding="utf-8")
+
+    assert "search_index" not in html
+    assert not any(
+        path.startswith("/search/") for path in resolved_link_paths(html, PUBLIC_PAGE_URLS[relative_path])
+    )
+
+
+@pytest.mark.parametrize(
+    "relative_path",
+    ["index.html", "guides/sso-integration-guide/index.html", "security/index.html"],
+)
+@pytest.mark.parametrize("marker", SEARCH_CONTROL_MARKERS)
+def test_protected_pages_keep_the_search_control(built_site: Path, relative_path: str, marker: str) -> None:
+    html = (built_site / relative_path).read_text(encoding="utf-8")
+
+    assert marker in html
+
+
+def test_protected_pages_keep_the_search_index(built_site: Path) -> None:
+    assert (built_site / "search" / "search_index.json").is_file()
+    assert not is_public_path("/search/search_index.json")
+
+
+def test_public_header_is_the_material_header_minus_search() -> None:
+    """A mkdocs-material upgrade that touches the header must fail here.
+
+    ``overrides/partials/header-public.html`` is a verbatim copy of Material's
+    header with exactly one block removed. Re-deriving it from the installed
+    theme means the vendored copy cannot drift silently.
+    """
+    material_header = (MATERIAL_TEMPLATES / "partials" / "header.html").read_text(encoding="utf-8")
+    expected = material_header.replace(MATERIAL_HEADER_SEARCH_BLOCK, "")
+    assert expected != material_header, "Material's header search block changed shape"
+
+    vendored = (REPO_ROOT / "overrides" / "partials" / "header-public.html").read_text(encoding="utf-8")
+    _, separator, body = vendored.partition("-#}\n")
+
+    assert separator, "vendored header is missing its provenance comment"
+    assert body == expected
+
+
 # --- Generated sitemaps -------------------------------------------------------
 
 

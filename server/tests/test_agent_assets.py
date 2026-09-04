@@ -74,21 +74,22 @@ def build_page(src_uri: str, meta: dict | None = None) -> SimpleNamespace:
 
 
 @pytest.mark.parametrize("src_uri", agent_assets.PUBLIC_PAGE_SOURCES)
-def test_public_pages_are_marked_to_hide_protected_navigation(src_uri: str) -> None:
+def test_public_pages_are_marked_to_hide_protected_chrome(src_uri: str) -> None:
     page = build_page(src_uri, {"title": "Privacy Policy"})
 
     returned = agent_assets.on_page_markdown("# Body", page, config=None, files=None)
 
-    assert page.meta["hide"] == ["navigation"]
+    assert page.meta["hide"] == ["navigation", "search"]
     assert returned == "# Body"
 
 
-def test_public_page_hide_metadata_is_not_duplicated() -> None:
-    page = build_page("privacy-policy.md", {"hide": ["navigation"]})
+@pytest.mark.parametrize("already_hidden", [["navigation"], ["search"], ["navigation", "search"]])
+def test_public_page_hide_metadata_is_not_duplicated(already_hidden: list[str]) -> None:
+    page = build_page("privacy-policy.md", {"hide": list(already_hidden)})
 
     agent_assets.on_page_markdown("# Body", page, config=None, files=None)
 
-    assert page.meta["hide"] == ["navigation"]
+    assert sorted(page.meta["hide"]) == ["navigation", "search"]
 
 
 def test_public_page_hide_metadata_preserves_existing_values() -> None:
@@ -96,11 +97,11 @@ def test_public_page_hide_metadata_preserves_existing_values() -> None:
 
     agent_assets.on_page_markdown("# Body", page, config=None, files=None)
 
-    assert page.meta["hide"] == ["toc", "navigation"]
+    assert page.meta["hide"] == ["toc", "navigation", "search"]
 
 
 @pytest.mark.parametrize("src_uri", ["index.md", "guides/sso-integration-guide.md", "security/README.md"])
-def test_protected_pages_keep_their_navigation(src_uri: str) -> None:
+def test_protected_pages_keep_their_navigation_and_search(src_uri: str) -> None:
     page = build_page(src_uri)
 
     agent_assets.on_page_markdown("# Body", page, config=None, files=None)

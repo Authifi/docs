@@ -1,6 +1,20 @@
 {% extends "base.html" %}
 
 {#
+  Material's search control queries `/search/search_index.json`, which is
+  protected. On the public legal pages that control can only ever fail, so those
+  pages render a vendored copy of Material's header with the search block
+  removed. Protected pages keep the stock header, and search there is untouched.
+#}
+{% block header %}
+  {% if page.meta and page.meta.hide and "search" in page.meta.hide %}
+    {% include "partials/header-public.html" %}
+  {% else %}
+    {{ super() }}
+  {% endif %}
+{% endblock %}
+
+{#
   Public legal pages are served to anonymous visitors. MkDocs Material's stock
   `hide: navigation` metadata only marks the primary sidebar with the `hidden`
   attribute, so every protected guide, authorization, and security title and

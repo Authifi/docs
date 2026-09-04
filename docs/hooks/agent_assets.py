@@ -48,11 +48,15 @@ PUBLIC_SITEMAP_PATHS = (
 
 # Markdown pages that anonymous visitors can reach. Their rendered navigation
 # would otherwise advertise every protected guide, authorization, and security
-# page by title and URL.
+# page by title and URL, and their search box would query a protected index.
 PUBLIC_PAGE_SOURCES = (
     "privacy-policy.md",
     "terms-of-service.md",
 )
+
+# "navigation" is Material's own page metadata. "search" is consumed by
+# overrides/main.html, which swaps in a header without the search control.
+PUBLIC_PAGE_HIDDEN_CHROME = ("navigation", "search")
 
 
 def _sha256_digest(path: Path) -> str:
@@ -137,11 +141,12 @@ def _copy_static_files(docs_dir: Path, site_dir: Path) -> None:
 
 
 def on_page_markdown(markdown, page, config, files, **kwargs):
-    """Hide protected navigation from pages that anonymous visitors can read."""
+    """Hide protected chrome from pages that anonymous visitors can read."""
     if page.file.src_uri in PUBLIC_PAGE_SOURCES:
         hidden = list(page.meta.get("hide") or [])
-        if "navigation" not in hidden:
-            hidden.append("navigation")
+        for item in PUBLIC_PAGE_HIDDEN_CHROME:
+            if item not in hidden:
+                hidden.append(item)
         page.meta["hide"] = hidden
     return markdown
 

@@ -81,7 +81,9 @@ If you add a new public page or public machine-readable asset, update these toge
 - every `Allow:` block in `docs/robots.txt`
 - `PUBLIC_SITEMAP_PATHS` and, for rendered Markdown pages, `PUBLIC_PAGE_SOURCES` in `docs/hooks/agent_assets.py`
 
-`server/tests/test_public_boundary.py` compares those sources against each other and against the built site, so leaving one behind fails CI. A new public Markdown page must be listed in `PUBLIC_PAGE_SOURCES` or its rendered navigation will advertise every protected guide by title and URL; `overrides/main.html` is what actually removes that markup.
+`server/tests/test_public_boundary.py` compares those sources against each other and against the built site, so leaving one behind fails CI. A new public Markdown page must be listed in `PUBLIC_PAGE_SOURCES`, which marks it `hide: [navigation, search]`. `overrides/main.html` reads that metadata and removes two pieces of chrome that would otherwise reach into protected territory: the navigation, which would advertise every protected guide by title and URL, and the search control, which can only ever fail because the search index is protected.
+
+Search on public pages is removed by swapping in `overrides/partials/header-public.html`, a verbatim copy of Material's header with the search block deleted. Protected pages keep Material's stock header, so search there is untouched. A `mkdocs-material` upgrade that changes the header fails `test_public_header_is_the_material_header_minus_search`, which re-derives the copy from the installed theme; regenerate the file when that happens rather than editing it by hand.
 
 ## Pull Request Checks
 
