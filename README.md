@@ -124,6 +124,8 @@ Register the docs site in Authifi as a **confidential Web App**.
 - Post-logout redirect URI for production: `https://docs.authifi.io/privacy-policy/`
 - Requested scopes: `openid profile email`
 
+A sign-in lasts **eight hours, measured from the moment it completed**. The callback stamps the session with that time, and every protected request checks it, so using the site all day does not extend the session: at the eight-hour mark the next protected request clears the cookie and sends the user back through the issuer. The cookie's own `max_age` is still eight hours as well, but it answers a different question — Starlette re-issues the cookie on every response, so that clock restarts with each page view and only expires a browser that was left alone. A session with no stamp, an unparseable one, or one dated in the future is not a session: sign-ins predate this rule, and a replayed cookie can claim anything.
+
 Logout is RP-initiated: the server clears the local session and, when the tenant publishes an `end_session_endpoint`, redirects there with `client_id` and `post_logout_redirect_uri`. Tenants without an `end_session_endpoint` fall back to a plain local redirect to the same path.
 
 The post-logout target is always the configured `POST_LOGOUT_PATH`. A `?next=` on the logout URL is ignored: the issuer only accepts the `post_logout_redirect_uri` registered with it, and letting a caller influence that value would break every logout while handing them a say in a URI the issuer is asked to trust. The local fallback uses the same path so both flows land in the same place. Logging out with no session skips discovery entirely and redirects locally, so an anonymous caller cannot drive outbound requests to the issuer.

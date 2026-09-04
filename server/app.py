@@ -5,6 +5,8 @@ import mimetypes
 import os
 import re
 import secrets
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -55,6 +57,7 @@ DEFAULT_SITE_DIR = "site"
 DEFAULT_OIDC_SCOPE = "openid profile email"
 SESSION_PENDING_LOGINS_KEY = "pending_logins"
 SESSION_USER_KEY = "user"
+SESSION_AUTHENTICATED_AT_KEY = "authenticated_at"
 
 OAUTH_CLIENT_NAME = "authifi"
 # Authlib's Starlette integration files each transaction's redirect URI, PKCE
@@ -71,7 +74,15 @@ OAUTH_ERROR_CODE = re.compile(r"[a-z0-9_-]{1,64}")
 # concurrent tabs is generous for a docs site; older ones are evicted.
 MAX_PENDING_LOGINS = 4
 
+# The cookie's *idle* expiry. Starlette re-issues the cookie on every response
+# that carries a session, so this clock restarts with each page view: it is what
+# makes an abandoned browser forget the session, not a limit on how long one
+# sign-in lasts.
 SESSION_MAX_AGE_SECONDS = 8 * 60 * 60
+# The ceiling on one sign-in, measured from the moment the callback completed.
+# A separate setting from the one above because it answers a separate question:
+# without it, a tab left open and occasionally clicked never expires at all.
+ABSOLUTE_SESSION_LIFETIME_SECONDS = 8 * 60 * 60
 DEFAULT_POST_LOGOUT_PATH = "/privacy-policy/"
 
 # Per-claim ceilings, in UTF-8 bytes. The issuer decides how long these are, and
@@ -148,6 +159,11 @@ class AppConfig:
     site_dir: Path
     post_logout_path: str = DEFAULT_POST_LOGOUT_PATH
     session_max_age_seconds: int = SESSION_MAX_AGE_SECONDS
+    absolute_session_lifetime_seconds: int = ABSOLUTE_SESSION_LIFETIME_SECONDS
+    # Injected so the eight-hour ceiling can be tested in milliseconds rather
+    # than waited out, and so nothing in the request path reads the clock
+    # directly.
+    clock: Callable[[], float] = time.time
 
     @property
     def cookie_secure(self) -> bool:
@@ -392,6 +408,54 @@ def consume_pending_login(session: Any, state: str | None) -> str | None:
     return next_path
 
 
+def session_user(session: Mapping[str, Any], now: float, lifetime_seconds: int) -> dict | None:
+    """The user a session still entitles, or ``None`` if it entitles nobody.
+
+    The one place that decides whether a request is signed in, so that a route
+    cannot be added that checks less than this. Everything here is forgeable --
+    the cookie is signed, but its *contents* were chosen by whoever last held
+    the key material, and by us -- so each part is checked rather than assumed:
+
+    * a user object with a usable subject, since a session without one
+      identifies nobody;
+    * an authentication time that is a real number, present, and not in the
+      future. Sessions predate this field, and a replayed cookie can claim
+      anything;
+    * an age inside the ceiling.
+
+    The age comparison is written so that `nan` fails. Every comparison against
+    it is false, so ``age > lifetime`` alone would wave it through.
+    """
+    user = session.get(SESSION_USER_KEY)
+    if not isinstance(user, dict) or claim_text(user.get("sub")) is None:
+        return None
+
+    authenticated_at = session.get(SESSION_AUTHENTICATED_AT_KEY)
+    if isinstance(authenticated_at, bool) or not isinstance(authenticated_at, (int, float)):
+        return None
+
+    age = now - authenticated_at
+    if not 0 <= age < lifetime_seconds:
+        return None
+    return user
+
+
+def signed_in_user(request: Request) -> dict | None:
+    """``session_user`` for this request, ending a session that has lapsed.
+
+    Refusing the request but leaving the cookie in place would keep a session
+    the server will never honour again, and the browser would keep presenting
+    it until the idle expiry. Only called where the answer matters, so a
+    cacheable public response never grows a ``Set-Cookie``.
+    """
+    config = request.app.state.config
+    user = session_user(request.session, config.clock(), config.absolute_session_lifetime_seconds)
+    if user is None:
+        request.session.pop(SESSION_USER_KEY, None)
+        request.session.pop(SESSION_AUTHENTICATED_AT_KEY, None)
+    return user
+
+
 def reset_session_preserving_pending_logins(session: Any) -> None:
     """Start a fresh session, keeping only still-pending login transactions.
 
@@ -514,6 +578,9 @@ async def callback_endpoint(request: Request) -> Response:
 
     reset_session_preserving_pending_logins(request.session)
     request.session[SESSION_USER_KEY] = user
+    # The moment the ceiling is measured from. Signing in again is a new
+    # authentication and gets a new one, so a lapsed session is not a dead end.
+    request.session[SESSION_AUTHENTICATED_AT_KEY] = int(request.app.state.config.clock())
     return RedirectResponse(url=normalize_next_path(next_path))
 
 
@@ -524,7 +591,7 @@ async def logout_endpoint(request: Request) -> Response:
     # `next` is deliberately ignored. The post-logout target is registered with
     # Authifi as an exact URI, so anything else would be rejected by the issuer,
     # and the local fallback matches it so both flows land in the same place.
-    was_signed_in = bool(request.session.get(SESSION_USER_KEY))
+    was_signed_in = signed_in_user(request) is not None
     request.session.clear()
 
     if not was_signed_in:
@@ -561,7 +628,7 @@ async def site_endpoint(request: Request) -> Response:
     effective_path = redirect_target or canonical_path
     set_cache_visibility(request, visibility_for(effective_path))
 
-    if not is_public_path(effective_path) and not request.session.get(SESSION_USER_KEY):
+    if not is_public_path(effective_path) and signed_in_user(request) is None:
         # Answer before redirecting. A 308 here would confirm that a protected
         # directory exists, while a missing path 404s, so the two must look the
         # same to an anonymous caller. `next` echoes the requested path rather

@@ -8,16 +8,26 @@ import time
 from pathlib import Path
 from typing import Any, Mapping
 from unittest.mock import patch
+from urllib.parse import urlsplit
 
 from itsdangerous import TimestampSigner
 from starlette.responses import RedirectResponse
 from starlette.testclient import TestClient
 
-from server.app import AppConfig, create_app
+from server.app import (
+    SESSION_AUTHENTICATED_AT_KEY,
+    SESSION_USER_KEY,
+    AppConfig,
+    create_app,
+)
 
 SESSION_SECRET = "session-secret"
 SESSION_COOKIE_NAME = "authifi-session"
 DEFAULT_PUBLIC_BASE_URL = "https://docs.example.com"
+
+# Distinguishes "use the real clock" from an explicit `None`, which is one of
+# the malformed timestamps the server has to refuse.
+_CURRENT = object()
 
 HEADERS_FILE = (
     "/\n"
@@ -150,6 +160,27 @@ def build_client(
     )
 
 
+def signed_in_session(
+    user: dict | None = None,
+    authenticated_at: Any = _CURRENT,
+    **extra: Any,
+) -> dict:
+    """A session the server will accept as signed in.
+
+    The authentication time is part of what makes a session valid, so building
+    one without it is building an expired session. Pass ``authenticated_at``
+    explicitly to build a stale, forged, or pre-existing one on purpose.
+    """
+    session: dict[str, Any] = {
+        SESSION_USER_KEY: user if user is not None else {"sub": "user-123"},
+        SESSION_AUTHENTICATED_AT_KEY: (
+            int(time.time()) if authenticated_at is _CURRENT else authenticated_at
+        ),
+    }
+    session.update(extra)
+    return session
+
+
 def authenticated_client(
     site_dir: Path,
     public_base_url: str = DEFAULT_PUBLIC_BASE_URL,
@@ -158,8 +189,36 @@ def authenticated_client(
     **overrides: Any,
 ) -> TestClient:
     client = build_client(site_dir, public_base_url=public_base_url, auth_client=auth_client, **overrides)
-    client.cookies.set(SESSION_COOKIE_NAME, encode_session_cookie(session or {"user": {"sub": "user-123"}}))
+    client.cookies.set(SESSION_COOKIE_NAME, encode_session_cookie(with_authentication_time(session)))
     return client
+
+
+def with_authentication_time(session: dict | None) -> dict:
+    """Stamp a hand-built session that carries a user but not a time.
+
+    Callers that name a session are usually saying something about one key --
+    a pending login, a stale user -- and should not have to restate what makes
+    a session valid. One that sets the time itself is left alone.
+    """
+    if session is None:
+        return signed_in_session()
+    if SESSION_USER_KEY not in session or SESSION_AUTHENTICATED_AT_KEY in session:
+        return session
+    return {**session, SESSION_AUTHENTICATED_AT_KEY: int(time.time())}
+
+
+def sign_out(client: TestClient, public_base_url: str = DEFAULT_PUBLIC_BASE_URL):
+    """Sign out the way a browser does, from the site's own origin.
+
+    Going through one helper means the tests exercise the same request the
+    rendered control sends, and that only one place needs changing if it moves.
+    """
+    return client.get("/_auth/logout", follow_redirects=False)
+
+
+def origin_of(public_base_url: str) -> str:
+    parts = urlsplit(public_base_url)
+    return f"{parts.scheme}://{parts.netloc}"
 
 
 def replay_client(

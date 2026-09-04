@@ -102,6 +102,38 @@ complete, and an existing signed-in session is left alone: refusing a *new*
 authorization says nothing about an identity that was already verified, so
 ending that session here would be a denial of service dressed up as caution.
 
+### A Sign-In Lasts Eight Hours, However Busy The Tab
+
+There are two clocks and they are not the same one.
+
+The session cookie carries `max_age=28800`, and Starlette re-issues that cookie
+on every response that carries a session. So that clock restarts with each page
+view: it expires a browser that was left alone, and nothing else. On its own it
+made the eight hours the cookie advertised a fiction — a tab open and
+occasionally clicked never expired.
+
+The callback therefore stamps the session with the moment it authenticated, and
+every protected request measures against that stamp. At eight hours the session
+is over regardless of activity: the next protected request clears the cookie and
+answers `307` to `/_auth/login`, and the user goes back through the issuer.
+Signing in again is a new authentication with a new stamp, so a lapsed session
+is not a lockout — including from the tab whose pending sign-in was still in
+flight.
+
+Both clocks stay, because they answer different questions. `max_age` is what
+stops a cookie being replayed a month later, and the signature check that
+enforces it happens before the application sees the session at all.
+
+A session with no stamp, one that will not parse as a number, or one dated in
+the future is not a session. Sign-ins predate this rule, and a replayed cookie's
+contents are whatever the replayer chose; neither is a reason to let a request
+through. `NaN` is refused explicitly, since every comparison against it is false
+and an age check written the obvious way would wave it past.
+
+One consequence worth knowing when debugging: an expired session is not treated
+as signed in by logout either. It gets the same local redirect an anonymous
+caller gets, and no outbound request to the issuer.
+
 ### Signing Out Ends Everything, Not Just This Tab
 
 Every gated page carries a **Sign out** link pointing at `/_auth/logout`, by one

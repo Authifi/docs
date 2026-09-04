@@ -27,6 +27,7 @@ from server.tests.support import (
     assert_no_protected_content,
     build_app,
     encode_session_cookie,
+    signed_in_session,
 )
 
 
@@ -127,7 +128,7 @@ def test_dot_segment_paths_never_serve_protected_content_anonymously(site_dir: P
 def test_dot_segment_paths_are_rejected_even_when_authenticated(site_dir: Path, path: str) -> None:
     app = build_app(site_dir)
 
-    response = send_raw_request(app, path, session={"user": {"sub": "user-123"}})
+    response = send_raw_request(app, path, session=signed_in_session())
 
     assert response.status_code == 404
     assert_no_protected_content(response.text)
@@ -274,7 +275,7 @@ def test_an_overlong_segment_answers_not_found_when_authenticated(
     app = build_app(site_dir)
 
     response = send_raw_request(
-        app, path, raw_path=quote(path), session={"user": {"sub": "user-123"}}
+        app, path, raw_path=quote(path), session=signed_in_session()
     )
 
     assert response.status_code == 404
@@ -333,7 +334,7 @@ def test_a_total_path_the_filesystem_may_refuse_is_not_a_fault(site_dir: Path) -
     app = build_app(site_dir)
 
     response = send_raw_request(
-        app, "/" + "/".join(["segment"] * 2000), session={"user": {"sub": "user-123"}}
+        app, "/" + "/".join(["segment"] * 2000), session=signed_in_session()
     )
 
     assert response.status_code == 404

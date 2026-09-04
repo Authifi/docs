@@ -24,6 +24,7 @@ from server.app import (
     MAX_NEXT_PATH_BYTES,
     MAX_PENDING_LOGINS,
     MAX_SUBJECT_BYTES,
+    SESSION_AUTHENTICATED_AT_KEY,
     SESSION_PENDING_LOGINS_KEY,
     SESSION_USER_KEY,
     create_app,
@@ -367,6 +368,7 @@ def test_a_successful_login_discards_everything_but_pending_transactions(
     session = current_session(client)
     assert set(session) == {
         SESSION_USER_KEY,
+        SESSION_AUTHENTICATED_AT_KEY,
         SESSION_PENDING_LOGINS_KEY,
         oauth_state_session_key(security_state),
     }

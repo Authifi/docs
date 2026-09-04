@@ -10,6 +10,7 @@ from starlette.testclient import TestClient
 from server.app import (
     DEFAULT_POST_LOGOUT_PATH,
     PUBLIC_EXACT_PATHS,
+    SESSION_AUTHENTICATED_AT_KEY,
     SESSION_MAX_AGE_SECONDS,
     AppConfig,
     create_app,
@@ -29,6 +30,7 @@ from server.tests.support import (
     encode_session_cookie,
     extract_cookie_value,
     replay_client,
+    signed_in_session,
 )
 
 
@@ -373,7 +375,7 @@ def test_expired_session_cookie_is_rejected(site_dir: Path) -> None:
     client = build_client(site_dir)
     client.cookies.set(
         "authifi-session",
-        encode_session_cookie({"user": {"sub": "user-123"}}, age_seconds=SESSION_MAX_AGE_SECONDS + 60),
+        encode_session_cookie(signed_in_session(), age_seconds=SESSION_MAX_AGE_SECONDS + 60),
     )
 
     response = client.get("/", follow_redirects=False)
@@ -386,7 +388,7 @@ def test_session_cookie_just_inside_max_age_is_accepted(site_dir: Path) -> None:
     client = build_client(site_dir)
     client.cookies.set(
         "authifi-session",
-        encode_session_cookie({"user": {"sub": "user-123"}}, age_seconds=SESSION_MAX_AGE_SECONDS - 120),
+        encode_session_cookie(signed_in_session(), age_seconds=SESSION_MAX_AGE_SECONDS - 120),
     )
 
     response = client.get("/", follow_redirects=False)
@@ -506,13 +508,11 @@ def test_callback_stores_minimal_identity_and_redirects_to_next(site_dir: Path) 
     assert response.status_code == 307
     assert response.headers["location"] == "/security/"
     session = decode_session_cookie(extract_cookie_value(response.headers["set-cookie"]))
-    assert session == {
-        "user": {
-            "sub": "user-123",
-            "email": "user@example.com",
-            "name": "Example User",
-        }
-    }
+    assert session == signed_in_session(
+        user={"sub": "user-123", "email": "user@example.com", "name": "Example User"},
+        authenticated_at=ANY,
+    )
+    assert isinstance(session[SESSION_AUTHENTICATED_AT_KEY], int)
     assert auth_client.token_requests == 1
 
 
@@ -526,7 +526,7 @@ def test_callback_does_not_persist_raw_tokens(site_dir: Path) -> None:
     session = decode_session_cookie(cookie_value)
     assert "opaque-id-token" not in str(session)
     assert "opaque-access-token" not in str(session)
-    assert set(session) == {"user"}
+    assert set(session) == {"user", SESSION_AUTHENTICATED_AT_KEY}
 
 
 def test_callback_rejects_unsafe_stored_next(site_dir: Path) -> None:
@@ -768,7 +768,7 @@ def test_unhandled_errors_on_public_paths_are_never_cacheable(site_dir: Path, pa
 
 def test_unhandled_errors_on_protected_paths_are_never_cacheable(site_dir: Path) -> None:
     client = failing_client(site_dir)
-    client.cookies.set(SESSION_COOKIE_NAME, encode_session_cookie({"user": {"sub": "user-123"}}))
+    client.cookies.set(SESSION_COOKIE_NAME, encode_session_cookie(signed_in_session()))
 
     with patch("server.app.resolve_site_file", side_effect=RuntimeError("boom")):
         response = client.get("/", follow_redirects=False)

@@ -23,6 +23,7 @@ from server.tests.support import (
     assert_no_protected_content,
     build_app,
     encode_session_cookie,
+    signed_in_session,
     write_site,
 )
 
@@ -117,7 +118,7 @@ def test_anonymous_encoded_traversal_returns_no_protected_content(live_server: i
 
 @pytest.mark.parametrize("target", ENCODED_BYPASS_TARGETS)
 def test_authenticated_encoded_traversal_is_still_rejected(live_server: int, target: str) -> None:
-    cookie = encode_session_cookie({"user": {"sub": "user-123"}})
+    cookie = encode_session_cookie(signed_in_session())
 
     response = raw_http_get(live_server, target, cookie=cookie)
 
@@ -149,7 +150,7 @@ def test_public_paths_serve_correct_content_types(
 
 
 def test_protected_html_is_served_as_html_after_login(live_server: int) -> None:
-    cookie = encode_session_cookie({"user": {"sub": "user-123"}})
+    cookie = encode_session_cookie(signed_in_session())
 
     response = raw_http_get(live_server, "/", cookie=cookie)
 
@@ -195,7 +196,7 @@ def test_anonymous_protected_directory_route_reveals_nothing_over_the_wire(live_
 
 
 def test_authenticated_protected_directory_route_canonicalises(live_server: int) -> None:
-    cookie = encode_session_cookie({"user": {"sub": "user-123"}})
+    cookie = encode_session_cookie(signed_in_session())
 
     response = raw_http_get(live_server, "/guides/sso-integration-guide", cookie=cookie)
 
@@ -244,7 +245,7 @@ def test_anonymous_overlong_segment_is_a_plain_not_found(live_server: int, targe
 def test_authenticated_overlong_segment_is_a_plain_not_found(
     live_server: int, target: str
 ) -> None:
-    cookie = encode_session_cookie({"user": {"sub": "user-123"}})
+    cookie = encode_session_cookie(signed_in_session())
 
     response = raw_http_get(live_server, target, cookie=cookie)
 
