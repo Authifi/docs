@@ -14,6 +14,8 @@ Authorization in v1 is **authentication only**: any identity that the configured
 
 There is deliberately **no group, role, or email-domain filtering in v1**. Controlling who can read the docs is therefore controlled entirely by controlling who can sign in to the configured tenant and who is assigned the docs application. If finer-grained access becomes a requirement, it is a follow-up change to the callback handler and the session contents, not a configuration toggle.
 
+The boundary also hides the shape of the protected tree. Authorization runs before trailing-slash canonicalisation for protected routes, so an anonymous request for `/guides/sso-integration-guide` and one for a page that does not exist both answer `307` to `/_auth/login`, with `next` echoing the path exactly as requested. Signed-in callers get the usual `308` to the canonical form, and public pages canonicalise without a login. If you ever see an anonymous `308` for a protected path, the boundary has regressed.
+
 ## Local Mock Networking
 
 `make local-mock-up` relies on the `compose.mock.yaml` `extra_hosts` entry that maps the configured mock issuer hostname to Docker's host gateway.
@@ -39,7 +41,14 @@ The Authifi application for this docs host should be a confidential Web App with
 - post-logout redirect URI: `https://docs.authifi.io/privacy-policy/`
 - scopes: `openid profile email`
 
-The server performs RP-initiated logout against the tenant's discovered `end_session_endpoint`, passing `client_id` and `post_logout_redirect_uri`. The redirect URI must therefore be registered with Authifi, and it must be a public path so the user is not bounced straight back into a login. Override it with the `POST_LOGOUT_PATH` environment variable if a different public landing page is preferred. When the tenant publishes no `end_session_endpoint`, the server clears the local session and redirects to that same path.
+The server performs RP-initiated logout against the tenant's discovered `end_session_endpoint`, passing `client_id` and `post_logout_redirect_uri`. The redirect URI must therefore be registered with Authifi, and it must be a public path so the user is not bounced straight back into a login. When the tenant publishes no `end_session_endpoint`, the server clears the local session and redirects to that same path.
+
+The landing path is `POST_LOGOUT_PATH`, wired end to end:
+
+- production: the `post_logout_path` Terraform variable, which App Runner passes through as `POST_LOGOUT_PATH`. Terraform validates at plan time that it is site-relative and publicly served, so a protected path cannot reach production.
+- local real and mock stacks: `POST_LOGOUT_PATH` in `.env` or the environment, read by `compose.yaml` for both overlays.
+
+Change it in one place per environment and register the matching absolute URL with Authifi.
 
 For local real-OIDC work, also register `http://localhost:8000/_auth/callback` and `http://localhost:8000/privacy-policy/`, or the equivalent base URL you actually use.
 

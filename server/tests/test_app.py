@@ -1,7 +1,7 @@
 import importlib
 import sys
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 from unittest.mock import ANY
 
 import pytest
@@ -17,6 +17,7 @@ from server.app import (
 from server.tests.support import (
     DummyAuthClient,
     NoDiscoveryAuthClient,
+    assert_no_protected_content,
     authenticated_client,
     build_client,
     build_config,
@@ -195,10 +196,8 @@ def test_public_directory_routes_canonicalise_publicly(site_dir: Path, path: str
 
 
 @pytest.mark.parametrize("path", ["/guides/sso-integration-guide", "/security"])
-def test_protected_directory_routes_canonicalise_without_leaking_content(
-    site_dir: Path, path: str
-) -> None:
-    client = build_client(site_dir)
+def test_protected_directory_routes_canonicalise_once_authenticated(site_dir: Path, path: str) -> None:
+    client = authenticated_client(site_dir)
 
     response = client.get(path, follow_redirects=False)
 
@@ -209,6 +208,48 @@ def test_protected_directory_routes_canonicalise_without_leaking_content(
     assert "SSO integration guide" not in response.text
 
 
+@pytest.mark.parametrize(
+    ("existing", "missing"),
+    [
+        ("/guides/sso-integration-guide", "/guides/no-such-guide"),
+        ("/security", "/no-such-section"),
+    ],
+)
+def test_anonymous_protected_directories_are_indistinguishable_from_missing_paths(
+    site_dir: Path, existing: str, missing: str
+) -> None:
+    """A 308 for existing protected directories would confirm they exist.
+
+    Authorization therefore runs before canonicalisation for protected routes,
+    so anonymous callers get the same login redirect either way.
+    """
+    client = build_client(site_dir)
+
+    existing_response = client.get(existing, follow_redirects=False)
+    missing_response = client.get(missing, follow_redirects=False)
+
+    assert existing_response.status_code == 307
+    assert existing_response.headers["location"] == f"/_auth/login?next={quote(existing, safe='')}"
+    assert missing_response.status_code == 307
+    assert missing_response.headers["location"] == f"/_auth/login?next={quote(missing, safe='')}"
+    assert existing_response.text == missing_response.text
+    assert_no_protected_content(existing_response.text)
+
+
+@pytest.mark.parametrize("path", ["/guides/sso-integration-guide", "/security"])
+def test_anonymous_login_redirect_does_not_disclose_the_canonical_slash(
+    site_dir: Path, path: str
+) -> None:
+    """``next`` must echo the request, not the resolved canonical form."""
+    client = build_client(site_dir)
+
+    response = client.get(path, follow_redirects=False)
+
+    assert response.headers["location"].endswith(quote(path, safe=""))
+    assert "%2F&" not in response.headers["location"]
+    assert not response.headers["location"].endswith("%2F")
+
+
 def test_directory_canonicalisation_preserves_query_string(site_dir: Path) -> None:
     client = build_client(site_dir)
 
@@ -216,6 +257,26 @@ def test_directory_canonicalisation_preserves_query_string(site_dir: Path) -> No
 
     assert response.status_code == 308
     assert response.headers["location"] == "/privacy-policy/?highlight=cookies"
+
+
+def test_protected_canonicalisation_preserves_query_string_once_authenticated(site_dir: Path) -> None:
+    client = authenticated_client(site_dir)
+
+    response = client.get("/security?highlight=mfa", follow_redirects=False)
+
+    assert response.status_code == 308
+    assert response.headers["location"] == "/security/?highlight=mfa"
+
+
+def test_anonymous_protected_directory_carries_the_query_into_the_login_redirect(
+    site_dir: Path,
+) -> None:
+    client = build_client(site_dir)
+
+    response = client.get("/security?highlight=mfa", follow_redirects=False)
+
+    assert response.status_code == 307
+    assert response.headers["location"] == f"/_auth/login?next={quote('/security?highlight=mfa', safe='')}"
 
 
 @pytest.mark.parametrize("path", ["/missing-page", "/assets/app.css", "/assets", "/guides"])

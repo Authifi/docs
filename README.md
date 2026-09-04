@@ -23,6 +23,8 @@ There are **no per-PR hosted preview environments in v1**. Pull requests get CI 
 
 Authorization in v1 is **authentication only**. Any identity the configured Authifi tenant accepts may read every protected page, and the server keeps only the subject plus the optional email and name in the session. There is deliberately **no group, role, or email-domain filtering in v1**: access is controlled by controlling who can sign in to the tenant and who is assigned the docs application.
 
+Anonymous callers learn nothing about the protected tree, not even which pages exist. A request for a protected directory page without its trailing slash answers with the login redirect rather than the canonical `308`, and the `next` parameter echoes the path as requested, so an existing page and a missing one are byte-identical to anyone who is not signed in. Public pages still canonicalise without a login, so `/privacy-policy` reaches `/privacy-policy/` as usual.
+
 ## Prerequisites
 
 - Python 3.12 and a virtual environment for MkDocs and tests
@@ -100,7 +102,9 @@ Register the docs site in Authifi as a **confidential Web App**.
 - Post-logout redirect URI for production: `https://docs.authifi.io/privacy-policy/`
 - Requested scopes: `openid profile email`
 
-Logout is RP-initiated: the server clears the local session and, when the tenant publishes an `end_session_endpoint`, redirects there with `client_id` and `post_logout_redirect_uri`. The post-logout target must be a **public** path so users are not bounced straight back into a login; override it with `POST_LOGOUT_PATH` if you prefer a different public landing page. Tenants without an `end_session_endpoint` fall back to a plain local redirect to the same path.
+Logout is RP-initiated: the server clears the local session and, when the tenant publishes an `end_session_endpoint`, redirects there with `client_id` and `post_logout_redirect_uri`. Tenants without an `end_session_endpoint` fall back to a plain local redirect to the same path.
+
+The post-logout target must be a **public** path so users are not bounced straight back into a login. It is configured as `POST_LOGOUT_PATH`: set it in `.env` for the local stacks, or through the validated `post_logout_path` Terraform variable for production, which App Runner passes through as the same environment variable. Terraform rejects a non-public value at plan time.
 
 If you run the docs server on a different base URL or port, update `PUBLIC_BASE_URL` and register the matching callback and post-logout destinations in Authifi.
 

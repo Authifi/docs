@@ -175,15 +175,32 @@ def test_responses_carry_baseline_security_headers(live_server: int) -> None:
     assert "strict-transport-security" not in response.headers
 
 
-def test_directory_route_canonicalises_before_authorization(live_server: int) -> None:
-    public_response = raw_http_get(live_server, "/privacy-policy")
-    protected_response = raw_http_get(live_server, "/guides/sso-integration-guide")
+def test_public_directory_route_canonicalises_without_login(live_server: int) -> None:
+    response = raw_http_get(live_server, "/privacy-policy")
 
-    assert public_response.status_code == 308
-    assert public_response.headers["location"] == "/privacy-policy/"
-    assert protected_response.status_code == 308
-    assert protected_response.headers["location"] == "/guides/sso-integration-guide/"
-    assert_no_protected_content(protected_response.text)
+    assert response.status_code == 308
+    assert response.headers["location"] == "/privacy-policy/"
+
+
+def test_anonymous_protected_directory_route_reveals_nothing_over_the_wire(live_server: int) -> None:
+    existing = raw_http_get(live_server, "/guides/sso-integration-guide")
+    missing = raw_http_get(live_server, "/guides/no-such-guide")
+
+    assert existing.status_code == 307
+    assert existing.headers["location"] == "/_auth/login?next=%2Fguides%2Fsso-integration-guide"
+    assert missing.status_code == 307
+    assert missing.headers["location"] == "/_auth/login?next=%2Fguides%2Fno-such-guide"
+    assert_no_protected_content(existing.text)
+
+
+def test_authenticated_protected_directory_route_canonicalises(live_server: int) -> None:
+    cookie = encode_session_cookie({"user": {"sub": "user-123"}})
+
+    response = raw_http_get(live_server, "/guides/sso-integration-guide", cookie=cookie)
+
+    assert response.status_code == 308
+    assert response.headers["location"] == "/guides/sso-integration-guide/"
+    assert_no_protected_content(response.text)
 
 
 def test_file_response_exposes_validators_for_conditional_requests(live_server: int) -> None:

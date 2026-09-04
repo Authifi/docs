@@ -18,6 +18,7 @@ DEFAULT_DOCS_PORT = "8000"
 DEFAULT_MOCK_HOST = "oidc-mock.127.0.0.1.nip.io"
 DEFAULT_MOCK_PORT = "9400"
 DEFAULT_SUBJECT = "alice@example.com"
+DEFAULT_POST_LOGOUT_PATH = "/privacy-policy/"
 DEFAULT_TIMEOUT_SECONDS = 60.0
 POLL_INTERVAL_SECONDS = 0.5
 COMPOSE_FILES = ("compose.yaml", "compose.mock.yaml")
@@ -45,6 +46,14 @@ PUBLIC_MIME_PROBES = (
     ("/.well-known/agent-skills/index.json", "application/json"),
 )
 EXPECTED_PROTECTED_CONTENT_TYPE = "text/html; charset=utf-8"
+
+# A protected directory route that exists, paired with one that does not. Both
+# must look identical to an anonymous caller, otherwise a 308 to the
+# trailing-slash form would confirm which pages the site holds.
+EXISTENCE_PROBE_PATHS = (
+    "/guides/sso-integration-guide",
+    "/guides/definitely-not-a-real-guide",
+)
 
 
 @dataclass(frozen=True)
@@ -122,6 +131,10 @@ def build_mock_compose_env(project_dir: Path, environ: dict[str, str] | None = N
     merged_env.setdefault("MOCK_OIDC_PORT", DEFAULT_MOCK_PORT)
     merged_env.setdefault("MOCK_OIDC_SUBJECT", DEFAULT_SUBJECT)
     merged_env.setdefault("PUBLIC_BASE_URL", f"http://localhost:{merged_env['DOCS_PORT']}")
+    # compose.yaml applies the same default, but pinning it here keeps the mock
+    # run deterministic even when a developer's .env points the real stack
+    # somewhere else.
+    merged_env.setdefault("POST_LOGOUT_PATH", DEFAULT_POST_LOGOUT_PATH)
     return merged_env
 
 
@@ -227,6 +240,15 @@ def run_smoke(
             probe = client.get(f"{settings.public_base_url.rstrip('/')}{path}", follow_redirects=False)
             assert_no_protected_content(path, probe.status_code, probe.text)
 
+        assert_no_existence_disclosure(
+            {
+                path: client.get(
+                    f"{settings.public_base_url.rstrip('/')}{path}", follow_redirects=False
+                )
+                for path in EXISTENCE_PROBE_PATHS
+            }
+        )
+
         redirect_suffix = require_redirect(
             *extract_status_location(client.get(settings.protected_url, follow_redirects=False)),
             expected_prefix="/_auth/login?next=",
@@ -297,6 +319,23 @@ def run_smoke(
             raise AssertionError(
                 f"expected logout to clear session for {settings.protected_path!r}, got {post_logout_redirect!r}"
             )
+
+
+def assert_no_existence_disclosure(probes: dict[str, httpx.Response]) -> None:
+    """Anonymous replies for existing and missing protected routes must match."""
+    for path, response in probes.items():
+        location = response.headers.get("location", "")
+        if response.status_code != 307 or not location.startswith("/_auth/login?next="):
+            raise AssertionError(
+                f"expected {path!r} to answer 307 to the login redirect, "
+                f"got {response.status_code} -> {location!r}"
+            )
+        if location != f"/_auth/login?next={quote(path, safe='')}":
+            raise AssertionError(f"login redirect for {path!r} did not echo the request: {location!r}")
+
+    shapes = {(response.status_code, response.text) for response in probes.values()}
+    if len(shapes) > 1:
+        raise AssertionError("anonymous replies differ between existing and missing protected routes")
 
 
 def classify_logout_redirect(location: str | None, settings: SmokeSettings) -> str:

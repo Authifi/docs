@@ -2,13 +2,17 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from pathlib import Path
+from urllib.parse import quote
 
 import pytest
 
 from server.local_smoke import (
     BYPASS_PROBE_PATHS,
+    DEFAULT_POST_LOGOUT_PATH,
+    EXISTENCE_PROBE_PATHS,
     PUBLIC_MIME_PROBES,
     assert_content_type,
+    assert_no_existence_disclosure,
     assert_no_protected_content,
     build_compose_command,
     build_mock_compose_env,
@@ -17,6 +21,8 @@ from server.local_smoke import (
     require_redirect,
     resolve_settings,
 )
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_build_compose_command_includes_all_compose_files(tmp_path: Path) -> None:
@@ -91,6 +97,20 @@ def test_build_mock_compose_env_supplies_required_mock_safe_values(tmp_path: Pat
     )
     for key in ("OIDC_ISSUER", "OIDC_CLIENT_ID", "OIDC_CLIENT_SECRET", "SESSION_SECRET"):
         assert key not in env
+
+
+def test_build_mock_compose_env_pins_the_post_logout_path(tmp_path: Path) -> None:
+    env = build_mock_compose_env(tmp_path, environ={})
+
+    assert env["POST_LOGOUT_PATH"] == DEFAULT_POST_LOGOUT_PATH
+
+
+def test_build_mock_compose_env_lets_the_environment_override_the_post_logout_path(
+    tmp_path: Path,
+) -> None:
+    env = build_mock_compose_env(tmp_path, environ={"POST_LOGOUT_PATH": "/terms-of-service/"})
+
+    assert env["POST_LOGOUT_PATH"] == "/terms-of-service/"
 
 
 def test_parse_args_uses_env_driven_defaults(tmp_path: Path) -> None:
@@ -213,3 +233,59 @@ def test_classify_logout_redirect_rejects_foreign_targets(tmp_path: Path) -> Non
 def assert_required_values(values: Mapping[str, str], expected: Mapping[str, str]) -> None:
     for key, expected_value in expected.items():
         assert values[key] == expected_value
+
+
+# --- Existence disclosure probes ---------------------------------------------
+
+
+class StubResponse:
+    def __init__(self, status_code: int, location: str | None = None, text: str = "") -> None:
+        self.status_code = status_code
+        self.headers = {"location": location} if location is not None else {}
+        self.text = text
+
+
+def login_redirect(path: str) -> StubResponse:
+    return StubResponse(307, f"/_auth/login?next={quote(path, safe='')}")
+
+
+def test_existence_probes_pair_a_real_route_with_a_missing_one() -> None:
+    existing, missing = EXISTENCE_PROBE_PATHS
+
+    assert (REPO_ROOT / "docs" / f"{existing.lstrip('/')}.md").is_file()
+    assert not (REPO_ROOT / "docs" / f"{missing.lstrip('/')}.md").exists()
+    assert existing.rsplit("/", 1)[0] == missing.rsplit("/", 1)[0]
+
+
+def test_assert_no_existence_disclosure_accepts_matching_login_redirects() -> None:
+    assert_no_existence_disclosure({path: login_redirect(path) for path in EXISTENCE_PROBE_PATHS})
+
+
+def test_assert_no_existence_disclosure_rejects_a_canonicalising_redirect() -> None:
+    existing, missing = EXISTENCE_PROBE_PATHS
+    probes = {existing: StubResponse(308, f"{existing}/"), missing: login_redirect(missing)}
+
+    with pytest.raises(AssertionError, match="login redirect"):
+        assert_no_existence_disclosure(probes)
+
+
+def test_assert_no_existence_disclosure_rejects_a_leaked_canonical_slash() -> None:
+    existing, missing = EXISTENCE_PROBE_PATHS
+    probes = {
+        existing: StubResponse(307, f"/_auth/login?next={quote(existing + '/', safe='')}"),
+        missing: login_redirect(missing),
+    }
+
+    with pytest.raises(AssertionError, match="did not echo the request"):
+        assert_no_existence_disclosure(probes)
+
+
+def test_assert_no_existence_disclosure_rejects_differing_bodies() -> None:
+    existing, missing = EXISTENCE_PROBE_PATHS
+    probes = {
+        existing: StubResponse(307, f"/_auth/login?next={quote(existing, safe='')}", text="found"),
+        missing: login_redirect(missing),
+    }
+
+    with pytest.raises(AssertionError, match="anonymous replies differ"):
+        assert_no_existence_disclosure(probes)

@@ -267,17 +267,24 @@ async def site_endpoint(request: Request) -> Response:
 
     query = safe_query_string(request.scope.get("query_string", b""))
 
+    # A directory page's canonical form is its trailing-slash variant, so that
+    # is the path the request is really for and the path authorization must be
+    # decided on.
     redirect_target = directory_redirect_target(config.site_dir, canonical_path)
-    if redirect_target is not None:
-        set_cache_visibility(request, visibility_for(redirect_target))
-        location = f"{redirect_target}?{query}" if query else redirect_target
-        return RedirectResponse(url=location, status_code=308)
+    effective_path = redirect_target or canonical_path
+    set_cache_visibility(request, visibility_for(effective_path))
 
-    set_cache_visibility(request, visibility_for(canonical_path))
-
-    if not is_public_path(canonical_path) and not request.session.get(SESSION_USER_KEY):
+    if not is_public_path(effective_path) and not request.session.get(SESSION_USER_KEY):
+        # Answer before redirecting. A 308 here would confirm that a protected
+        # directory exists, while a missing path 404s, so the two must look the
+        # same to an anonymous caller. `next` echoes the requested path rather
+        # than the resolved canonical one for the same reason.
         next_path = quote(build_next_path(canonical_path, query), safe="")
         return RedirectResponse(url=f"/_auth/login?next={next_path}")
+
+    if redirect_target is not None:
+        location = f"{redirect_target}?{query}" if query else redirect_target
+        return RedirectResponse(url=location, status_code=308)
 
     resolved_file = resolve_site_file(config.site_dir, canonical_path)
     if resolved_file is None:
