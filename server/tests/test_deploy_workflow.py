@@ -715,9 +715,11 @@ def test_waiters_and_probes_use_only_the_release_sha_and_structured_checks() -> 
         .count("ReleaseSha=")
         == 1
     )
-    assert anchored_line(wait_run, r"^if ! aws ssm wait command-executed\b").startswith(
-        "if ! aws ssm wait command-executed"
-    )
+    assert "aws ssm wait command-executed" not in wait_run
+    assert 'deadline=$((SECONDS + 600))' in wait_lines
+    assert 'poll_interval_seconds=5' in wait_lines
+    assert "Pending|InProgress|Delayed)" in wait_run
+    assert 'case "$status" in' in wait_run
     assert 'dump_invocation StandardOutputContent >&2' in wait_lines
     assert 'dump_invocation StandardErrorContent >&2' in wait_lines
     assert anchored_line(alb_run, r"^if ! aws elbv2 wait target-in-service\b").startswith(
@@ -734,6 +736,175 @@ def test_waiters_and_probes_use_only_the_release_sha_and_structured_checks() -> 
     for forbidden in ("OIDC_CLIENT_SECRET", "SESSION_SECRET", "client_secret", "session_secret"):
         assert forbidden not in send_run
         assert forbidden not in wait_run
+
+
+def test_the_installer_wait_step_quotes_command_id_and_never_injects_it() -> None:
+    wait_run = step_run("Wait for installer")
+    wait_lines = executable_lines(wait_run)
+
+    assert sum('--command-id "$command_id"' in line for line in wait_lines) >= 1
+    for line in wait_lines:
+        if line.startswith("aws ssm get-command-invocation"):
+            assert '--command-id "$command_id"' in line
+            assert "--command-id $command_id" not in line
+    assert "eval" not in wait_run
+    assert "`" not in wait_run
+
+
+WAIT_STEP = "Wait for installer"
+HARNESS_COMMAND_ID = "01234567-89ab-cdef-0123-456789abcdef"
+HARNESS_INSTANCE_ID = "i-0123456789abcdef0"
+
+FAKE_AWS_SSM = """#!/usr/bin/env python3
+import json
+import os
+import sys
+from pathlib import Path
+
+calls = Path(os.environ["FAKE_AWS_CALLS"])
+arguments = sys.argv[1:]
+
+with calls.open("a", encoding="utf-8") as stream:
+    stream.write(json.dumps(arguments) + "\\n")
+
+
+def fail(message):
+    print(message, file=sys.stderr)
+    sys.exit(254)
+
+
+def flags(tokens):
+    parsed = {}
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token.startswith("--"):
+            value = ""
+            if index + 1 < len(tokens) and not tokens[index + 1].startswith("--"):
+                value = tokens[index + 1]
+                index += 1
+            parsed[token] = value
+        index += 1
+    return parsed
+
+
+if arguments[:2] == ["ssm", "get-command-invocation"]:
+    parsed = flags(arguments[2:])
+    schedule = json.loads(os.environ.get("FAKE_SSM_STATUS_SCHEDULE", '["Success"]'))
+    poll_index = sum(
+        1
+        for line in calls.read_text(encoding="utf-8").splitlines()
+        if json.loads(line)[:2] == ["ssm", "get-command-invocation"]
+    ) - 1
+    status = schedule[min(poll_index, len(schedule) - 1)]
+    payload = {
+        "Status": status,
+        "ResponseCode": 0 if status == "Success" else 1,
+        "StandardOutputContent": "stdout-from-installer",
+        "StandardErrorContent": "stderr-from-installer",
+    }
+    query = parsed.get("--query", "")
+    if query == "Status":
+        print(status)
+    elif query == "ResponseCode":
+        print(payload["ResponseCode"])
+    elif query == "StandardOutputContent":
+        print(payload["StandardOutputContent"])
+    elif query == "StandardErrorContent":
+        print(payload["StandardErrorContent"])
+    else:
+        fail(f"unsupported query {query!r}")
+    sys.exit(0)
+
+fail(f"fatal error: unsupported invocation {arguments}")
+"""
+
+FAKE_SLEEP = """#!/usr/bin/env bash
+exit 0
+"""
+
+
+@dataclass
+class WaitHarness:
+    tmp_path: Path
+    script: Path = field(init=False)
+    calls_file: Path = field(init=False)
+    env: dict[str, str] = field(init=False)
+
+    def __post_init__(self) -> None:
+        fake_bin = self.tmp_path / "fake-bin"
+        fake_bin.mkdir()
+        self.calls_file = self.tmp_path / "aws-calls.jsonl"
+        self.calls_file.write_text("", encoding="utf-8")
+        PublishHarness._write_executable(fake_bin / "aws", FAKE_AWS_SSM)
+        PublishHarness._write_executable(fake_bin / "sleep", FAKE_SLEEP)
+
+        rendered = (
+            step_run(WAIT_STEP)
+            .replace(
+                'command_id="${{ steps.command.outputs.id }}"',
+                f'command_id="{HARNESS_COMMAND_ID}"',
+            )
+            .replace("deadline=$((SECONDS + 600))", "deadline=$((SECONDS + 2))")
+        )
+        self.script = self.tmp_path / "wait-step.sh"
+        self.script.write_text(rendered, encoding="utf-8")
+
+        self.env = {
+            **os.environ,
+            "DOCS_INSTANCE_ID": HARNESS_INSTANCE_ID,
+            "FAKE_AWS_CALLS": str(self.calls_file),
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        }
+
+    def with_status_schedule(self, *statuses: str) -> WaitHarness:
+        self.env["FAKE_SSM_STATUS_SCHEDULE"] = json.dumps(list(statuses))
+        return self
+
+    def run(self) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["bash", str(self.script)],
+            cwd=self.tmp_path,
+            capture_output=True,
+            text=True,
+            env=self.env,
+            check=False,
+        )
+
+
+def test_the_installer_wait_step_polls_through_in_progress_statuses(tmp_path: Path) -> None:
+    result = WaitHarness(tmp_path).with_status_schedule(
+        "Pending", "InProgress", "Delayed", "Success"
+    ).run()
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_the_installer_wait_step_fails_on_terminal_ssm_status_with_diagnostics(
+    tmp_path: Path,
+) -> None:
+    harness = WaitHarness(tmp_path)
+    result = harness.with_status_schedule("Failed").run()
+
+    assert result.returncode == 1
+    assert f"SSM command {HARNESS_COMMAND_ID} ended with status Failed." in result.stderr
+    assert "Response code: 1" in result.stderr
+    assert "Installer stdout:" in result.stderr
+    assert "stdout-from-installer" in result.stderr
+    assert "Installer stderr:" in result.stderr
+    assert "stderr-from-installer" in result.stderr
+
+
+def test_the_installer_wait_step_times_out_with_a_clear_message(tmp_path: Path) -> None:
+    harness = WaitHarness(tmp_path)
+    result = harness.with_status_schedule("Pending").run()
+
+    assert result.returncode == 1
+    assert (
+        f"SSM command {HARNESS_COMMAND_ID} did not finish within 600 seconds; last status: Pending."
+        in result.stderr
+    )
+    assert "Installer stdout:" in result.stderr
 
 
 def test_route_probes_parse_the_canonical_https_origin_and_connect_directly_to_the_alb() -> None:

@@ -316,6 +316,9 @@ jobs:
           set -euo pipefail
 
           command_id="${{ steps.command.outputs.id }}"
+          deadline=$((SECONDS + 600))
+          poll_interval_seconds=5
+
           dump_invocation() {
             aws ssm get-command-invocation \
               --command-id "$command_id" \
@@ -324,9 +327,7 @@ jobs:
               --output text || true
           }
 
-          if ! aws ssm wait command-executed \
-            --command-id "$command_id" \
-            --instance-id "$DOCS_INSTANCE_ID"; then
+          report_installer_failure() {
             echo "SSM command $command_id did not finish successfully." >&2
             echo "Status: $(dump_invocation Status)" >&2
             echo "Response code: $(dump_invocation ResponseCode)" >&2
@@ -335,18 +336,27 @@ jobs:
             echo "Installer stderr:" >&2
             dump_invocation StandardErrorContent >&2
             exit 1
-          fi
+          }
 
-          status="$(dump_invocation Status)"
-          if [[ "$status" != "Success" ]]; then
-            echo "SSM command $command_id ended with status $status." >&2
-            echo "Response code: $(dump_invocation ResponseCode)" >&2
-            echo "Installer stdout:" >&2
-            dump_invocation StandardOutputContent >&2
-            echo "Installer stderr:" >&2
-            dump_invocation StandardErrorContent >&2
-            exit 1
-          fi
+          while :; do
+            status="$(dump_invocation Status)"
+            case "$status" in
+              Success)
+                break
+                ;;
+              Pending|InProgress|Delayed)
+                if (( SECONDS >= deadline )); then
+                  echo "SSM command $command_id did not finish within 600 seconds; last status: $status." >&2
+                  report_installer_failure
+                fi
+                sleep "$poll_interval_seconds"
+                ;;
+              *)
+                echo "SSM command $command_id ended with status $status." >&2
+                report_installer_failure
+                ;;
+            esac
+          done
 
       - name: Wait for healthy ALB target
         shell: bash

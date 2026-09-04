@@ -325,7 +325,7 @@ resource "aws_lb" "docs" {
         for subnet_id in var.public_subnet_ids :
         anytrue([
           for route in data.aws_route_table.public[subnet_id].routes :
-          route.cidr_block == "0.0.0.0/0" && route.gateway_id != ""
+          route.cidr_block == "0.0.0.0/0" && startswith(route.gateway_id, "igw-")
         ])
       ])
       error_message = "Every public_subnet_ids entry's route table must send 0.0.0.0/0 to an internet gateway; an internet-facing load balancer in private subnets is reachable only from inside the VPC."

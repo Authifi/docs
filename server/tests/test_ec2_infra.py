@@ -331,7 +331,8 @@ def test_the_load_balancer_requires_an_internet_gateway_default_route() -> None:
     assert "alltrue(" in route_precondition
     assert "data.aws_route_table.public" in route_precondition
     assert 'route.cidr_block == "0.0.0.0/0"' in route_precondition
-    assert 'route.gateway_id != ""' in route_precondition
+    assert 'startswith(route.gateway_id, "igw-")' in route_precondition
+    assert 'route.gateway_id != ""' not in route_precondition
 
     message = (attribute(route_precondition, "error_message") or "").lower()
     assert "public_subnet_ids" in message
