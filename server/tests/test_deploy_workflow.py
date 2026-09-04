@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 import re
+import subprocess
+import sys
 
 import pytest
 import yaml
@@ -332,6 +334,89 @@ def test_route_probes_parse_the_canonical_https_origin_and_connect_directly_to_t
     assert '--write-out \'%{http_code}\'' in protected_probe
     assert 'public_url="${base_url}/privacy-policy/"' not in probe_run
     assert 'protected_url="${base_url}/guides/sso-integration-guide/"' not in probe_run
+
+
+ALB_DNS_NAME = "docs-alb-1234567890.us-east-1.elb.amazonaws.com"
+
+
+def probe_settings_program() -> str:
+    """The Python the probe step feeds to the interpreter on its heredoc.
+
+    Reading the fragments of this program proves it is written down; running it
+    is the only thing that proves what it accepts and what it refuses.
+    """
+    run = step_run("Verify public and protected routes")
+    body = run[run.index("\n", run.index("<<'PY'")) + 1 :]
+    terminator = re.search(r"(?m)^PY$", body)
+
+    assert terminator, "the probe heredoc is not terminated"
+    return body[: terminator.start()]
+
+
+def run_probe_settings(
+    public_base_url: str, alb_dns_name: str = ALB_DNS_NAME
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, "-", public_base_url, alb_dns_name],
+        input=probe_settings_program(),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def test_the_probe_parser_derives_settings_for_a_canonical_origin() -> None:
+    completed = run_probe_settings("https://docs.authifi.io")
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.splitlines() == [
+        f"connect_to=docs.authifi.io:443:{ALB_DNS_NAME}:443",
+        "public_url=https://docs.authifi.io/privacy-policy/",
+        "protected_url=https://docs.authifi.io/guides/sso-integration-guide/",
+    ]
+
+
+@pytest.mark.parametrize(
+    "public_base_url",
+    ["https://198.51.100.7", "https://198.51.100.7/", "https://[2001:db8::1]"],
+)
+def test_the_probe_parser_refuses_an_ip_literal_origin(public_base_url: str) -> None:
+    """`--connect-to` only rewrites the connection, never the request. An IP
+    literal in `DOCS_PUBLIC_BASE_URL` would send the ALB a Host header the
+    listener rules do not match and the certificate does not cover, so the
+    probe would fail without saying why. It has to fail on the input instead.
+    """
+    completed = run_probe_settings(public_base_url)
+
+    assert completed.returncode != 0
+    assert "IP literal" in completed.stderr
+    assert "connect_to=" not in completed.stdout
+
+
+@pytest.mark.parametrize(
+    "public_base_url",
+    [
+        "http://docs.authifi.io",
+        "https://user:pass@docs.authifi.io",
+        "https://docs.authifi.io?probe=1",
+        "https://docs.authifi.io#fragment",
+        "https://docs.authifi.io:444",
+    ],
+)
+def test_the_probe_parser_refuses_origins_it_cannot_probe_faithfully(
+    public_base_url: str,
+) -> None:
+    completed = run_probe_settings(public_base_url)
+
+    assert completed.returncode != 0
+    assert "connect_to=" not in completed.stdout
+
+
+def test_the_probe_parser_refuses_an_alb_name_carrying_shell_syntax() -> None:
+    completed = run_probe_settings("https://docs.authifi.io", "$(id).example.com")
+
+    assert completed.returncode != 0
+    assert "DOCS_ALB_DNS_NAME" in completed.stderr
 
 
 def test_structural_parsing_ignores_comments_and_dead_strings() -> None:

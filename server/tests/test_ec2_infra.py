@@ -14,8 +14,11 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
+
 from server.tests.hcl_support import (
     actions,
+    attribute,
     hcl_block,
     hcl_list,
     nested_blocks,
@@ -34,29 +37,33 @@ README = (ROOT / "README.md").read_text(encoding="utf-8")
 INFRA_README = (ROOT / "infra" / "README.md").read_text(encoding="utf-8")
 OPERATIONS_DOC = (ROOT / "docs" / "operations" / "aws-oidc-hosting.md").read_text(encoding="utf-8")
 
+# A rule of the shape the enumeration below exists to catch, kept next to the
+# real HCL so the assertion is exercised against something it must reject.
+BLANKET_ALB_EGRESS = """
+resource "aws_vpc_security_group_egress_rule" "alb_anywhere" {
+  security_group_id = aws_security_group.alb.id
+  description       = "blanket egress"
+  cidr_ipv4         = "0.0.0.0/0"
+  ip_protocol       = "-1"
+}
+"""
 
-def attribute(body: str, name: str) -> str | None:
-    """One top-level `name = value` from a block body, whitespace normalised.
 
-    The exact-text assertions below pin `terraform fmt` alignment where the
-    alignment is itself worth pinning. Everywhere else, reading the value is
-    what makes an assertion about behaviour rather than about formatting.
-    """
-    match = re.search(rf"^\s*{re.escape(name)}\s*=\s*(.+?)\s*$", body, re.MULTILINE)
-    return match[1] if match else None
+def security_group_rules(direction: str, source: str = MAIN) -> dict[str, str]:
+    return resource_bodies(source, f"aws_vpc_security_group_{direction}_rule")
 
 
-def security_group_rules(direction: str) -> dict[str, str]:
-    return resource_bodies(MAIN, f"aws_vpc_security_group_{direction}_rule")
+def group_rules(group: str, direction: str, source: str = MAIN) -> dict[str, str]:
+    """Every rule attached to one security group, by resource name."""
+    return {
+        name: body
+        for name, body in security_group_rules(direction, source).items()
+        if attribute(body, "security_group_id") == f"aws_security_group.{group}.id"
+    }
 
 
 def app_rules(direction: str) -> dict[str, str]:
-    """Every rule attached to the app security group, by resource name."""
-    return {
-        name: body
-        for name, body in security_group_rules(direction).items()
-        if attribute(body, "security_group_id") == "aws_security_group.app.id"
-    }
+    return group_rules("app", direction)
 
 
 def instance_preconditions() -> list[str]:
@@ -134,6 +141,20 @@ def test_instance_is_private_and_uses_encrypted_ebs() -> None:
     assert attribute(instance, "associate_public_ip_address") == "false"
     assert attribute(instance, "subnet_id") == "var.private_app_subnet_id"
     assert attribute(hcl_block(instance, "root_block_device"), "encrypted") == "true"
+
+
+def test_reading_an_argument_does_not_reach_into_a_nested_block() -> None:
+    """Every assertion in this file names a block and one of its arguments. If
+    the reader answered with a sub-block's argument instead, an assertion about
+    the instance could be satisfied by its `root_block_device`, and one about a
+    security group rule by an unrelated nested value.
+    """
+    instance = hcl_block(MAIN, 'resource "aws_instance" "docs"')
+
+    assert attribute(instance, "encrypted") is None
+    assert attribute(instance, "http_tokens") is None
+    assert attribute(instance, "condition") is None
+    assert attribute(hcl_block(instance, "metadata_options"), "http_tokens") == '"required"'
 
 
 # --- The shared network is consumed, not rebuilt -------------------------------
@@ -247,11 +268,92 @@ def test_only_the_alb_security_group_can_reach_the_app_port() -> None:
         assert attribute(rule, opener) is None, opener
 
 
+def assert_alb_egress_reaches_the_app_port_only(source: str) -> None:
+    """The load balancer's egress, enumerated the way its ingress counterpart is.
+
+    `alb_to_app` being exactly right says nothing about a second rule beside it
+    sending the load balancer's security group anywhere else, and a blanket
+    `ip_protocol = "-1"` egress rule is how that arrives.
+    """
+    egress = group_rules("alb", "egress", source)
+
+    assert set(egress) == {"alb_to_app"}
+
+    rule = egress["alb_to_app"]
+    assert attribute(rule, "referenced_security_group_id") == "aws_security_group.app.id"
+    assert attribute(rule, "ip_protocol") == '"tcp"'
+    assert attribute(rule, "from_port") == "var.app_port"
+    assert attribute(rule, "to_port") == "var.app_port"
+
+    # Any of these would let the load balancer reach something else entirely.
+    for opener in ("cidr_ipv4", "cidr_ipv6", "prefix_list_id"):
+        assert attribute(rule, opener) is None, opener
+
+
+def test_the_load_balancer_can_reach_the_app_port_and_nothing_else() -> None:
+    assert_alb_egress_reaches_the_app_port_only(MAIN)
+
+
+def test_the_alb_egress_check_rejects_a_blanket_extra_rule() -> None:
+    """Proof that the enumeration above has teeth."""
+    with pytest.raises(AssertionError):
+        assert_alb_egress_reaches_the_app_port_only(MAIN + BLANKET_ALB_EGRESS)
+
+
+def resolved_port(value: str | None) -> int:
+    """A rule's port as a number, resolving `var.name` through its default.
+
+    Failing on anything else is deliberate: a port this reader cannot evaluate
+    is a port the SSH assertion below cannot honestly make a claim about.
+    """
+    assert value is not None, "rule declares no port"
+    if re.fullmatch(r"\d+", value):
+        return int(value)
+
+    reference = re.fullmatch(r"var\.([A-Za-z0-9_]+)", value)
+    assert reference, f"unresolvable port expression {value!r}"
+
+    default = attribute(hcl_block(VARIABLES, f'variable "{reference[1]}"'), "default")
+    assert default is not None and re.fullmatch(r"\d+", default), (
+        f"variable {reference[1]} has no numeric default"
+    )
+    return int(default)
+
+
+def assert_rule_does_not_open_ssh(name: str, body: str) -> None:
+    """No rule may span port 22, whether or not it names it.
+
+    Reading `from_port` alone missed both shapes that matter: a range such as
+    `0`–`65535` contains 22 without mentioning it, and `ip_protocol = "-1"`
+    opens every port while declaring none.
+    """
+    assert attribute(body, "ip_protocol") != '"-1"', f"{name} opens every protocol"
+
+    low = resolved_port(attribute(body, "from_port"))
+    high = resolved_port(attribute(body, "to_port"))
+
+    assert not low <= 22 <= high, f"{name} opens port 22 through {low}-{high}"
+
+
 def test_no_security_group_rule_anywhere_opens_ssh() -> None:
     every_rule = {**security_group_rules("ingress"), **security_group_rules("egress")}
-    ports = {attribute(body, "from_port") for body in every_rule.values()}
 
-    assert "22" not in ports
+    assert every_rule
+
+    for name, body in every_rule.items():
+        assert_rule_does_not_open_ssh(name, body)
+
+
+def test_the_ssh_check_rejects_ranges_and_protocol_wildcards_that_reach_22() -> None:
+    """Proof that the assertion above has teeth."""
+    for body in (
+        'ip_protocol = "tcp"\nfrom_port = 0\nto_port = 65535\n',
+        'ip_protocol = "tcp"\nfrom_port = 22\nto_port = 22\n',
+        'ip_protocol = "-1"\ncidr_ipv4 = "0.0.0.0/0"\n',
+        'ip_protocol = "tcp"\ncidr_ipv4 = "0.0.0.0/0"\n',
+    ):
+        with pytest.raises(AssertionError):
+            assert_rule_does_not_open_ssh("probe", body)
 
 
 def test_security_groups_declare_no_inline_rules() -> None:
@@ -326,12 +428,20 @@ def test_app_egress_is_confined_to_named_ports() -> None:
 
 
 def test_alb_redirects_http_and_checks_application_health() -> None:
-    redirect = hcl_block(MAIN, 'resource "aws_lb_listener" "http"')
+    """Read from the `redirect` block itself. The listener also carries a
+    `fixed_response` with a `status_code` of its own, so a status code found
+    anywhere under the listener says nothing about which action carries it.
+    """
+    listener = hcl_block(MAIN, 'resource "aws_lb_listener" "http"')
+    redirects = nested_blocks(listener, "redirect")
     health = hcl_block(hcl_block(MAIN, 'resource "aws_lb_target_group" "docs"'), "health_check")
 
-    assert attribute(redirect, "status_code") == '"HTTP_301"'
+    assert len(redirects) == 1
+    assert attribute(redirects[0], "port") == '"443"'
+    assert attribute(redirects[0], "protocol") == '"HTTPS"'
+    assert attribute(redirects[0], "status_code") == '"HTTP_301"'
     assert attribute(health, "path") == '"/health"'
-    assert attribute(health, "matcher") == '"200"' 
+    assert attribute(health, "matcher") == '"200"'
 
 
 def test_one_stable_listener_owns_port_eighty() -> None:

@@ -67,6 +67,76 @@ def block_body(source: str, opening_brace: int) -> str:
     return source[opening_brace + 1 : _matching(source, opening_brace)]
 
 
+def _blanked(text: str) -> str:
+    """`text` with every character but its newlines replaced by a space."""
+    return "".join("\n" if character == "\n" else " " for character in text)
+
+
+def top_level(body: str) -> str:
+    """`body` with the contents of its nested blocks blanked out.
+
+    Line structure is preserved, and so is every top-level assignment
+    including the braces and brackets of its own value, so a list or object on
+    the right-hand side survives while a `label { ... }` block does not.
+
+    Telling the two apart is the whole job: a block opens where no assignment
+    is in progress, a value's brace opens after an `=`. Without the
+    distinction, `name = value` inside a nested block reads as an argument of
+    the block that contains it, and an assertion about a resource can be
+    satisfied by one of its sub-blocks.
+    """
+    kept: list[str] = []
+    depth = 0
+    in_value = False
+    offset = 0
+
+    def keep(text: str) -> None:
+        kept.append(text if in_value or depth == 0 else _blanked(text))
+
+    while offset < len(body):
+        character = body[offset]
+        if character == '"':
+            end = _end_of_string(body, offset)
+            keep(body[offset:end])
+            offset = end
+            continue
+        if character == "#" or body.startswith("//", offset):
+            newline = body.find("\n", offset)
+            end = len(body) if newline == -1 else newline
+            kept.append(_blanked(body[offset:end]))
+            offset = end
+            continue
+
+        if character in _CLOSING:
+            keep(character)
+            depth += 1
+        elif character in _CLOSING.values():
+            depth = max(depth - 1, 0)
+            keep(character)
+        else:
+            if depth == 0:
+                if character == "=":
+                    in_value = True
+                elif character == "\n":
+                    in_value = False
+            keep(character)
+        offset += 1
+
+    return "".join(kept)
+
+
+def attribute(body: str, name: str) -> str | None:
+    """One top-level `name = value` from a block body, whitespace normalised.
+
+    Reading the value rather than matching exact text is what makes an
+    assertion about behaviour rather than about `terraform fmt` alignment.
+    """
+    match = re.search(
+        rf"^\s*{re.escape(name)}\s*=\s*(.+?)\s*$", top_level(body), re.MULTILINE
+    )
+    return match[1] if match else None
+
+
 def hcl_block(source: str, header: str) -> str:
     """The body of the block introduced by `header`, which omits the brace.
 
