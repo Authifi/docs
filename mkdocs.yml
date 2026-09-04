@@ -12,6 +12,9 @@ exclude_docs: |
   hooks/**
   superpowers/**
 
+extra_css:
+  - stylesheets/authifi.css
+
 extra_javascript:
   - javascripts/webmcp.js
 

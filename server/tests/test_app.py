@@ -30,6 +30,7 @@ from server.tests.support import (
     encode_session_cookie,
     extract_cookie_value,
     replay_client,
+    sign_out,
     signed_in_session,
 )
 
@@ -586,7 +587,7 @@ def test_logout_uses_rp_initiated_end_session_endpoint_when_discovered(site_dir:
     )
     client = authenticated_client(site_dir, auth_client=auth_client)
 
-    response = client.get("/_auth/logout", follow_redirects=False)
+    response = sign_out(client)
 
     assert response.status_code == 307
     location = urlparse(response.headers["location"])
@@ -617,7 +618,7 @@ def test_logout_never_sends_next_to_the_issuer(site_dir: Path, next_value: str) 
     )
     client = authenticated_client(site_dir, auth_client=auth_client)
 
-    response = client.get("/_auth/logout", params={"next": next_value}, follow_redirects=False)
+    response = sign_out(client, params={"next": next_value})
 
     params = parse_qs(urlparse(response.headers["location"]).query)
     assert params["post_logout_redirect_uri"] == [
@@ -630,7 +631,7 @@ def test_logout_local_fallback_also_ignores_next(site_dir: Path, next_value: str
     """The two logout flows must land in the same place, or the difference leaks."""
     client = authenticated_client(site_dir, auth_client=DummyAuthClient(metadata={}))
 
-    response = client.get("/_auth/logout", params={"next": next_value}, follow_redirects=False)
+    response = sign_out(client, params={"next": next_value})
 
     assert response.status_code == 307
     assert response.headers["location"] == DEFAULT_POST_LOGOUT_PATH
@@ -643,7 +644,7 @@ def test_logout_without_a_session_never_contacts_the_issuer(site_dir: Path) -> N
     )
     client = build_client(site_dir, auth_client=auth_client)
 
-    response = client.get("/_auth/logout", follow_redirects=False)
+    response = sign_out(client)
 
     assert auth_client.metadata_requests == 0
     assert response.status_code == 307
@@ -657,7 +658,7 @@ def test_repeated_anonymous_logouts_stay_local(site_dir: Path) -> None:
     client = build_client(site_dir, auth_client=auth_client)
 
     for _ in range(5):
-        client.get("/_auth/logout", params={"next": "/terms-of-service/"}, follow_redirects=False)
+        sign_out(client, params={"next": "/terms-of-service/"})
 
     assert auth_client.metadata_requests == 0
 
@@ -668,7 +669,7 @@ def test_logout_preserves_existing_end_session_query_parameters(site_dir: Path) 
     )
     client = authenticated_client(site_dir, auth_client=auth_client)
 
-    response = client.get("/_auth/logout", follow_redirects=False)
+    response = sign_out(client)
 
     params = parse_qs(urlparse(response.headers["location"]).query)
     assert params["tenant"] == ["acme"]
@@ -684,7 +685,7 @@ def test_logout_falls_back_to_configured_public_path_without_end_session_endpoin
     auth_client = DummyAuthClient(metadata={})
     client = authenticated_client(site_dir, auth_client=auth_client)
 
-    response = client.get("/_auth/logout", follow_redirects=False)
+    response = sign_out(client)
 
     assert response.status_code == 307
     assert response.headers["location"] == DEFAULT_POST_LOGOUT_PATH
@@ -695,7 +696,7 @@ def test_logout_falls_back_when_discovery_is_unavailable(site_dir: Path) -> None
     auth_client = DummyAuthClient(metadata_error=RuntimeError("issuer unreachable"))
     client = authenticated_client(site_dir, auth_client=auth_client)
 
-    response = client.get("/_auth/logout", follow_redirects=False)
+    response = sign_out(client)
 
     assert response.status_code == 307
     assert response.headers["location"] == DEFAULT_POST_LOGOUT_PATH
@@ -704,7 +705,7 @@ def test_logout_falls_back_when_discovery_is_unavailable(site_dir: Path) -> None
 def test_logout_falls_back_when_client_has_no_discovery_support(site_dir: Path) -> None:
     client = authenticated_client(site_dir, auth_client=NoDiscoveryAuthClient())
 
-    response = client.get("/_auth/logout", follow_redirects=False)
+    response = sign_out(client)
 
     assert response.status_code == 307
     assert response.headers["location"] == DEFAULT_POST_LOGOUT_PATH
@@ -716,7 +717,7 @@ def test_logout_clears_local_session_even_when_redirecting_to_issuer(site_dir: P
     )
     client = authenticated_client(site_dir, auth_client=auth_client)
 
-    logout_response = client.get("/_auth/logout", follow_redirects=False)
+    logout_response = sign_out(client)
 
     response = replay_client(site_dir, logout_response, auth_client=auth_client).get(
         "/", follow_redirects=False
@@ -728,7 +729,7 @@ def test_logout_clears_local_session_even_when_redirecting_to_issuer(site_dir: P
 def test_logout_ignores_next_entirely_and_uses_the_configured_default(site_dir: Path) -> None:
     client = authenticated_client(site_dir, auth_client=DummyAuthClient())
 
-    response = client.get("/_auth/logout", params={"next": "//evil.example"}, follow_redirects=False)
+    response = sign_out(client, params={"next": "//evil.example"})
 
     assert response.status_code == 307
     assert response.headers["location"] == DEFAULT_POST_LOGOUT_PATH
@@ -737,7 +738,7 @@ def test_logout_ignores_next_entirely_and_uses_the_configured_default(site_dir: 
 def test_logout_uses_custom_configured_post_logout_path(site_dir: Path) -> None:
     client = authenticated_client(site_dir, post_logout_path="/terms-of-service/")
 
-    response = client.get("/_auth/logout", follow_redirects=False)
+    response = sign_out(client)
 
     assert response.status_code == 307
     assert response.headers["location"] == "/terms-of-service/"

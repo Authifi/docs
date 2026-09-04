@@ -496,6 +496,11 @@ def test_the_oauth_skill_denies_an_oauth_server_on_the_docs_domain() -> None:
 # A protected page is reached through an OIDC login, so it needs a way back out
 # that does not involve guessing a URL. Public pages have no session to end and
 # must not offer one.
+#
+# The control is a form rather than a link, because signing out is a state
+# change and `/_auth/logout` only answers `POST`. A link there would be a
+# control that answers `405`, and it was previously a control any third-party
+# page or prefetcher could fire on the reader's behalf.
 
 LOGOUT_PATH = "/_auth/logout"
 LOGOUT_LABEL = "Sign out"
@@ -507,13 +512,15 @@ PUBLIC_BUILT_PAGES = (
 )
 
 # Hand-written HTML copied into the site rather than rendered by Material, so
-# there is no header template to hang a link off. `feature-list.html` is gated,
-# so the post-build hook adds one to the built artifact instead; `sms-opt-in`
-# is public and needs none.
+# there is no header template to hang a control off. `feature-list.html` is
+# gated, so the post-build hook adds one to the built artifact instead;
+# `sms-opt-in` is public and needs none.
 HEADERLESS_BUILT_PAGES = ("feature-list.html", "sms-opt-in.html")
 AUGMENTED_BUILT_PAGES = ("feature-list.html",)
 SESSION_NAV_SENTINEL = "<!-- authifi:session-nav -->"
 UPSTREAM_SOURCE = REPO_ROOT / "docs" / "feature-list.html"
+
+VOID_ELEMENTS = ("br", "hr", "img", "input", "meta", "link", "source", "path")
 
 
 class AnchorCollector(HTMLParser):
@@ -527,7 +534,7 @@ class AnchorCollector(HTMLParser):
         self._collecting: dict[str, object] | None = None
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if tag not in ("br", "hr", "img", "input", "meta", "link", "source", "path"):
+        if tag not in VOID_ELEMENTS:
             self.open_tags.append(tag)
         if tag == "a" and dict(attrs).get("href") == self.href:
             self._collecting = {
@@ -548,10 +555,63 @@ class AnchorCollector(HTMLParser):
             self._collecting["text"] = f"{self._collecting['text']}{data}"
 
 
+class SignOutFormCollector(HTMLParser):
+    """Forms submitting to one action, with their submit control and context."""
+
+    def __init__(self, action: str) -> None:
+        super().__init__(convert_charrefs=True)
+        self.action = action
+        self.open_tags: list[str] = []
+        self.matches: list[dict[str, object]] = []
+        self._form: dict[str, object] | None = None
+        self._control: dict[str, object] | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attributes = dict(attrs)
+        if tag not in VOID_ELEMENTS:
+            self.open_tags.append(tag)
+
+        if tag == "form" and attributes.get("action") == self.action:
+            self._form = {
+                "attrs": attributes,
+                "ancestors": list(self.open_tags[:-1]),
+                "controls": [],
+            }
+            self.matches.append(self._form)
+        elif self._form is not None and tag in ("button", "input"):
+            self._control = {"tag": tag, "attrs": attributes, "text": ""}
+            self._form["controls"].append(self._control)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "button":
+            self._control = None
+        if tag == "form":
+            self._form = None
+            self._control = None
+        if tag in self.open_tags:
+            del self.open_tags[len(self.open_tags) - 1 - self.open_tags[::-1].index(tag) :]
+
+    def handle_data(self, data: str) -> None:
+        if self._control is not None:
+            self._control["text"] = f"{self._control['text']}{data}"
+
+
+def sign_out_forms(html: str) -> list[dict[str, object]]:
+    collector = SignOutFormCollector(LOGOUT_PATH)
+    collector.feed(html)
+    return collector.matches
+
+
 def logout_links(html: str) -> list[dict[str, object]]:
     collector = AnchorCollector(LOGOUT_PATH)
     collector.feed(html)
     return collector.matches
+
+
+def only_submit_button(form: dict[str, object]) -> dict[str, object]:
+    (control,) = form["controls"]
+    assert control["tag"] == "button", control
+    return control
 
 
 def unclosed_tags(fragment: str) -> list[str]:
@@ -564,13 +624,23 @@ def built_html_pages(built_site: Path) -> list[str]:
     return sorted(path.relative_to(built_site).as_posix() for path in built_site.rglob("*.html"))
 
 
+def protected_built_pages(built_site: Path) -> list[str]:
+    return [page for page in built_html_pages(built_site) if page not in PUBLIC_BUILT_PAGES]
+
+
 def test_every_protected_page_offers_exactly_one_way_out(built_site: Path) -> None:
-    protected = [page for page in built_html_pages(built_site) if page not in PUBLIC_BUILT_PAGES]
+    protected = protected_built_pages(built_site)
 
     assert protected, "no built pages found"
     for page in protected:
-        found = logout_links((built_site / page).read_text(encoding="utf-8"))
-        assert len(found) == 1, f"{page} has {len(found)} sign-out links"
+        found = sign_out_forms((built_site / page).read_text(encoding="utf-8"))
+        assert len(found) == 1, f"{page} has {len(found)} sign-out forms"
+
+
+def test_no_page_offers_a_sign_out_link_that_would_only_fail(built_site: Path) -> None:
+    """`/_auth/logout` answers `405` to a `GET`, so an anchor there is a dead end."""
+    for page in built_html_pages(built_site):
+        assert logout_links((built_site / page).read_text(encoding="utf-8")) == [], page
 
 
 def test_the_pages_with_no_material_header_are_the_known_ones(built_site: Path) -> None:
@@ -593,56 +663,109 @@ def test_public_pages_offer_no_way_out_of_a_session_they_never_had(
 ) -> None:
     html = (built_site / page).read_text(encoding="utf-8")
 
-    assert logout_links(html) == []
+    assert sign_out_forms(html) == []
     assert LOGOUT_PATH not in html
 
 
-def test_the_sign_out_link_matches_the_route_the_server_actually_serves() -> None:
+def test_the_sign_out_control_matches_the_route_the_server_actually_serves() -> None:
     """The template and the server must not drift apart on the path."""
     assert LOGOUT_PATH in PUBLIC_AUTH_PATHS
 
 
-def test_the_sign_out_link_is_a_plain_link_with_visible_text(built_site: Path) -> None:
+def test_every_sign_out_form_posts(built_site: Path) -> None:
+    """A `GET` form would put the session in a URL and answer `405`."""
+    for page in protected_built_pages(built_site):
+        (form,) = sign_out_forms((built_site / page).read_text(encoding="utf-8"))
+        assert str(form["attrs"].get("method", "")).lower() == "post", page
+        assert form["attrs"]["action"] == LOGOUT_PATH, page
+
+
+def test_the_sign_out_control_is_a_submit_button_with_visible_text(
+    built_site: Path,
+) -> None:
     """Native semantics and a name taken from content.
 
     An icon-only control would need `aria-label`, and a `title` is not a naming
     mechanism at all. Real text is the accessible name, needs no ARIA, and
-    survives translation.
+    survives translation. A `<button type="submit">` is keyboard-operable by
+    Enter and Space without a line of script.
     """
-    (link,) = logout_links((built_site / "index.html").read_text(encoding="utf-8"))
+    (form,) = sign_out_forms((built_site / "index.html").read_text(encoding="utf-8"))
+    button = only_submit_button(form)
 
-    assert str(link["text"]).strip() == LOGOUT_LABEL
-    assert "aria-label" not in link["attrs"]
-    assert "role" not in link["attrs"]
-    assert "onclick" not in link["attrs"]
+    assert button["attrs"].get("type") == "submit"
+    assert str(button["text"]).strip() == LOGOUT_LABEL
+    assert "aria-label" not in button["attrs"]
+    assert "role" not in button["attrs"]
+    assert "onclick" not in button["attrs"]
+    assert "onsubmit" not in form["attrs"]
 
 
-def test_the_sign_out_link_uses_materials_own_header_control_styling(built_site: Path) -> None:
+def test_the_sign_out_form_needs_no_script_to_work(built_site: Path) -> None:
+    """It is a plain form submission, so it works with scripting disabled."""
+    for page in protected_built_pages(built_site):
+        html = (built_site / page).read_text(encoding="utf-8")
+        (form,) = sign_out_forms(html)
+
+        assert "controls" in form
+        assert not any(
+            attribute.startswith("on") for attribute in form["attrs"]
+        ), form["attrs"]
+
+
+def test_the_sign_out_button_uses_materials_own_header_control_styling(
+    built_site: Path,
+) -> None:
     """`md-header__button` is what the palette toggle and search use.
 
-    Reusing it means the link inherits the header's own foreground colour in
+    Reusing it means the control inherits the header's own foreground colour in
     both the default and slate schemes, and Material's `outline-color` for
     `:focus-visible`, rather than needing contrast and focus styles of its own.
+    A `<button>` also arrives with browser chrome of its own, which the
+    stylesheet below has to remove; the class alone is not enough.
     """
-    (link,) = logout_links((built_site / "index.html").read_text(encoding="utf-8"))
+    (form,) = sign_out_forms((built_site / "index.html").read_text(encoding="utf-8"))
+    button = only_submit_button(form)
 
-    assert "md-header__button" in str(link["attrs"].get("class", ""))
+    assert "md-header__button" in str(button["attrs"].get("class", ""))
+
+
+def test_the_stylesheet_that_makes_the_button_look_like_a_control_is_built(
+    built_site: Path,
+) -> None:
+    """Without these rules the header would show a grey OS push button."""
+    stylesheet = (built_site / "stylesheets" / "authifi.css").read_text(encoding="utf-8")
+
+    assert ".md-header__signout" in stylesheet
+    for reset in ("background", "border", "font", "cursor"):
+        assert reset in stylesheet, reset
 
 
 @pytest.mark.parametrize(
     "page", ["index.html", "guides/sso-integration-guide/index.html", "security/index.html"]
 )
-def test_the_sign_out_link_sits_in_the_header_navigation(built_site: Path, page: str) -> None:
-    (link,) = logout_links((built_site / page).read_text(encoding="utf-8"))
+def test_every_material_page_loads_that_stylesheet(built_site: Path, page: str) -> None:
+    html = (built_site / page).read_text(encoding="utf-8")
 
-    ancestors = link["ancestors"]
+    assert "stylesheets/authifi.css" in html
+
+
+@pytest.mark.parametrize(
+    "page", ["index.html", "guides/sso-integration-guide/index.html", "security/index.html"]
+)
+def test_the_sign_out_control_sits_in_the_header_navigation(
+    built_site: Path, page: str
+) -> None:
+    (form,) = sign_out_forms((built_site / page).read_text(encoding="utf-8"))
+
+    ancestors = form["ancestors"]
     assert "header" in ancestors, ancestors
     assert "nav" in ancestors, ancestors
 
 
 @pytest.mark.parametrize("page", ["index.html", "privacy-policy/index.html"])
 def test_the_header_element_is_still_well_formed(built_site: Path, page: str) -> None:
-    """Inserting a link must not leave a tag open or land outside the element."""
+    """Inserting a form must not leave a tag open or land outside the element."""
     html = (built_site / page).read_text(encoding="utf-8")
 
     assert html.count("<header") == html.count("</header>") == 1
@@ -652,10 +775,18 @@ def test_the_header_element_is_still_well_formed(built_site: Path, page: str) ->
     assert unclosed_tags(header) == []
 
 
+def test_no_sign_out_form_is_nested_inside_another_form(built_site: Path) -> None:
+    """Nested forms are invalid HTML and browsers resolve them unpredictably."""
+    for page in protected_built_pages(built_site):
+        (form,) = sign_out_forms((built_site / page).read_text(encoding="utf-8"))
+
+        assert "form" not in form["ancestors"], page
+
+
 @pytest.mark.parametrize(
     "page", ["index.html", "guides/sso-integration-guide/index.html", "security/index.html"]
 )
-def test_protected_pages_keep_their_navigation_alongside_the_new_link(
+def test_protected_pages_keep_their_navigation_alongside_the_new_control(
     built_site: Path, page: str
 ) -> None:
     html = (built_site / page).read_text(encoding="utf-8")
@@ -663,6 +794,7 @@ def test_protected_pages_keep_their_navigation_alongside_the_new_link(
     assert 'data-md-component="sidebar" data-md-type="navigation"' in html
     assert '{% include "partials/nav.html" %}' not in html
     assert 'data-md-component="search"' in html
+
 
 
 # --- Vendored header drift ----------------------------------------------------
@@ -679,8 +811,10 @@ GATED_HEADER_SEARCH_CONDITION = (
 )
 
 MATERIAL_HEADER_SOURCE_CONDITION = "    {% if config.repo_url %}\n"
-SIGN_OUT_LINK = """    {% if not authifi_public_page %}
-      <a href="/_auth/logout" class="md-header__button">Sign out</a>
+SIGN_OUT_CONTROL = """    {% if not authifi_public_page %}
+      <form class="md-header__signout" method="post" action="/_auth/logout">
+        <button class="md-header__button" type="submit">Sign out</button>
+      </form>
     {% endif %}
 """
 
@@ -691,11 +825,11 @@ def expected_vendored_header() -> str:
     gated = stock.replace(MATERIAL_HEADER_SEARCH_CONDITION, GATED_HEADER_SEARCH_CONDITION)
     assert gated != stock, "Material's header search condition changed shape"
 
-    with_link = gated.replace(
-        MATERIAL_HEADER_SOURCE_CONDITION, SIGN_OUT_LINK + MATERIAL_HEADER_SOURCE_CONDITION
+    with_control = gated.replace(
+        MATERIAL_HEADER_SOURCE_CONDITION, SIGN_OUT_CONTROL + MATERIAL_HEADER_SOURCE_CONDITION
     )
-    assert with_link != gated, "Material's header no longer has the anchor we insert at"
-    return with_link
+    assert with_control != gated, "Material's header no longer has the anchor we insert at"
+    return with_control
 
 
 def test_the_vendored_header_is_materials_header_with_only_our_two_changes() -> None:
@@ -728,12 +862,16 @@ def test_only_one_copy_of_materials_header_is_vendored() -> None:
 
 
 @pytest.mark.parametrize("page", AUGMENTED_BUILT_PAGES)
-def test_the_copied_artifact_gains_exactly_one_sign_out_link(built_site: Path, page: str) -> None:
+def test_the_copied_artifact_gains_exactly_one_sign_out_control(
+    built_site: Path, page: str
+) -> None:
     html = (built_site / page).read_text(encoding="utf-8")
 
-    (link,) = logout_links(html)
-    assert str(link["text"]).strip() == LOGOUT_LABEL
-    assert "nav" in link["ancestors"], link["ancestors"]
+    (form,) = sign_out_forms(html)
+    button = only_submit_button(form)
+    assert str(form["attrs"].get("method", "")).lower() == "post"
+    assert str(button["text"]).strip() == LOGOUT_LABEL
+    assert "nav" in form["ancestors"], form["ancestors"]
 
 
 @pytest.mark.parametrize("page", AUGMENTED_BUILT_PAGES)
@@ -746,7 +884,7 @@ def test_the_injected_nav_names_itself(built_site: Path, page: str) -> None:
 
 @pytest.mark.parametrize("page", AUGMENTED_BUILT_PAGES)
 def test_the_injected_markup_is_valid_where_it_lands(built_site: Path, page: str) -> None:
-    """`<style>` is metadata content: head only. The link is flow content: body."""
+    """`<style>` is metadata content: head only. The form is flow content: body."""
     html = (built_site / page).read_text(encoding="utf-8")
     head = html[: html.index("</head>")]
     body = html[html.index("<body>") :]
@@ -768,6 +906,10 @@ def test_the_injected_styling_does_not_lean_on_material(built_site: Path, page: 
     assert "--md-" not in style
     assert ":focus-visible" in style
     assert "#ffffff" in style
+    # A `<button>` arrives with the operating system's own push-button chrome,
+    # which would look nothing like the rest of this page.
+    for reset in ("background", "border", "font", "cursor"):
+        assert reset in style, reset
 
 
 def test_the_upstream_source_is_left_byte_identical(built_site: Path) -> None:
@@ -797,15 +939,15 @@ def run_build(site_dir: Path, *extra: str) -> None:
     )
 
 
-def assert_one_link_per_augmented_page(site_dir: Path) -> None:
+def assert_one_control_per_augmented_page(site_dir: Path) -> None:
     for page in AUGMENTED_BUILT_PAGES:
         html = (site_dir / page).read_text(encoding="utf-8")
-        assert len(logout_links(html)) == 1, f"{page} accumulated links across rebuilds"
+        assert len(sign_out_forms(html)) == 1, f"{page} accumulated controls across rebuilds"
         # One for the style in the head, one for the nav in the body.
         assert html.count(SESSION_NAV_SENTINEL) == 2
 
 
-def test_a_strict_rebuild_does_not_stack_two_links(
+def test_a_strict_rebuild_does_not_stack_two_controls(
     tmp_path_factory: pytest.TempPathFactory,
 ) -> None:
     site_dir = tmp_path_factory.mktemp("mkdocs-rebuild")
@@ -813,10 +955,10 @@ def test_a_strict_rebuild_does_not_stack_two_links(
     run_build(site_dir, "--strict")
     run_build(site_dir, "--strict")
 
-    assert_one_link_per_augmented_page(site_dir)
+    assert_one_control_per_augmented_page(site_dir)
 
 
-def test_a_dirty_rebuild_over_an_augmented_copy_does_not_stack_two_links(
+def test_a_dirty_rebuild_over_an_augmented_copy_does_not_stack_two_controls(
     tmp_path_factory: pytest.TempPathFactory,
 ) -> None:
     """The case the sentinel exists for.
@@ -831,7 +973,7 @@ def test_a_dirty_rebuild_over_an_augmented_copy_does_not_stack_two_links(
     run_build(site_dir, "--strict")
     run_build(site_dir, "--dirty")
 
-    assert_one_link_per_augmented_page(site_dir)
+    assert_one_control_per_augmented_page(site_dir)
 
 
 # --- The `next` path cap against the real site --------------------------------

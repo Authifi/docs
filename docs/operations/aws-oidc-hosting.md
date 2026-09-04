@@ -136,10 +136,16 @@ caller gets, and no outbound request to the issuer.
 
 ### Signing Out Ends Everything, Not Just This Tab
 
-Every gated page carries a **Sign out** link pointing at `/_auth/logout`, by one
-of two routes. Pages Material renders get it from the header partial, next to
-the palette and search controls. Public pages omit it — there is no session to
-end there.
+Every gated page carries a **Sign out** control posting to `/_auth/logout`, by
+one of two routes. Pages Material renders get it from the header partial, next
+to the palette and search controls. Public pages omit it — there is no session
+to end there.
+
+The control is a `<form method="post">` with a submit button, not a link,
+because the route answers `POST` only. `docs/stylesheets/authifi.css` strips the
+operating system's push-button chrome off the header one so it looks like the
+controls beside it, inheriting Material's own colour and focus outline rather
+than restating them. Nothing about either control needs JavaScript.
 
 `feature-list.html` is generated upstream in idbroker and copied into the site
 verbatim, so it never passes through a template and carries a notice not to edit
@@ -157,6 +163,35 @@ never built: the file is upstream's to change, and quietly doing nothing would
 ship a gated page with no way out of the session. If an upstream reshape breaks
 the build, fix the insertion points rather than dropping the page from
 `AUGMENTED_ARTIFACTS`.
+
+### Only A POST From This Site Can End A Session
+
+`GET /_auth/logout` answers `405` with `Allow: POST`. It clears nothing and does
+not contact the issuer. The route accepts the method purely so that reply can be
+sent: without it the catch-all site route would answer `404`, which tells
+somebody following an old bookmark nothing about how to sign out. A `HEAD` is
+refused the same way, and neither refusal is cacheable.
+
+Every `POST` must carry an `Origin` header whose origin matches the one
+`PUBLIC_BASE_URL` names. Anything else — another site, our host on another port,
+a downgraded scheme, `null`, an unparseable value, or no header at all — is
+refused with `403` before the session is touched and before any outbound
+request. Comparison is between parsed origins, not strings, so `https://host`
+and `https://host:443` match and host case is ignored; matching the header
+verbatim would refuse legitimate submissions on those grounds. The header is
+held to a stricter shape than the configuration: a path, query, fragment, or
+credentials in it means it is not something a browser sent, while
+`PUBLIC_BASE_URL` may legitimately carry a sub-path.
+
+A refusal logs only the *shape* of the header — missing, or not this site. The
+value is attacker-chosen and unbounded, so putting it in the log would be
+somebody else writing to your logs, and the response does not echo it either.
+
+`PUBLIC_BASE_URL` is therefore validated at startup, not at the first logout. A
+value that is not an absolute `http` or `https` URL fails the container
+immediately instead of letting it serve traffic and refuse every sign-out.
+
+### Signing Out Clears Everything, Not Just This Tab
 
 `/_auth/logout` clears the whole session cookie: the signed-in identity and
 every in-flight sign-in in every other tab. That is deliberate — signing out

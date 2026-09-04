@@ -207,13 +207,22 @@ def with_authentication_time(session: dict | None) -> dict:
     return {**session, SESSION_AUTHENTICATED_AT_KEY: int(time.time())}
 
 
-def sign_out(client: TestClient, public_base_url: str = DEFAULT_PUBLIC_BASE_URL):
-    """Sign out the way a browser does, from the site's own origin.
+def sign_out(
+    client: TestClient,
+    public_base_url: str = DEFAULT_PUBLIC_BASE_URL,
+    params: dict | None = None,
+):
+    """Sign out the way a browser does: a form POST from the site's own origin.
 
-    Going through one helper means the tests exercise the same request the
-    rendered control sends, and that only one place needs changing if it moves.
+    Going through one helper means every test exercises the same request the
+    rendered form sends, and that only one place needs changing if it moves.
     """
-    return client.get("/_auth/logout", follow_redirects=False)
+    return client.post(
+        "/_auth/logout",
+        params=params,
+        headers={"origin": origin_of(public_base_url)},
+        follow_redirects=False,
+    )
 
 
 def origin_of(public_base_url: str) -> str:

@@ -80,26 +80,37 @@ SESSION_NAV_STYLE = f"""{SESSION_NAV_SENTINEL}
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   font-size: 1rem;
 }}
-.authifi-session-nav a {{
+.authifi-session-nav form {{
+  display: inline;
+  margin: 0;
+}}
+.authifi-session-nav button {{
+  background: none;
+  border: 0;
+  cursor: pointer;
+  font: inherit;
   color: #ffffff;
   font-weight: 600;
   text-decoration: underline;
   padding: 0.5rem 0.75rem;
   border-radius: 0.25rem;
 }}
-.authifi-session-nav a:hover {{
+.authifi-session-nav button:hover {{
   background: #1e293b;
 }}
-.authifi-session-nav a:focus-visible {{
+.authifi-session-nav button:focus-visible {{
   outline: 3px solid #ffffff;
   outline-offset: 2px;
 }}
 </style>
 """
 
+# A form, not a link: `/_auth/logout` changes state and answers `POST` only.
 SESSION_NAV_MARKUP = f"""{SESSION_NAV_SENTINEL}
 <nav class="authifi-session-nav" aria-label="Session">
-  <a href="/_auth/logout">Sign out</a>
+  <form method="post" action="/_auth/logout">
+    <button type="submit">Sign out</button>
+  </form>
 </nav>
 """
 

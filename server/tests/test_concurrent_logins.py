@@ -32,6 +32,7 @@ from server.app import (
 )
 from server.tests.support import (
     build_config,
+    sign_out,
     decode_session_cookie,
     encode_session_cookie,
     extract_cookie_value,
@@ -39,6 +40,10 @@ from server.tests.support import (
 )
 
 SESSION_COOKIE_NAME = "authifi-session"
+# Plain http, so the session cookie is not marked Secure: these tests depend on
+# the client returning it across several requests, which is the whole point of a
+# shared browser session. Signing out has to come from this same origin.
+PUBLIC_BASE_URL = "http://testserver"
 
 
 @pytest.fixture
@@ -72,10 +77,7 @@ def token_endpoint() -> RecordingTokenEndpoint:
 
 @pytest.fixture
 def client(site_dir: Path, token_endpoint: RecordingTokenEndpoint) -> TestClient:
-    # Plain http so the session cookie is not marked Secure: these tests depend
-    # on the client returning it across several requests, which is the whole
-    # point of a shared browser session.
-    app = create_app(build_config(site_dir, public_base_url="http://testserver"))
+    app = create_app(build_config(site_dir, public_base_url=PUBLIC_BASE_URL))
 
     async def metadata() -> dict[str, str]:
         return {
@@ -490,7 +492,7 @@ def test_logout_discards_pending_logins_in_other_tabs(client: TestClient) -> Non
     complete_login(client, signed_in_state, "code-security")
     other_tab_state = start_login(client, "/guides/sso-integration-guide/")
 
-    client.get("/_auth/logout", follow_redirects=False)
+    sign_out(client, public_base_url=PUBLIC_BASE_URL)
 
     session = current_session(client)
     assert session == {}
@@ -502,7 +504,7 @@ def test_a_tab_left_mid_login_across_a_logout_fails_safely(client: TestClient) -
     complete_login(client, signed_in_state, "code-security")
     other_tab_state = start_login(client, "/guides/sso-integration-guide/")
 
-    client.get("/_auth/logout", follow_redirects=False)
+    sign_out(client, public_base_url=PUBLIC_BASE_URL)
     stranded = complete_login(client, other_tab_state, "code-guide")
 
     assert stranded.status_code == 400
@@ -667,7 +669,7 @@ def test_an_unreachable_issuer_is_still_a_server_fault(
     A connection failure or a bug is not a user-facing authentication outcome
     and must not be reported as one.
     """
-    app = create_app(build_config(site_dir, public_base_url="http://testserver"))
+    app = create_app(build_config(site_dir, public_base_url=PUBLIC_BASE_URL))
 
     async def metadata() -> dict[str, str]:
         return {
@@ -726,7 +728,7 @@ def test_the_worst_case_cookie_is_measured_and_fits_with_maximal_claims(
     async def maximal_token(**params):
         return {"access_token": "opaque", "userinfo": claims}
 
-    app = create_app(build_config(site_dir, public_base_url="http://testserver"))
+    app = create_app(build_config(site_dir, public_base_url=PUBLIC_BASE_URL))
 
     async def metadata() -> dict[str, str]:
         return {
@@ -769,7 +771,7 @@ def test_an_issuer_cannot_inflate_the_cookie_past_the_browser_limit(
     async def enormous_token(**params):
         return {"access_token": "opaque", "userinfo": {**huge, "sub": "user-123"}}
 
-    app = create_app(build_config(site_dir, public_base_url="http://testserver"))
+    app = create_app(build_config(site_dir, public_base_url=PUBLIC_BASE_URL))
 
     async def metadata() -> dict[str, str]:
         return {

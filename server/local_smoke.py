@@ -92,6 +92,12 @@ class SmokeSettings:
         return f"{self.public_base_url.rstrip('/')}/_auth/logout?next={quote(self.public_path, safe='')}"
 
     @property
+    def origin(self) -> str:
+        """The `Origin` a browser on this site would send with the form POST."""
+        parts = urlparse(self.public_base_url)
+        return f"{parts.scheme}://{parts.netloc}"
+
+    @property
     def post_logout_url(self) -> str:
         return f"{self.public_base_url.rstrip('/')}{self.post_logout_path}"
 
@@ -351,6 +357,9 @@ def run_smoke(
             probe = client.get(f"{settings.public_base_url.rstrip('/')}{path}", follow_redirects=False)
             assert_no_protected_content(path, probe.status_code, probe.text)
 
+        assert_only_a_post_can_sign_out(client, settings)
+        assert_a_foreign_form_cannot_sign_out(client, settings)
+
         logout_mode = complete_logout(client, settings)
         print(f"logout completed via {logout_mode} flow")
 
@@ -406,9 +415,53 @@ def assert_registered_post_logout_uri(location: str, settings: SmokeSettings) ->
         raise AssertionError(f"RP-initiated logout is missing client_id: {location!r}")
 
 
+def post_logout(client: httpx.Client, settings: SmokeSettings, origin: str | None):
+    """Submit the sign-out form, optionally from somewhere else."""
+    headers = {} if origin is None else {"Origin": origin}
+    return client.post(settings.logout_url, headers=headers, follow_redirects=False)
+
+
+def assert_only_a_post_can_sign_out(client: httpx.Client, settings: SmokeSettings) -> None:
+    """A `GET` must not end the session, whoever or whatever issued it.
+
+    Run while signed in, so "the session survived" is something the following
+    request can actually establish.
+    """
+    response = client.get(settings.logout_url, follow_redirects=False)
+    if response.status_code != 405:
+        raise AssertionError(f"expected GET logout to answer 405, got {response.status_code}")
+    if "POST" not in response.headers.get("allow", ""):
+        raise AssertionError(f"405 did not name POST in Allow: {response.headers.get('allow')!r}")
+    assert_still_signed_in(client, settings, "a GET to the logout route")
+
+
+def assert_a_foreign_form_cannot_sign_out(client: httpx.Client, settings: SmokeSettings) -> None:
+    """The CSRF check, against the origins a forged submission would carry."""
+    for description, origin in (
+        ("another site", "http://attacker.invalid"),
+        ("no origin at all", None),
+        ("our host on the wrong port", f"{settings.origin}9"),
+    ):
+        response = post_logout(client, settings, origin)
+        if response.status_code != 403:
+            raise AssertionError(
+                f"expected a logout POST from {description} to answer 403, "
+                f"got {response.status_code}"
+            )
+        assert_still_signed_in(client, settings, f"a logout POST from {description}")
+
+
+def assert_still_signed_in(client: httpx.Client, settings: SmokeSettings, after: str) -> None:
+    response = client.get(settings.protected_url, follow_redirects=False)
+    if response.status_code != 200:
+        raise AssertionError(
+            f"{after} ended the session: protected page answered {response.status_code}"
+        )
+
+
 def complete_logout(client: httpx.Client, settings: SmokeSettings) -> str:
     """Run the documented production logout and assert it lands where it should."""
-    response = client.get(settings.logout_url, follow_redirects=False)
+    response = post_logout(client, settings, settings.origin)
     if response.status_code != 307:
         raise AssertionError(f"expected logout status 307, got {response.status_code}")
 
@@ -426,7 +479,7 @@ def complete_logout(client: httpx.Client, settings: SmokeSettings) -> str:
 
 def assert_anonymous_logout_stays_local(client: httpx.Client, settings: SmokeSettings) -> None:
     """With no session there is nothing to end, so no outbound issuer hop."""
-    response = client.get(settings.logout_url, follow_redirects=False)
+    response = post_logout(client, settings, settings.origin)
     location = response.headers.get("location")
     if response.status_code != 307 or location != settings.post_logout_path:
         raise AssertionError(

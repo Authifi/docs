@@ -99,6 +99,10 @@ MAX_EMAIL_BYTES = 254
 MAX_NAME_BYTES = 128
 OPTIONAL_CLAIM_LIMITS = {"email": MAX_EMAIL_BYTES, "name": MAX_NAME_BYTES}
 
+# The port each scheme implies, so `https://host` and `https://host:443` are
+# recognised as the same origin.
+ORIGIN_DEFAULT_PORTS = {"http": 80, "https": 443}
+
 VISIBILITY_PUBLIC = "public"
 VISIBILITY_PROTECTED = "protected"
 VISIBILITY_STATE_KEY = "cache_visibility"
@@ -265,6 +269,7 @@ def set_cache_visibility(request: Request, visibility: str) -> None:
 
 
 def create_app(config: AppConfig, auth_client: object | None = None) -> Starlette:
+    validate_public_base_url(config.public_base_url)
     validate_post_logout_path(config.post_logout_path)
 
     app = Starlette(
@@ -272,7 +277,11 @@ def create_app(config: AppConfig, auth_client: object | None = None) -> Starlett
             Route("/health", endpoint=health_endpoint),
             Route("/_auth/login", endpoint=login_endpoint),
             Route("/_auth/callback", endpoint=callback_endpoint),
-            Route("/_auth/logout", endpoint=logout_endpoint),
+            # `GET` is accepted by the route only so the endpoint can answer
+            # `405` to it. Left off, the catch-all site route below would take
+            # the request and answer `404`, which tells a reader who followed an
+            # old bookmark nothing about how to sign out.
+            Route("/_auth/logout", endpoint=logout_endpoint, methods=["GET", "POST"]),
             Route("/{path:path}", endpoint=site_endpoint),
         ],
         # Passed to the constructor rather than added afterwards so the handler
@@ -292,6 +301,79 @@ def create_app(config: AppConfig, auth_client: object | None = None) -> Starlett
     )
     app.add_middleware(SecurityHeadersMiddleware, enable_hsts=config.cookie_secure)
     return app
+
+
+def normalize_origin(value: str | None, allow_path: bool = False) -> str | None:
+    """An origin in one canonical form, or ``None`` if the value is not one.
+
+    Compared rather than string-matched because several spellings mean the same
+    origin: `https://host` and `https://host:443` are identical, and hosts are
+    case-insensitive. Matching the header verbatim against `PUBLIC_BASE_URL`
+    would refuse legitimate submissions on those grounds alone.
+
+    Everything else about the shape is refused. A path, a query, a fragment, or
+    credentials means this is not the `Origin` a browser sends, and a scheme
+    other than http or https has no place here at all -- `null`, which browsers
+    do send for an opaque origin, falls out as unparseable. `allow_path` is for
+    reading our own configuration, where a sub-path deployment is a legitimate
+    shape; the header is never given that latitude.
+    """
+    if not isinstance(value, str) or not value:
+        return None
+    if any(character in CONTROL_CHARACTERS for character in value):
+        return None
+
+    parts = urlsplit(value)
+    if parts.scheme not in ORIGIN_DEFAULT_PORTS:
+        return None
+    if parts.query or parts.fragment:
+        return None
+    if not allow_path and parts.path:
+        return None
+
+    try:
+        host, port = parts.hostname, parts.port
+    except ValueError:
+        # A port that is not a number. `urlsplit` defers that to `.port`.
+        return None
+    if not host or parts.username or parts.password:
+        return None
+    if port is None or port == ORIGIN_DEFAULT_PORTS[parts.scheme]:
+        return f"{parts.scheme}://{host}"
+    return f"{parts.scheme}://{host}:{port}"
+
+
+def request_is_same_origin(request: Request, config: AppConfig) -> bool:
+    """Whether this request was submitted from a page this site served.
+
+    The CSRF defence for logout, in place of a token: every page here is a
+    static file, so there is nowhere to mint a per-render token and no endpoint
+    that hands them out. `SameSite=Lax` already keeps the session cookie off a
+    cross-site POST, so a forged one arrives anonymous; this check is what makes
+    that a refusal instead of a redirect, and what covers the same-site,
+    different-port case `Lax` treats as its own.
+
+    A missing header fails. Every browser this site supports sends `Origin` on a
+    form POST, so a request without one did not come from our pages.
+    """
+    submitted = normalize_origin(request.headers.get("origin"))
+    return submitted is not None and submitted == normalize_origin(
+        config.public_base_url, allow_path=True
+    )
+
+
+def validate_public_base_url(public_base_url: str) -> str:
+    """Refuse a base URL that has no origin, at startup rather than at logout.
+
+    Every logout is checked against the origin this names. A value that is not
+    an absolute http or https URL would let the container start and then refuse
+    every sign-out with a `403`.
+    """
+    if normalize_origin(public_base_url, allow_path=True) is None:
+        raise ValueError(
+            f"PUBLIC_BASE_URL must be an absolute http or https URL, got {public_base_url!r}"
+        )
+    return public_base_url
 
 
 def validate_post_logout_path(path: str) -> str:
@@ -587,6 +669,30 @@ async def callback_endpoint(request: Request) -> Response:
 async def logout_endpoint(request: Request) -> Response:
     set_cache_visibility(request, VISIBILITY_PROTECTED)
     config = request.app.state.config
+
+    if request.method != "POST":
+        # Ending a session is a state change, and a `GET` that does it can be
+        # fired by any third-party page, a prefetcher, or a link scanner.
+        # Nothing is cleared here and the issuer is not contacted.
+        return PlainTextResponse(
+            "Method Not Allowed: sign out with the Sign out control on the page.",
+            status_code=405,
+            headers={"Allow": "POST"},
+        )
+
+    if not request_is_same_origin(request, config):
+        # Before anything is cleared and before the issuer is told anything.
+        # Logging the header itself would put an unbounded attacker-chosen
+        # string in the log, so only its shape is recorded.
+        logger.warning(
+            "Refusing a logout whose Origin is %s",
+            "missing" if request.headers.get("origin") is None else "not this site",
+        )
+        return PlainTextResponse(
+            "Forbidden: this sign-out request did not come from the documentation site. "
+            "Use the Sign out control on the page.",
+            status_code=403,
+        )
 
     # `next` is deliberately ignored. The post-logout target is registered with
     # Authifi as an exact URI, so anything else would be rejected by the issuer,

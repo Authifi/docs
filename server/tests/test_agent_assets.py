@@ -180,11 +180,11 @@ def test_committed_index_covers_every_defined_skill() -> None:
 def test_the_augmented_artifact_gains_one_session_nav(tmp_path: Path) -> None:
     augmented = agent_assets._with_session_nav(UPSTREAM_HEAD, "feature-list.html")
 
-    assert augmented.count('href="/_auth/logout"') == 1
+    assert augmented.count('action="/_auth/logout"') == 1
     assert augmented.count('aria-label="Session"') == 1
 
 
-def test_the_link_and_its_styling_land_where_they_are_valid() -> None:
+def test_the_control_and_its_styling_land_where_they_are_valid() -> None:
     """`<style>` is metadata content, so it belongs in the head, not the body."""
     augmented = agent_assets._with_session_nav(UPSTREAM_HEAD, "feature-list.html")
 
@@ -193,17 +193,26 @@ def test_the_link_and_its_styling_land_where_they_are_valid() -> None:
 
     assert "<style>" in head
     assert "<style>" not in body
-    assert 'href="/_auth/logout"' in body
-    assert 'href="/_auth/logout"' not in head
+    assert 'action="/_auth/logout"' in body
+    assert 'action="/_auth/logout"' not in head
 
 
 def test_the_nav_carries_visible_text_and_no_ad_hoc_aria() -> None:
     augmented = agent_assets._with_session_nav(UPSTREAM_HEAD, "feature-list.html")
 
-    assert ">Sign out</a>" in augmented
+    assert ">Sign out</button>" in augmented
     assert "aria-label=\"Sign out\"" not in augmented
     assert "role=" not in augmented
     assert "onclick" not in augmented
+
+
+def test_the_nav_submits_rather_than_navigates() -> None:
+    """A link to `/_auth/logout` would answer `405`; only a POST signs out."""
+    augmented = agent_assets._with_session_nav(UPSTREAM_HEAD, "feature-list.html")
+
+    assert '<form method="post" action="/_auth/logout">' in augmented
+    assert '<button type="submit">' in augmented
+    assert 'href="/_auth/logout"' not in augmented
 
 
 def test_the_styling_stands_on_its_own() -> None:
@@ -271,7 +280,9 @@ def test_post_build_augments_the_artifact_in_the_site_directory(tmp_path: Path) 
         )
     )
 
-    assert 'href="/_auth/logout"' in (site_dir / "feature-list.html").read_text(encoding="utf-8")
+    assert 'action="/_auth/logout"' in (site_dir / "feature-list.html").read_text(
+        encoding="utf-8"
+    )
     assert source.read_text(encoding="utf-8") == UPSTREAM_HEAD
 
 
