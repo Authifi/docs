@@ -126,6 +126,13 @@ variable "oidc_issuer" {
     condition     = startswith(var.oidc_issuer, "https://")
     error_message = "oidc_issuer must be an https URL."
   }
+
+  # See site_dir for why every value that travels in user data is checked for
+  # these.
+  validation {
+    condition     = length(regexall("[[:cntrl:]]", var.oidc_issuer)) == 0
+    error_message = "oidc_issuer must not contain control characters."
+  }
 }
 
 variable "oidc_client_id" {
@@ -135,6 +142,11 @@ variable "oidc_client_id" {
   validation {
     condition     = trimspace(var.oidc_client_id) != ""
     error_message = "oidc_client_id must not be empty."
+  }
+
+  validation {
+    condition     = length(regexall("[[:cntrl:]]", var.oidc_client_id)) == 0
+    error_message = "oidc_client_id must not contain control characters."
   }
 }
 
@@ -170,6 +182,17 @@ variable "site_dir" {
   validation {
     condition     = startswith(var.site_dir, "/")
     error_message = "site_dir must be an absolute path."
+  }
+
+  # This value and the others that travel in user data end up in a systemd
+  # `EnvironmentFile`, and an assignment there cannot represent a newline: a
+  # value carrying one would silently become a shorter value plus a second
+  # assignment. The bootstrap refuses them on the host as well, but user data
+  # is part of the instance's identity, so a value that fails the boot costs a
+  # replaced host to correct. The plan is the cheaper place to say no.
+  validation {
+    condition     = length(regexall("[[:cntrl:]]", var.site_dir)) == 0
+    error_message = "site_dir must not contain control characters."
   }
 }
 

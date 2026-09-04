@@ -35,6 +35,7 @@ class DeployHarness:
     curl_args_file: Path = field(init=False)
     setpriv_args_file: Path = field(init=False)
     candidate_pid_file: Path = field(init=False)
+    uvicorn_env_file: Path = field(init=False)
     service_state_file: Path = field(init=False)
     lock_path: Path = field(init=False)
     fail_candidate_health_file: Path = field(init=False)
@@ -53,6 +54,7 @@ class DeployHarness:
         self.curl_args_file = self.tmp_path / "curl-args.jsonl"
         self.setpriv_args_file = self.tmp_path / "setpriv-args.jsonl"
         self.candidate_pid_file = self.tmp_path / "candidate.pid"
+        self.uvicorn_env_file = self.tmp_path / "candidate-env.json"
         self.service_state_file = self.tmp_path / "service-running"
         self.lock_path = self.root / "deploy.lock"
         self.fail_candidate_health_file = self.tmp_path / "fail-candidate-health"
@@ -63,7 +65,7 @@ class DeployHarness:
         self.incoming_root.mkdir(parents=True)
         self.etc.mkdir(parents=True)
         self.fake_bin.mkdir(parents=True)
-        (self.etc / "environment").write_text("AUTHIFI_ENV=test\n", encoding="utf-8")
+        self.write_configuration({"AUTHIFI_ENV": "test"})
         (self.etc / "session.env").write_text("SESSION_NAME=test\n", encoding="utf-8")
         self._write_fake_commands()
 
@@ -89,12 +91,26 @@ class DeployHarness:
             "SETPRIV_ARGS_FILE": str(self.setpriv_args_file),
             "CANDIDATE_PORT": "18080",
             "CANDIDATE_PID_FILE": str(self.candidate_pid_file),
+            "UVICORN_ENV_FILE": str(self.uvicorn_env_file),
             "SERVICE_STATE_FILE": str(self.service_state_file),
             "FAIL_CANDIDATE_HEALTH_FILE": str(self.fail_candidate_health_file),
             "FAIL_ACTIVE_HEALTH_FILE": str(self.fail_active_health_file),
             "FAIL_FIRST_RESTART_FILE": str(self.fail_first_restart_file),
             "PATH": f"{self.fake_bin}:{env['PATH']}",
         }
+
+    def write_configuration(self, configuration: dict[str, str]) -> None:
+        """The strict JSON the bootstrap writes for the installer to parse."""
+        (self.etc / "config.json").write_text(
+            json.dumps(configuration), encoding="utf-8"
+        )
+
+    @property
+    def candidate_environment(self) -> dict[str, str]:
+        """The environment the candidate server was actually started with."""
+        if not self.uvicorn_env_file.exists():
+            return {}
+        return json.loads(self.uvicorn_env_file.read_text(encoding="utf-8"))
 
     @property
     def events(self) -> list[str]:
@@ -309,12 +325,26 @@ finally:
         self._write_executable(
             self.fake_bin / "uvicorn",
             """#!/usr/bin/env python3
+import json
 import os
 import signal
 import sys
 import time
 from pathlib import Path
 
+# What the installer handed the candidate server, which is the only thing that
+# says whether the configuration survived being parsed rather than sourced.
+Path(os.environ["UVICORN_ENV_FILE"]).write_text(
+    json.dumps(
+        {
+            name: value
+            for name, value in os.environ.items()
+            if name in ("OIDC_ISSUER", "OIDC_CLIENT_ID", "PUBLIC_BASE_URL", "SITE_DIR",
+                        "POST_LOGOUT_PATH", "SESSION_SECRET", "AUTHIFI_ENV", "SESSION_NAME")
+        }
+    ),
+    encoding="utf-8",
+)
 Path(os.environ["CANDIDATE_PID_FILE"]).write_text(f"{os.getpid()}\\n", encoding="utf-8")
 
 def stop(_signum, _frame):
@@ -956,6 +986,117 @@ def test_a_failed_prune_after_activation_still_keeps_the_live_release(
     assert result.returncode == 0, result.stderr
     assert (deploy_harness.releases / sha / "site" / "index.html").is_file()
     assert deploy_harness.current.resolve().name == sha
+
+
+# --- Configuration reaches the service without ever being evaluated ----------
+
+# The same values `server/tests/test_ec2_infra.py` renders through the
+# bootstrap, on the other side of the channel. There they have to survive
+# being written; here they have to survive being loaded.
+HOSTILE_CONFIGURATION_VALUES = (
+    "a value with spaces",
+    "/opt/authifi docs/current/site",
+    "$(touch CANARY)",
+    "${CANARY}",
+    "`touch CANARY`",
+    "x; touch CANARY",
+    "x && touch CANARY",
+    'a "quoted" value',
+    "a 'quoted' value",
+    "a\\backslash",
+    "a#hash",
+    "a$dollar",
+    "a=equals=sign",
+    "https://issuer.example/authorize?a=b&c=d#frag",
+)
+
+
+def test_the_configured_environment_reaches_the_candidate_server(
+    deploy_harness: DeployHarness,
+) -> None:
+    deploy_harness.write_configuration(
+        {
+            "OIDC_ISSUER": "https://issuer.authifi.io/tenants/authifi",
+            "OIDC_CLIENT_ID": "authifi-docs",
+            "PUBLIC_BASE_URL": "https://docs.authifi.io",
+            "POST_LOGOUT_PATH": "/privacy-policy/",
+        }
+    )
+    sha = "a" * 38 + "de"
+    deploy_harness.publish_archive(sha)
+
+    assert deploy_harness.run(sha).returncode == 0
+
+    environment = deploy_harness.candidate_environment
+
+    assert environment["OIDC_ISSUER"] == "https://issuer.authifi.io/tenants/authifi"
+    assert environment["OIDC_CLIENT_ID"] == "authifi-docs"
+    assert environment["PUBLIC_BASE_URL"] == "https://docs.authifi.io"
+    assert environment["POST_LOGOUT_PATH"] == "/privacy-policy/"
+    # From `session.env`, which is generated on the host and never in Terraform.
+    assert environment["SESSION_NAME"] == "test"
+    # And the probe still overrides the site the candidate serves, because it
+    # has to serve the candidate's own tree rather than the active one's.
+    assert environment["SITE_DIR"] == str(deploy_harness.releases / sha / "site")
+
+
+@pytest.mark.parametrize("value", HOSTILE_CONFIGURATION_VALUES)
+def test_a_shell_significant_configured_value_is_loaded_and_never_run(
+    deploy_harness: DeployHarness, value: str
+) -> None:
+    """This installer runs as root under the Systems Manager agent, and it used
+    to `source` the file these values arrive in.
+
+    An accepted absolute `site_dir` containing a space split into an assignment
+    plus a command and aborted every deployment; a command substitution or a
+    semicolon in any value ran as root. The values are parsed now and exported
+    one word at a time, so nothing re-evaluates a right-hand side -- which is
+    what lets the legitimate punctuation in the last case through as well.
+    """
+    canary = deploy_harness.tmp_path / "CANARY"
+    expected = value.replace("CANARY", str(canary))
+    deploy_harness.write_configuration(
+        {"OIDC_ISSUER": expected, "POST_LOGOUT_PATH": expected}
+    )
+    sha = "b" * 38 + "de"
+    deploy_harness.publish_archive(sha)
+
+    result = deploy_harness.run(sha)
+
+    assert result.returncode == 0, result.stderr
+    assert deploy_harness.candidate_environment["OIDC_ISSUER"] == expected
+    assert deploy_harness.candidate_environment["POST_LOGOUT_PATH"] == expected
+    assert not canary.exists()
+
+
+@pytest.mark.parametrize(
+    "configuration",
+    [
+        "not json at all",
+        '["a list", "not an object"]',
+        '{"lowercase": "value"}',
+        '{"HAS SPACE": "value"}',
+        '{"OIDC_ISSUER": 8080}',
+        '{"OIDC_ISSUER": null}',
+        '{"OIDC_ISSUER": "carries\\na newline"}',
+        '{"OIDC_ISSUER": "carries\\u0000a nul"}',
+    ],
+)
+def test_configuration_the_installer_cannot_trust_stops_the_deployment(
+    deploy_harness: DeployHarness, configuration: str
+) -> None:
+    """A parser that skipped what it did not understand would be a parser that
+    starts the service with a silently different environment."""
+    old = deploy_harness.seed_active_release()
+    (deploy_harness.etc / "config.json").write_text(configuration, encoding="utf-8")
+    sha = "c" * 37 + "ade"
+    deploy_harness.publish_archive(sha)
+
+    result = deploy_harness.run(sha)
+
+    assert result.returncode != 0
+    assert deploy_harness.current.resolve() == old
+    assert deploy_harness.candidate_environment == {}
 
 
 def test_the_candidate_server_is_probed_as_the_service_account(

@@ -251,12 +251,93 @@ tar -xzf "$archive" -C "$candidate"
 # candidate only after every writer that populates it has finished.
 chmod -R go-w "$candidate"
 
-set -a
-# shellcheck disable=SC1090,SC1091
-source "$etc_dir/environment"
-# shellcheck disable=SC1090,SC1091
-source "$etc_dir/session.env"
-set +a
+# The candidate server's environment, parsed rather than sourced.
+#
+# These two files were loaded with `source`, which runs as root here. That made
+# every value Terraform sets root shell: an accepted absolute `site_dir`
+# containing a space split into an assignment plus a command and aborted every
+# deployment, and a command substitution or a semicolon in any value ran. The
+# values are URLs and filesystem paths, so refusing punctuation is not an
+# option and a blacklist of shell metacharacters is never complete. Nothing
+# evaluates them now — the parser hands back one assignment per line and they
+# reach uvicorn through `env`, a word at a time.
+#
+# One line per assignment is unambiguous only because the parser refuses a
+# value carrying a control character, which it does for systemd's sake as well:
+# an `EnvironmentFile` assignment cannot represent a newline either.
+if ! assignments="$("$python_bin" - "$etc_dir/config.json" "$etc_dir/session.env" <<'PY'
+import json
+import re
+import sys
+from pathlib import Path
+
+NAME = re.compile(r"[A-Z][A-Z0-9_]*")
+
+
+def reject(message):
+    raise SystemExit(f"cannot load host configuration: {message}")
+
+
+def accept(resolved, name, value, origin):
+    if not NAME.fullmatch(name):
+        reject(f"{origin}: {name!r} is not an environment variable name")
+    if not isinstance(value, str):
+        reject(f"{origin}: {name} must be a string")
+    if any(character < " " or character == "\x7f" for character in value):
+        reject(f"{origin}: {name} carries a control character")
+    resolved[name] = value
+
+
+config_path, session_path = (Path(argument) for argument in sys.argv[1:3])
+resolved = {}
+
+# Terraform's channel onto this host: strict JSON, so a value means exactly
+# what it says and nothing about it is a token.
+try:
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+except (OSError, ValueError) as error:
+    reject(f"{config_path}: {error}")
+
+if not isinstance(config, dict):
+    reject(f"{config_path}: expected a JSON object")
+
+for name, value in config.items():
+    accept(resolved, name, value, config_path)
+
+# The session secret, in systemd's own `EnvironmentFile` format because systemd
+# reads that file too. Generated on the host, but read the same way: the one
+# file here that holds a secret should not be the one that is still shell.
+try:
+    lines = session_path.read_text(encoding="utf-8").splitlines()
+except OSError as error:
+    reject(f"{session_path}: {error}")
+
+for number, line in enumerate(lines, 1):
+    if not line.strip() or line.lstrip().startswith(("#", ";")):
+        continue
+    name, separator, value = line.partition("=")
+    if not separator:
+        reject(f"{session_path}:{number}: not an assignment")
+    if value.startswith('"'):
+        if len(value) < 2 or not value.endswith('"'):
+            reject(f"{session_path}:{number}: unterminated quote")
+        value = re.sub(r"\\(.)", r"\1", value[1:-1])
+    accept(resolved, name.strip(), value, session_path)
+
+for name, value in sorted(resolved.items()):
+    print(f"{name}={value}")
+PY
+)"; then
+  echo "host configuration under $etc_dir is not usable" >&2
+  exit 1
+fi
+
+service_environment=()
+while IFS= read -r assignment; do
+  if [[ -n "$assignment" ]]; then
+    service_environment+=("$assignment")
+  fi
+done <<< "$assignments"
 
 if [[ -z "$uvicorn_bin" ]]; then
   uvicorn_bin="$candidate/.venv/bin/uvicorn"
@@ -285,7 +366,11 @@ PY
 # "will the release systemd is about to start actually serve?", and root can
 # read a site the service user cannot — which is exactly the failure this step
 # is supposed to catch before the swap rather than after it.
-SITE_DIR="$candidate/site" "$timeout_bin" 30 \
+# `SITE_DIR` last, so the candidate serves its own tree rather than whatever
+# the active release is configured to serve.
+env ${service_environment[@]+"${service_environment[@]}"} \
+  SITE_DIR="$candidate/site" \
+  "$timeout_bin" 30 \
   "$setpriv_bin" \
   --reuid="$service_user" \
   --regid="$service_user" \

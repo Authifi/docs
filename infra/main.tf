@@ -60,13 +60,29 @@ locals {
   # out, an empty release tree, and a redeploy needed before the site answered.
   deploy_script_base64 = base64encode(file("${path.module}/scripts/deploy-release.sh"))
 
+  # Everything Terraform tells the docs server about itself, and the only
+  # channel it has. Carried as one JSON document rather than five values
+  # interpolated into a file, because that file was loaded with `source`: an
+  # accepted `site_dir` containing a space split into an assignment plus a
+  # command, and a command substitution or a semicolon in any of these ran as
+  # root on the deployment path. Neither consumer evaluates anything now --
+  # the installer parses this, and the bootstrap renders systemd's own
+  # `EnvironmentFile` from it on the host.
+  #
+  # Nothing secret belongs here: user data is readable from the instance
+  # metadata service by anything that can reach it, and it lands in Terraform
+  # state. The session secret is generated on the host for exactly that reason.
+  host_config = {
+    OIDC_ISSUER      = var.oidc_issuer
+    OIDC_CLIENT_ID   = var.oidc_client_id
+    PUBLIC_BASE_URL  = var.public_base_url
+    SITE_DIR         = var.site_dir
+    POST_LOGOUT_PATH = var.post_logout_path
+  }
+
   user_data = templatefile("${path.module}/templates/user-data.sh.tftpl", {
-    oidc_issuer      = var.oidc_issuer
-    oidc_client_id   = var.oidc_client_id
-    public_base_url  = var.public_base_url
-    site_dir         = var.site_dir
-    post_logout_path = var.post_logout_path
-    app_port         = var.app_port
+    config_json = jsonencode(local.host_config)
+    app_port    = var.app_port
   })
 }
 

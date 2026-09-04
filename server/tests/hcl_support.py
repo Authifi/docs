@@ -218,15 +218,47 @@ def strip_comments(source: str) -> str:
     return "".join(kept)
 
 
+def _condition_expression(block: str) -> str:
+    """The `condition = ...` expression, however many lines it is written over.
+
+    `attribute` stops at the newline, which is right for a value but wrong for
+    a condition: `terraform fmt` spreads a long `contains([...], var.x)` call
+    across lines, and reading only the first of them yields `contains(` and an
+    evaluator that cannot say anything about the rule.
+    """
+    match = re.search(r"^[ \t]*condition[ \t]*=[ \t]*", top_level(block), re.MULTILINE)
+
+    assert match, "this validation block declares no condition"
+
+    text = block[match.end() :]
+    depth = 0
+    offset = 0
+
+    while offset < len(text):
+        character = text[offset]
+        if character == '"':
+            offset = _end_of_string(text, offset)
+            continue
+        if character in "([{":
+            depth += 1
+        elif character in ")]}":
+            depth -= 1
+        elif character == "\n" and depth <= 0:
+            break
+        offset += 1
+
+    return " ".join(text[:offset].split())
+
+
 def variable_conditions(source: str, name: str) -> list[str]:
     """Every `validation { condition = ... }` expression one variable declares."""
     body = hcl_block(source, f'variable "{name}"')
     conditions = [
-        attribute(block, "condition") for block in nested_blocks(body, "validation")
+        _condition_expression(block) for block in nested_blocks(body, "validation")
     ]
 
     assert conditions and all(conditions), f"variable {name} declares no validation"
-    return [str(condition).strip() for condition in conditions]
+    return conditions
 
 
 # The POSIX classes the committed validations use, as the Python `re` equivalent.
@@ -243,6 +275,17 @@ _POSIX_CLASSES = {
 def _python_pattern(pattern: str) -> str:
     for posix, replacement in _POSIX_CLASSES.items():
         pattern = pattern.replace(posix, replacement)
+
+    # RE2's `$` means end of text; Python's also matches immediately before a
+    # trailing newline. Left untranslated, a fully anchored validation would
+    # look like it accepted a value with a newline welded onto the end, which
+    # is precisely the value these tests exist to prove is refused.
+    if pattern.endswith("$"):
+        head = pattern[:-1]
+        escaped = (len(head) - len(head.rstrip("\\"))) % 2 == 1
+        if not escaped:
+            pattern = head + r"\Z"
+
     return pattern
 
 
@@ -290,6 +333,12 @@ def _term_accepts(term: str, value: str) -> bool:
         held = len(value) <= int(match[1])
     elif match := re.fullmatch(r"trimspace\(var\.\w+\)\s*!=\s*\"\"", term):
         held = value.strip() != ""
+    elif match := re.fullmatch(r"contains\(\s*\[(.*)\],\s*var\.\w+\s*\)", term):
+        allowed = [
+            _unquote(literal)
+            for literal in re.findall(r'"(?:[^"\\]|\\.)*"', match[1])
+        ]
+        held = value in allowed
     else:
         raise AssertionError(f"this reader cannot evaluate the condition {term!r}")
 

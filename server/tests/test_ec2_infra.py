@@ -11,7 +11,12 @@ architecture depends on.
 
 from __future__ import annotations
 
+import json
 import re
+import shlex
+import subprocess
+import sys
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
@@ -1255,23 +1260,6 @@ def test_no_terraform_variable_output_or_template_input_carries_a_secret() -> No
         assert found is None, f"{filename} names secret material: {found and found[0]}"
 
 
-def test_the_template_receives_only_non_secret_configuration() -> None:
-    """The template's inputs are the one channel from Terraform onto the host,
-    so they are enumerated rather than searched: a name that does not read as a
-    secret can still carry one.
-    """
-    inputs = strip_comments(hcl_block(MAIN, TEMPLATE_INPUTS))
-
-    assert set(re.findall(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=", inputs, re.MULTILINE)) == {
-        "oidc_issuer",
-        "oidc_client_id",
-        "public_base_url",
-        "site_dir",
-        "post_logout_path",
-        "app_port",
-    }
-
-
 def test_the_session_secret_is_generated_on_the_host_and_kept_root_only() -> None:
     """Terraform never sees it, so the only thing that may assign it is the
     host's own CSPRNG, and the file it lands in must never be readable by the
@@ -1322,6 +1310,334 @@ def test_user_data_no_longer_carries_the_installer() -> None:
     assert "authifi-docs-deploy" not in bootstrap
     assert "base64" not in bootstrap
     assert "deploy_script_base64" not in strip_comments(hcl_block(MAIN, TEMPLATE_INPUTS))
+
+
+# --- Terraform's values on their way onto the host ----------------------------
+#
+# These five reach the instance through user data and end up in the docs
+# server's environment. They used to be interpolated into a file that
+# `deploy-release.sh` loaded with `source`, which made every one of them root
+# shell on the deployment path: an accepted `site_dir` carrying a space split
+# into an assignment plus a command, and a command substitution or a semicolon
+# in any value ran as root. Neither consumer evaluates anything now -- the
+# installer parses JSON, and systemd's own `EnvironmentFile` is rendered from
+# that JSON by one serializer on the host.
+
+# Values a real deployment uses, and the base every hostile variant below is
+# built from.
+BOOTSTRAP_VALUES = {
+    "oidc_issuer": "https://issuer.authifi.io/tenants/authifi",
+    "oidc_client_id": "authifi-docs",
+    "public_base_url": "https://docs.authifi.io",
+    "site_dir": "/opt/authifi-docs/current/site",
+    "post_logout_path": "/privacy-policy/",
+    "app_port": "8080",
+}
+
+# Every way a value could try to become code in a shell that loaded it, plus
+# the punctuation a legitimate path or URL is entitled to. Each one has to
+# arrive in the service's environment byte for byte.
+HOSTILE_VALUES = (
+    "a value with spaces",
+    "/opt/authifi docs/current/site",
+    "$(touch CANARY)",
+    "${CANARY}",
+    "`touch CANARY`",
+    "x; touch CANARY",
+    "x && touch CANARY",
+    "x | touch CANARY",
+    "x > CANARY",
+    'a "quoted" value',
+    "a 'quoted' value",
+    "a\\backslash",
+    'trailing backslash and quote \\"',
+    "a#hash",
+    "a$dollar",
+    "a=equals=sign",
+    "  leading and trailing  ",
+    "https://issuer.example/authorize?a=b&c=d#frag",
+)
+
+
+def host_config_mapping() -> dict[str, str]:
+    """`local.host_config`, as environment variable name -> Terraform variable.
+
+    Read from the HCL rather than restated, so a value added to the channel
+    without a test is a value the renderer below does not know how to supply.
+    """
+    body = strip_comments(hcl_block(MAIN, "host_config ="))
+    mapping = {
+        match[1]: match[2]
+        for match in re.finditer(
+            r"^\s*([A-Z][A-Z0-9_]*)\s*=\s*var\.([a-z_]+)\s*$", body, re.MULTILINE
+        )
+    }
+
+    assert mapping, "local.host_config declares no NAME = var.name entries"
+    return mapping
+
+
+def test_the_bootstrap_template_uses_only_plain_variable_interpolations() -> None:
+    """The tests below render this template in Python, and the emulation is
+    only faithful if the template stays within what it emulates.
+
+    `templatefile` also evaluates directives (`%{ if ... }`), function calls,
+    and `$${` escapes, none of which a single substitution pass reproduces --
+    so a template that grew one would be rendered wrongly by a test that then
+    kept passing.
+    """
+    assert "%{" not in USER_DATA
+    assert "$${" not in USER_DATA
+
+    for interpolation in re.findall(r"\$\{([^}]*)\}", USER_DATA):
+        assert re.fullmatch(r"[a-z_][a-z0-9_]*", interpolation), interpolation
+
+
+def render_user_data(**overrides: str) -> str:
+    """The bootstrap script `templatefile` would produce for these values."""
+    values = {**BOOTSTRAP_VALUES, **overrides}
+    inputs = {
+        "config_json": json.dumps(
+            {
+                name: values[variable]
+                for name, variable in host_config_mapping().items()
+            }
+        ),
+        "app_port": values["app_port"],
+    }
+    declared = set(re.findall(r"\$\{([a-z_][a-z0-9_]*)\}", USER_DATA))
+
+    assert declared == set(inputs), declared
+    return re.sub(r"\$\{([a-z_][a-z0-9_]*)\}", lambda match: inputs[match[1]], USER_DATA)
+
+
+def test_the_rendered_bootstrap_fits_in_the_space_ec2_gives_user_data() -> None:
+    """16 KiB, and the instance simply fails to bootstrap past it."""
+    assert len(render_user_data().encode("utf-8")) < 16384
+
+
+CONFIG_SECTION_FIRST_LINE = "cat > /etc/authifi-docs/config.json"
+CONFIG_SECTION_LAST_LINE = "chmod 0600 /etc/authifi-docs/environment"
+
+
+@dataclass
+class BootstrapHarness:
+    """The part of the bootstrap that writes configuration, run for real.
+
+    The rest of it installs packages, creates a system user, and enables a
+    unit, so the section that turns Terraform's values into files is extracted
+    and pointed at a temporary directory. The canary is how "no side effect"
+    is asserted rather than assumed: a value carrying a command substitution
+    names it, so anything that evaluated the value would create it.
+    """
+
+    tmp_path: Path
+    etc: Path = field(init=False)
+    canary: Path = field(init=False)
+    result: subprocess.CompletedProcess[str] | None = field(default=None, init=False)
+
+    def __post_init__(self) -> None:
+        self.etc = self.tmp_path / "etc" / "authifi-docs"
+        self.etc.mkdir(parents=True)
+        self.canary = self.tmp_path / "CANARY"
+
+    def run(self, **overrides: str) -> subprocess.CompletedProcess[str]:
+        rendered = render_user_data(
+            **{
+                name: value.replace("CANARY", str(self.canary))
+                for name, value in overrides.items()
+            }
+        )
+        lines = rendered.splitlines(keepends=True)
+        start = next(
+            index
+            for index, line in enumerate(lines)
+            if line.startswith(CONFIG_SECTION_FIRST_LINE)
+        )
+        end = next(
+            index
+            for index, line in enumerate(lines)
+            if line.startswith(CONFIG_SECTION_LAST_LINE)
+        )
+        section = "".join(lines[start : end + 1])
+
+        assert "config.json" in section and "environment" in section
+
+        script = self.tmp_path / "write-config.sh"
+        script.write_text(
+            "set -euo pipefail\n"
+            + section.replace("/etc/authifi-docs", str(self.etc)).replace(
+                "python3 ", f"{sys.executable} "
+            ),
+            encoding="utf-8",
+        )
+        self.result = subprocess.run(
+            ["bash", str(script)],
+            cwd=self.tmp_path,
+            capture_output=True,
+            text=True,
+        )
+        return self.result
+
+    @property
+    def configuration(self) -> dict[str, object]:
+        return json.loads((self.etc / "config.json").read_text(encoding="utf-8"))
+
+    @property
+    def environment_file(self) -> str:
+        return (self.etc / "environment").read_text(encoding="utf-8")
+
+    @property
+    def systemd_environment(self) -> dict[str, str]:
+        """The environment file decoded the way systemd documents it.
+
+        Double-quoted, with backslash escapes, which is also POSIX shell's
+        rule for the two characters that are escaped -- so `shlex` in POSIX
+        mode is an independent decoder rather than a second copy of the
+        renderer under test.
+        """
+        decoded: dict[str, str] = {}
+        for line in self.environment_file.splitlines():
+            name, separator, quoted = line.partition("=")
+
+            assert separator, line
+            assert quoted.startswith('"') and quoted.endswith('"'), line
+
+            parts = shlex.split(quoted, posix=True)
+            decoded[name] = parts[0] if parts else ""
+        return decoded
+
+
+@pytest.fixture
+def bootstrap_harness(tmp_path: Path) -> BootstrapHarness:
+    return BootstrapHarness(tmp_path)
+
+
+def test_the_bootstrap_writes_the_configured_values_verbatim(
+    bootstrap_harness: BootstrapHarness,
+) -> None:
+    result = bootstrap_harness.run()
+
+    assert result.returncode == 0, result.stderr
+    assert bootstrap_harness.configuration == {
+        name: BOOTSTRAP_VALUES[variable]
+        for name, variable in host_config_mapping().items()
+    }
+    assert bootstrap_harness.systemd_environment == bootstrap_harness.configuration
+
+
+@pytest.mark.parametrize("value", HOSTILE_VALUES)
+def test_a_shell_significant_value_survives_the_bootstrap_without_running(
+    bootstrap_harness: BootstrapHarness, value: str
+) -> None:
+    """The reviewer's example is the space, and it is the mild one: an accepted
+    absolute `site_dir` containing one used to split into an assignment plus a
+    command. The command substitutions are the reason the fix is encoding
+    rather than a metacharacter blacklist -- the list is never complete, and
+    the legitimate values here are URLs and paths entitled to punctuation.
+    """
+    result = bootstrap_harness.run(site_dir=value, oidc_client_id=value)
+    expected = value.replace("CANARY", str(bootstrap_harness.canary))
+
+    assert result.returncode == 0, result.stderr
+    assert bootstrap_harness.configuration["SITE_DIR"] == expected
+    assert bootstrap_harness.configuration["OIDC_CLIENT_ID"] == expected
+    assert bootstrap_harness.systemd_environment["SITE_DIR"] == expected
+    assert bootstrap_harness.systemd_environment["OIDC_CLIENT_ID"] == expected
+    assert not bootstrap_harness.canary.exists()
+
+
+def test_the_environment_file_quotes_every_value_it_writes(
+    bootstrap_harness: BootstrapHarness,
+) -> None:
+    """systemd performs no command substitution when it reads an
+    `EnvironmentFile`, but an unquoted value carrying a space or a quote still
+    parses as something other than what Terraform set."""
+    bootstrap_harness.run(site_dir='/opt/a "b"\\c dir')
+
+    lines = bootstrap_harness.environment_file.splitlines()
+
+    assert lines, "the environment file is empty"
+    for line in lines:
+        assert re.fullmatch(r'[A-Z][A-Z0-9_]*="(?:[^"\\]|\\.)*"', line), line
+
+    assert 'SITE_DIR="/opt/a \\"b\\"\\\\c dir"' in lines
+
+
+@pytest.mark.parametrize("value", ["a\nb", "a\rb", "a\x00b", "a\x7fb", "a\tb"])
+def test_a_control_character_fails_the_bootstrap_rather_than_truncating(
+    bootstrap_harness: BootstrapHarness, value: str
+) -> None:
+    """An `EnvironmentFile` assignment cannot represent a newline at all, so a
+    value carrying one would silently become a shorter value and, worse, a
+    second assignment. Terraform refuses these at plan time; this is the check
+    that does not depend on that one being complete.
+    """
+    result = bootstrap_harness.run(site_dir=value)
+
+    assert result.returncode != 0
+    assert "control character" in (result.stderr + result.stdout)
+    assert not (bootstrap_harness.etc / "environment").exists()
+
+
+def test_both_configuration_files_are_root_only(
+    bootstrap_harness: BootstrapHarness,
+) -> None:
+    """systemd reads `EnvironmentFile` as root before dropping privileges, and
+    the installer runs as root, so nothing here needs to be readable by the
+    service account."""
+    bootstrap_harness.run()
+
+    for name in ("config.json", "environment"):
+        mode = (bootstrap_harness.etc / name).stat().st_mode & 0o777
+
+        assert mode == 0o600, f"{name} is {oct(mode)}"
+
+
+def test_the_template_channel_is_one_json_document_and_the_port() -> None:
+    """The template's inputs are enumerated rather than searched, because a
+    second string input is a second thing interpolated into a file."""
+    inputs = strip_comments(hcl_block(MAIN, TEMPLATE_INPUTS))
+
+    assert set(re.findall(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=", inputs, re.MULTILINE)) == {
+        "config_json",
+        "app_port",
+    }
+    assert attribute(inputs, "config_json") == "jsonencode(local.host_config)"
+    assert set(host_config_mapping()) == {
+        "OIDC_ISSUER",
+        "OIDC_CLIENT_ID",
+        "PUBLIC_BASE_URL",
+        "SITE_DIR",
+        "POST_LOGOUT_PATH",
+    }
+
+
+def test_the_installer_never_evaluates_generated_configuration_as_shell() -> None:
+    """`source` was the whole vulnerability. Nothing here loads a generated
+    file as code any more, and the JSON one is what it reads instead."""
+    installer = re.sub(
+        r"(?m)^[ \t]*#.*$", "", (ROOT / "infra" / "scripts" / "deploy-release.sh").read_text(encoding="utf-8")
+    )
+
+    assert not re.search(r"(?m)^\s*source\s", installer)
+    assert not re.search(r"(?m)^\s*\.\s+[\"'$/]", installer)
+    assert "set -a" not in installer
+    assert "config.json" in installer
+
+
+@pytest.mark.parametrize("variable", sorted(set(host_config_mapping().values())))
+def test_no_value_reaching_the_host_may_carry_a_control_character(variable: str) -> None:
+    """Refused in the plan as well as on the host. The renderer fails the boot
+    on one, and a value that fails the boot is one that costs a replaced
+    instance to correct, because user data is part of the instance's identity.
+    """
+    accepted = BOOTSTRAP_VALUES[variable]
+
+    assert variable_accepts(VARIABLES, variable, accepted), accepted
+    for control in ("\n", "\r", "\x00", "\x1f", "\x7f"):
+        assert not variable_accepts(VARIABLES, variable, accepted + control)
+        assert not variable_accepts(VARIABLES, variable, control + accepted)
 
 
 def test_the_document_delivers_the_installer_with_the_command_that_runs_it() -> None:

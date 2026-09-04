@@ -258,6 +258,15 @@ Terraform passes only non-secret values into user data:
 - `SITE_DIR`
 - `POST_LOGOUT_PATH`
 
+They travel as one JSON document (`local.host_config`, rendered with `jsonencode`) and land in `/etc/authifi-docs/config.json` at `0600 root`. Neither of the two things that read it evaluates anything:
+
+- `deploy-release.sh` parses the JSON and hands the values to the candidate server through `env`, one word at a time.
+- The bootstrap renders `/etc/authifi-docs/environment` from the same JSON, double-quoting and backslash-escaping each value, for systemd's `EnvironmentFile=`. `session.env` is generated on the host in the same format and is parsed rather than sourced too.
+
+This replaced interpolating the five values into a file that the installer loaded with `source` as root. That made each of them root shell on the deployment path: an accepted absolute `site_dir` containing a space split into an assignment plus a command and aborted every deployment, and a command substitution or a semicolon in any value ran. Refusing punctuation was not an option — these are URLs and filesystem paths — and a shell metacharacter blacklist is never complete, so the format changed instead.
+
+Control characters are the one thing refused rather than encoded, at plan time and again on the host. An `EnvironmentFile` assignment cannot represent a newline, so a value carrying one would silently become a shorter value plus a second assignment.
+
 `post_logout_path` defaults to `/privacy-policy/` and is validated at plan time: it must be site-relative, free of backslashes and control characters, and one of the paths the server actually serves publicly.
 
 There is intentionally **no** `OIDC_CLIENT_SECRET` anywhere in production. This Authlib application is server-side and still needs outbound NAT egress, but the Authifi registration is a public client that uses PKCE instead of a secret. The session key is generated on the host at first boot and is never written into Terraform state.

@@ -410,7 +410,7 @@ The server performs RP-initiated logout against the tenant's discovered `end_ses
 
 The landing path is `POST_LOGOUT_PATH`, wired end to end:
 
-- production: the `post_logout_path` Terraform variable, which the EC2 bootstrap writes into `/etc/authifi-docs/environment` as `POST_LOGOUT_PATH`. Terraform validates at plan time that it is site-relative and one of the exact public pages, so a protected path cannot reach production.
+- production: the `post_logout_path` Terraform variable, which reaches the host in `/etc/authifi-docs/config.json` and becomes `POST_LOGOUT_PATH` in the service's environment. Terraform validates at plan time that it is site-relative and one of the exact public pages, so a protected path cannot reach production.
 - local real and mock stacks: `POST_LOGOUT_PATH` in `.env` or the environment, read by `compose.yaml` for both overlays.
 
 The server re-checks the value at startup against the same list and refuses to start if it fails, so a misconfigured local stack fails on `make local-up` rather than silently misbehaving at the first logout. The list is the exact public paths only; the public prefixes serve stylesheets, scripts, and well-known documents, none of which is a page to land on.

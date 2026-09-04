@@ -69,13 +69,61 @@ install -d -m 0755 -o root -g root /opt/authifi-docs/releases
 install -d -m 0700 -o root -g root /opt/authifi-docs/incoming
 install -d -m 0700 -o root -g root /etc/authifi-docs
 
-cat > /etc/authifi-docs/environment <<'ENV'
-OIDC_ISSUER=${oidc_issuer}
-OIDC_CLIENT_ID=${oidc_client_id}
-PUBLIC_BASE_URL=${public_base_url}
-SITE_DIR=${site_dir}
-POST_LOGOUT_PATH=${post_logout_path}
-ENV
+# Terraform's values arrive as one JSON document, and neither of the two things
+# that read them evaluates anything.
+#
+# They used to be interpolated into a file that `deploy-release.sh` loaded with
+# `source`, which made every one of them root shell on the deployment path: an
+# accepted absolute `site_dir` containing a space split into an assignment plus
+# a command and aborted every deployment, and a command substitution or a
+# semicolon in any value ran as root. A blacklist of shell metacharacters is
+# the wrong answer -- the list is never complete, and the legitimate values
+# here are URLs and filesystem paths with every right to punctuation. So the
+# format changed instead: JSON, which the installer parses, and a systemd
+# `EnvironmentFile` rendered from it below by one serializer.
+#
+# The heredoc is quoted, so the shell writing this file expands nothing either.
+cat > /etc/authifi-docs/config.json <<'CONFIG'
+${config_json}
+CONFIG
+chmod 0600 /etc/authifi-docs/config.json
+
+# systemd reads `EnvironmentFile` itself and performs no command substitution,
+# but an unquoted value carrying a space or a quote still parses as something
+# other than what Terraform set. Rendered here rather than interpolated a
+# second time, so there is one place where escaping happens and one format to
+# get right.
+#
+# Control characters are refused rather than escaped. An `EnvironmentFile`
+# assignment cannot represent a newline at all, so a value carrying one would
+# become a shorter value and a second assignment; the variables are validated
+# against them at plan time too, and this is the check that does not depend on
+# that one being complete.
+python3 - /etc/authifi-docs/config.json /etc/authifi-docs/environment <<'RENDER'
+import json
+import re
+import sys
+from pathlib import Path
+
+source, destination = (Path(argument) for argument in sys.argv[1:3])
+configuration = json.loads(source.read_text(encoding="utf-8"))
+
+if not isinstance(configuration, dict):
+    raise SystemExit(f"{source} must hold a JSON object")
+
+assignments = []
+for name, value in sorted(configuration.items()):
+    if not re.fullmatch(r"[A-Z][A-Z0-9_]*", name):
+        raise SystemExit(f"{source}: {name!r} is not an environment variable name")
+    if not isinstance(value, str):
+        raise SystemExit(f"{source}: {name} must be a JSON string")
+    if any(character < " " or character == "\x7f" for character in value):
+        raise SystemExit(f"{source}: {name} contains a control character")
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    assignments.append(f'{name}="{escaped}"\n')
+
+destination.write_text("".join(assignments), encoding="utf-8")
+RENDER
 chmod 0600 /etc/authifi-docs/environment
 
 # Generated on the host and never in Terraform state, and deliberately not
