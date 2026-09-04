@@ -26,6 +26,8 @@ MOCK_COMPOSE = REPO_ROOT / "compose.mock.yaml"
 
 DEFAULT_MOCK_HOST = "oidc-mock.127.0.0.1.nip.io"
 CI_MOCK_HOST = "oidc-mock.local.test"
+DEFAULT_MOCK_PORT = "9400"
+CUSTOM_MOCK_PORT = "9500"
 
 INTERPOLATION = re.compile(r"\$\{(?P<name>[A-Za-z_][A-Za-z0-9_]*)(?::-(?P<default>[^}]*))?\}")
 
@@ -159,3 +161,31 @@ def test_rendered_default_mock_stack_uses_the_nip_io_hostname() -> None:
     rendered = render_compose({})
 
     assert DEFAULT_MOCK_HOST in service_aliases(rendered["services"]["mock-oidc"])
+
+
+@docker_compose
+@pytest.mark.parametrize("port", [DEFAULT_MOCK_PORT, CUSTOM_MOCK_PORT])
+def test_mock_oidc_port_reaches_every_place_the_port_appears(port: str) -> None:
+    """`MOCK_OIDC_PORT` has to move the provider, not just the host mapping.
+
+    The issuer URL carries this port, and since the docs container now dials the
+    provider directly on the Compose network, the provider has to be listening
+    on it. Publishing `9500:9400` would satisfy the host and strand the
+    container.
+    """
+    services = render_compose({"MOCK_OIDC_HOST": CI_MOCK_HOST, "MOCK_OIDC_PORT": port})["services"]
+    mock = services["mock-oidc"]
+
+    assert services["docs"]["environment"]["OIDC_ISSUER"] == f"http://{CI_MOCK_HOST}:{port}"
+
+    command = mock["command"]
+    assert port in command, f"provider is not told to listen on {port}: {command}"
+    assert command[command.index(port) - 1] in ("--port", "-p")
+
+    published = mock["ports"]
+    assert [(p["host_ip"], p["published"], str(p["target"])) for p in published] == [
+        ("127.0.0.1", port, port)
+    ]
+
+    healthcheck = " ".join(mock["healthcheck"]["test"])
+    assert f"127.0.0.1:{port}/" in healthcheck, healthcheck

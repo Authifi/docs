@@ -26,11 +26,18 @@ resolves each half separately.
 - **From the docs container**, the hostname is a Compose network alias on the
   `mock-oidc` service, so it resolves to that container's address on the default
   network. No host involvement and no DNS lookup.
-- **From the host**, the provider publishes `9400` on `127.0.0.1` only, and the
-  hostname has to resolve to loopback (see below).
+- **From the host**, the provider publishes `$MOCK_OIDC_PORT` (`9400` by
+  default) on `127.0.0.1` only, and the hostname has to resolve to loopback
+  (see below).
 
-Both halves therefore answer to `http://$MOCK_OIDC_HOST:9400` while the
-container's traffic stays inside Docker's network.
+Both halves therefore answer to `http://$MOCK_OIDC_HOST:$MOCK_OIDC_PORT` while
+the container's traffic stays inside Docker's network.
+
+Because the issuer URL carries the port and the container dials the provider
+directly, `MOCK_OIDC_PORT` has to move the provider's own listen port, not just
+the host mapping: `compose.mock.yaml` passes it to the provider as `--port`,
+publishes it unshifted, and uses it in the healthcheck. Publishing `9500:9400`
+would satisfy the host and leave the container dialling a closed port.
 
 This is not merely tidier than the previous `extra_hosts: <host>:host-gateway`
 mapping on the `docs` service — that mapping was broken on Linux. It pointed the
@@ -40,7 +47,8 @@ routes it to the host's loopback anyway and so masked the bug; a standard Linux
 engine surfaced it as a `500` from `/_auth/login` when Authlib fetched
 discovery. Keep the port loopback-only and let the alias carry container
 traffic. `server/tests/test_compose.py` renders the stack and fails if
-`host-gateway` returns or the alias goes missing.
+`host-gateway` returns, the alias goes missing, or `MOCK_OIDC_PORT` stops
+reaching every place the port appears.
 
 ### The Default Mock Hostname Needs Public DNS On The Host
 

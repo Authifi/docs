@@ -14,6 +14,11 @@ services:
     command:
       - --user-claims-file
       - /config/users.yaml
+      # The issuer URL carries this port and the docs container dials the
+      # provider directly, so the provider itself has to listen on it rather
+      # than relying on a port shift in the host mapping.
+      - --port
+      - "${MOCK_OIDC_PORT:-9400}"
     networks:
       default:
         # The container half of the issuer hostname: docs reaches the provider
@@ -25,7 +30,7 @@ services:
           - "${MOCK_OIDC_HOST:-oidc-mock.127.0.0.1.nip.io}"
     ports:
       # Loopback only: the host smoke client needs this, the LAN does not.
-      - "127.0.0.1:${MOCK_OIDC_PORT:-9400}:9400"
+      - "127.0.0.1:${MOCK_OIDC_PORT:-9400}:${MOCK_OIDC_PORT:-9400}"
     volumes:
       - ./local/mock-oidc-users.yaml:/config/users.yaml:ro
     cap_drop:
@@ -37,7 +42,7 @@ services:
         - CMD
         - python
         - -c
-        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9400/.well-known/openid-configuration').read()"
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:${MOCK_OIDC_PORT:-9400}/.well-known/openid-configuration').read()"
       interval: 5s
       timeout: 3s
       retries: 20

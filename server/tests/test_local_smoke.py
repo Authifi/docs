@@ -378,7 +378,7 @@ def test_diagnostic_commands_cover_status_and_both_service_logs(tmp_path: Path) 
     joined = [" ".join(command) for command in commands]
     assert any(command.endswith(" ps") for command in joined)
     for service in ("docs", "mock-oidc"):
-        assert any(f"logs --no-color --tail" in c and c.endswith(service) for c in joined)
+        assert any("logs --no-color --tail" in c and c.endswith(service) for c in joined)
 
 
 def test_diagnostic_commands_use_both_compose_files(tmp_path: Path) -> None:
