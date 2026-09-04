@@ -1,0 +1,80 @@
+aws_region   = "us-east-1"
+service_name = "authifi-docs"
+
+# Authifi's existing shared network. This root creates no VPC, subnets, routes,
+# or NAT Gateway; it validates that all three IDs belong together and attaches
+# to them.
+#
+# The two public subnets must be distinct and in different availability zones,
+# because an internet-facing application load balancer will not accept fewer.
+# The private application subnet's existing route table must already route
+# 0.0.0.0/0 through the shared NAT Gateway: the docs server performs OIDC
+# discovery and the authorization-code exchange itself, and first boot installs
+# one Ubuntu package.
+vpc_id                = "vpc-0123456789abcdef0"
+public_subnet_ids     = ["subnet-0123456789abcdef0", "subnet-0123456789abcdef1"]
+private_app_subnet_id = "subnet-0123456789abcdef2"
+
+instance_type        = "t3.micro"
+root_volume_size_gib = 20
+app_port             = 8080
+
+# Leave null to derive "<service_name>-releases-<account id>".
+release_bucket_name    = null
+release_retention_days = 90
+
+# Non-secret. This client is a public PKCE client, so there is no client secret
+# to hold anywhere, and the session secret is generated on the host at first
+# boot rather than passed in.
+oidc_issuer     = "https://issuer.example.com"
+oidc_client_id  = "authifi-docs"
+public_base_url = "https://docs.authifi.io"
+site_dir        = "/opt/authifi-docs/current/site"
+
+# Must be a publicly served path, and must be registered with Authifi as a
+# post-logout redirect URI.
+post_logout_path = "/privacy-policy/"
+
+custom_domain_name = "docs.authifi.io"
+
+# Leave false for the first apply. The certificate is requested but cannot be
+# validated until its DNS records exist, and AWS refuses to attach a pending
+# certificate to an HTTPS listener. Read
+# `terraform output certificate_validation_records`, create those records, wait
+# for the certificate to report ISSUED, then apply again with this set to true.
+enable_https_listener = false
+
+# The load balancer owns the name users reach the docs through. Leave this true;
+# tearing the stack down is one apply longer, with this set to false first.
+enable_alb_deletion_protection = true
+
+# The release bucket is versioned. Leave this false; teardown applies with this
+# true first so destroy can empty the bucket.
+release_bucket_force_destroy = false
+
+# Set this only if the account already has a shared GitHub OIDC provider.
+existing_github_oidc_provider_arn = null
+
+# The deployment role trusts one repository, one branch, and one GitHub
+# Actions environment, and all four values below have to agree with
+# `.github/workflows/deploy.yml`.
+#
+# `deploy_environment` is the one that is easy to get wrong. Because the
+# deployment job declares `environment: production`, the OIDC subject GitHub
+# issues names the environment rather than the ref, so a trust policy written
+# against `ref:refs/heads/main` is never satisfied. `deploy_branch` is bound
+# separately, through the token's own `ref` claim.
+#
+# `github_repository_id` is the numeric ID from the GitHub repository API
+# (`gh api repos/Authifi/docs --jq .id`). Numeric IDs are never reused, so this
+# is the part of the identity that a repository recreated under the same name
+# cannot inherit.
+github_repository    = "Authifi/docs"
+github_repository_id = "993416679"
+deploy_branch        = "main"
+deploy_environment   = "production"
+
+tags = {
+  Environment = "prod"
+  Project     = "authifi-docs"
+}

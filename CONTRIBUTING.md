@@ -1,213 +1,138 @@
 # Contributing to Authifi Documentation
 
-Use this guide to make changes to the Authifi documentation.
+This repository now ships a protected documentation site: most pages require Authifi OIDC login in production, while a small set of legal and agent-discovery assets remain public. Contributing is still straightforward, but local validation matters more than it did for the old static-only hosting model.
 
-## Quick Start (No Setup Required)
+## Choose Your Workflow
 
-You can edit documentation directly on GitHub without installing anything on your computer.
+For quick text-only edits, GitHub.com or GitHub.dev is fine. For anything that touches navigation, generated assets, access behavior, or deployment docs, use a local checkout so you can run the same checks as CI.
 
-### Option 1: Edit a Single File on GitHub.com
+## Local Preview Options
 
-This is the simplest approach for quick edits to a single file.
+### Static MkDocs preview
 
-**Step 1: Navigate to the file**
+Use this when you only need to inspect page content, styling, and navigation:
 
-1. Go to [github.com/AxleResearch/authifi-docs](https://github.com/AxleResearch/authifi-docs)
-2. Click on the `docs` folder
-3. Navigate to the file you want to edit (e.g., `guides/tenant-admin-guide.md`)
-
-**Step 2: Enter edit mode**
-
-1. Click the **pencil icon** in the top-right corner of the file view
-2. The icon tooltip says "Edit this file"
-
-**Step 3: Make your changes**
-
-1. Edit the content using the GitHub editor
-2. Use the **Preview** tab to see how your Markdown will render
-
-**Step 4: Create a pull request**
-
-1. Scroll down to the "Commit changes" section
-2. Enter a short description of your change (e.g., "Fix typo in tenant admin guide")
-3. Select **"Create a new branch for this commit and start a pull request"**
-4. GitHub will suggest a branch name like `username-patch-1`. You can keep it or change it.
-5. Click **Propose changes**
-6. On the next page, review your changes and click **Create pull request**
-
-### Option 2: Use GitHub.dev (VS Code in Browser)
-
-This is better for editing multiple files or making larger changes.
-
-**Step 1: Open the web editor**
-
-1. Go to [github.com/AxleResearch/authifi-docs](https://github.com/AxleResearch/authifi-docs)
-2. Press the `.` key (period) on your keyboard
-3. This opens a full VS Code editor in your browser at `github.dev`
-
-**Step 2: Make your changes**
-
-1. Use the file explorer on the left to navigate to files in the `docs/` folder
-2. Edit files just like in regular VS Code
-3. You can edit multiple files before committing
-
-**Step 3: Commit your changes**
-
-1. Click the **Source Control** icon in the left sidebar (or press `Ctrl+Shift+G`)
-2. You'll see a list of changed files
-3. Enter a commit message in the text box at the top
-4. Click the **checkmark** to commit
-
-**Step 4: Create a pull request**
-
-1. After committing, click the **branch icon** in the bottom-left corner
-2. Select **"Create Pull Request"**
-3. Fill in the PR title and description
-4. Click **Create**
-
-### Option 3: Create a New File
-
-To add a new documentation page:
-
-1. Navigate to the appropriate folder (e.g., `docs/guides/`)
-2. Click **Add file** → **Create new file**
-3. Enter a filename ending in `.md` (e.g., `my-new-guide.md`)
-4. Add your content starting with a heading: `# My New Guide`
-5. Follow the same commit and PR process as Option 1
-
-**Important**: After adding a new file, you'll also need to update `mkdocs.yml` to add it to the navigation (see [Adding New Pages](#adding-new-pages)).
-
----
-
-## Viewing Preview Deployments
-
-Every pull request automatically gets a **preview deployment** so you can see exactly how your changes will look on the live site.
-
-### How it works
-
-1. When you create or update a pull request, Cloudflare Pages automatically builds a preview
-2. The build takes about 1-2 minutes
-3. A bot will comment on your PR with the preview URL
-
-### Finding the preview link
-
-Look for a comment from the Cloudflare Pages bot on your pull request. It will include a link like:
-
-```
-https://abc123.authifi.pages.dev
+```bash
+make serve
 ```
 
-You can also find the preview URL in the **Checks** section of your PR:
+That runs `mkdocs serve` at `http://127.0.0.1:8000` with hot reload.
 
-1. Scroll down to the checks at the bottom of your PR
-2. Look for "Cloudflare Pages"
-3. Click **Details** to go directly to the preview
+### Production-like OIDC preview
 
-### What to check in the preview
+Use the real OIDC flow when you need to validate auth redirects, protected routes, or copy that references production behavior:
 
-Before requesting a review, verify:
-
-- [ ] Your content appears correctly formatted
-- [ ] All links work (internal and external)
-- [ ] Code blocks display properly
-- [ ] Tables render correctly
-- [ ] The navigation menu includes any new pages
-- [ ] Search finds your new content (type in the search box)
-
-### Preview vs. Production
-
-- **Preview URL**: `https://<build-id>.authifi.pages.dev`, unique to each PR
-- **Production URL**: `https://docs.authifi.io`, updated when PRs are merged to `main`
-
----
-
-## Documentation Structure
-
-```
-docs/
-├── index.md                 # Home page
-├── authorization/           # Authorization concepts and admin roles
-├── guides/                  # Step-by-step administrator guides
-└── security/               # Security configuration and best practices
+```bash
+cp .env.example .env
+make local-up
 ```
 
-## Writing Guidelines
+Set these values in `.env` first:
 
-### File Format
+- `OIDC_ISSUER`
+- `OIDC_CLIENT_ID`
+- `OIDC_CLIENT_SECRET`
+- `SESSION_SECRET`
+- `PUBLIC_BASE_URL`
 
-- All documentation is written in **Markdown** (`.md` files)
-- Use standard Markdown syntax for headings, lists, links, and code blocks
+The matching local Authifi application must allow the callback URL at `http://localhost:8000/_auth/callback` and the post-logout redirect URI at `http://localhost:8000/privacy-policy/`, unless you intentionally run on another base URL.
 
-### Headings
+### Mock OIDC preview
 
-- Use `#` for the page title (only one per page)
-- Use `##` for major sections
-- Use `###` for subsections
-- Don't skip heading levels (e.g., don't go from `##` to `####`)
+Use the mock flow when you want the protected-site behavior without tenant credentials:
 
-### Code Blocks
-
-Use triple backticks with a language identifier:
-
-````markdown
-```json
-{
-  "example": "code"
-}
-```
-````
-
-### Tables
-
-Use Markdown tables for structured information:
-
-```markdown
-| Column 1 | Column 2 | Column 3 |
-| -------- | -------- | -------- |
-| Value 1  | Value 2  | Value 3  |
+```bash
+make local-mock-up
 ```
 
-### Admonitions (Notes and Warnings)
+This launches the docs server and a local OIDC test provider. Run the end-to-end smoke test with:
 
-Use admonition syntax for callouts:
-
-```markdown
-!!! note
-This is a note with additional information.
-
-!!! warning
-This is a warning about potential issues.
-
-!!! tip
-This is a helpful tip.
+```bash
+make local-smoke
 ```
 
-### Links
+Bring the local stack down with:
 
-- **Internal links**: Use relative paths: `[Link Text](../guides/tenant-admin-guide.md)`
-- **External links**: Use full URLs: `[Link Text](https://example.com)`
-
-## Adding New Pages
-
-1. Create a new `.md` file in the appropriate folder (`authorization/`, `guides/`, or `security/`)
-2. Add a title as the first line: `# Page Title`
-3. Update `mkdocs.yml` to add your page to the navigation
-
-Example addition to `mkdocs.yml`:
-
-```yaml
-nav:
-  - Guides:
-      - Your New Guide: guides/your-new-guide.md
+```bash
+make local-down
 ```
 
-## Local Development (Optional)
+The mock issuer URL has to resolve for both the docs container and your machine, and `compose.mock.yaml` handles each separately: the container reaches the provider through a Compose network alias, while your machine reaches the port published on `127.0.0.1`. Only your side needs DNS, and `MOCK_OIDC_HOST` defaults to `oidc-mock.127.0.0.1.nip.io`, a public wildcard resolver that maps any `*.127.0.0.1.nip.io` name to `127.0.0.1`. That default therefore needs working public DNS, and it fails in two ways that look like a broken mock rather than a broken lookup: offline or egress-filtered machines cannot resolve it at all, and DNS rebinding protection on many routers, corporate resolvers, and systemd-resolved setups deliberately drops answers pointing at loopback.
 
-If you want to preview changes locally before pushing, see the [Local Development](README.md#local-development) section in the README for setup instructions.
+If discovery times out or the smoke cannot reach the issuer, use a locally resolved name instead:
 
-Changes to `.md` files will automatically reload in the browser when running `mkdocs serve`.
+```bash
+echo "127.0.0.1 oidc-mock.local.test" | sudo tee -a /etc/hosts
+echo "MOCK_OIDC_HOST=oidc-mock.local.test" >> .env
+```
+
+The network alias follows whatever `MOCK_OIDC_HOST` you set, so the container needs no matching `/etc/hosts` entry. CI does exactly this, which is why the workflow has no `nip.io` dependency. A failed `make local-mock-up` dumps `docs` and `mock-oidc` container logs before tearing the stack down; see [`operations/aws-oidc-hosting.md`](operations/aws-oidc-hosting.md) for the full dual-resolution rationale.
+
+Two things to expect while poking at the login flow by hand. Several tabs can sign in at once — each keeps its own destination and they can finish in any order — but only four pending sign-ins are kept, and a pending sign-in older than an hour is discarded. Any callback that no longer matches a live sign-in answers `400` rather than signing you in somewhere unexpected. Declining the login at the mock provider answers `400` too, without echoing back what the issuer said, and leaves both the other pending tabs and any existing signed-in session alone.
+
+Hitting `/_auth/logout` clears the entire session cookie, including sign-ins still in flight in other tabs. Those tabs cannot resume: their callback answers the same `400`, and you have to start again from the page you wanted. That is intended, not a bug to chase — signing out must not leave a completable transaction behind.
+
+## Writing And Navigation
+
+- Write documentation in Markdown unless a page intentionally needs raw HTML, such as `docs/sms-opt-in.html`.
+- Use one `#` title per page and consistent heading levels below it.
+- Prefer relative links for internal docs references.
+- Use admonitions and code fences when they clarify instructions.
+
+Navigation is primarily governed by `docs/.nav.yml` through `mkdocs-awesome-nav`, not by a hand-maintained `nav:` block in `mkdocs.yml`. When you add or rename navigable pages, update `docs/.nav.yml` in the relevant section.
+
+## Public Versus Protected Content
+
+Keep the access model in mind while editing:
+
+- Public: legal pages, selected discovery files, static assets, and `sitemap.xml`
+- Protected: the main product documentation, including guides, authorization content, security pages, and the home page
+- Authorization is authentication only: any identity the configured Authifi tenant accepts can read every protected page. There is no group, role, or domain filtering in v1.
+
+If you add a new public page or public machine-readable asset, update these together:
+
+- `PUBLIC_EXACT_PATHS` / `PUBLIC_PREFIXES` in `server/app.py`
+- the public path list in `docs/auth.md`
+- every `Allow:` block in `docs/robots.txt`
+- `PUBLIC_SITEMAP_PATHS` and, for rendered Markdown pages, `PUBLIC_PAGE_SOURCES` in `docs/hooks/agent_assets.py`
+
+`server/tests/test_public_boundary.py` compares those sources against each other and against the built site, so leaving one behind fails CI. A new public Markdown page must be listed in `PUBLIC_PAGE_SOURCES`, which marks it `hide: [navigation, search]`. `overrides/main.html` reads that metadata and removes two pieces of chrome that would otherwise reach into protected territory: the navigation, which would advertise every protected guide by title and URL, and the search control, which can only ever fail because the search index is protected.
+
+Search on public pages is removed by the gated logic in `overrides/partials/header.html`, while protected pages keep the normal Material search control. A `mkdocs-material` upgrade that changes the vendored header fails `server/tests/test_public_boundary.py`, which re-derives the expected upstream header from the installed theme and checks that our copy still differs only in the documented auth-related insertions.
+
+## Pull Request Checks
+
+PRs do **not** get hosted preview deployments in v1. Instead, `.github/workflows/ci.yml` runs:
+
+- server tests, including the built-artifact public-boundary tests
+- strict MkDocs build
+- container build
+- a rootless, read-only container run that probes `/health`, HTML content types, and encoded-traversal bypasses
+- the credential-free mock OIDC smoke, with teardown guaranteed
+- Terraform format and validate checks for `infra/`
+
+Before opening or updating a PR, run the focused checks that match your change. For broad changes, run the full local set:
+
+```bash
+.venv/bin/python -m pytest server/tests
+make build
+docker build --tag authifi-docs:test .
+make local-smoke
+```
+
+## Reviewer Checklist
+
+Reviewers should confirm:
+
+- the page content is accurate and internally consistent
+- new or changed navigation is reflected in `docs/.nav.yml` when appropriate
+- public vs. protected behavior still matches `docs/auth.md`, `docs/robots.txt`, and the server allowlist
+- generated assets such as `sitemap.xml` do not leak protected docs
+- local or CI verification covers the changed behavior
+- deploy or operations docs still match the AWS ALB/private EC2/S3/SSM/OIDC implementation
 
 ## Need Help?
 
-- For documentation questions, open an issue on GitHub
-- For Authifi product questions, contact your administrator
+- Use [README.md](README.md) for architecture, local run modes, and deployment context
+- Use [`infra/README.md`](infra/README.md) for Terraform and AWS bootstrap details
+- Open a GitHub issue or ask the Authifi maintainers when product behavior is unclear

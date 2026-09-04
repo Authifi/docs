@@ -1,0 +1,624 @@
+name: Deploy
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      release_sha:
+        description: Existing release SHA to deploy without rebuilding
+        required: false
+        type: string
+
+concurrency:
+  group: authifi-docs-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+  RELEASE_BUCKET_NAME: ${{ vars.RELEASE_BUCKET_NAME }}
+  DOCS_INSTANCE_ID: ${{ vars.DOCS_INSTANCE_ID }}
+  DOCS_SSM_DOCUMENT_NAME: ${{ vars.DOCS_SSM_DOCUMENT_NAME }}
+  DOCS_TARGET_GROUP_ARN: ${{ vars.DOCS_TARGET_GROUP_ARN }}
+  DOCS_ALB_DNS_NAME: ${{ vars.DOCS_ALB_DNS_NAME }}
+  DOCS_PUBLIC_BASE_URL: ${{ vars.DOCS_PUBLIC_BASE_URL }}
+
+jobs:
+  deploy:
+    name: Build and deploy
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install Python dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install -r requirements.txt
+
+      - name: Verify required repository variables
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${AWS_REGION:?Set repository variable AWS_REGION}"
+          : "${AWS_DEPLOY_ROLE_ARN:?Set repository variable AWS_DEPLOY_ROLE_ARN}"
+          : "${RELEASE_BUCKET_NAME:?Set repository variable RELEASE_BUCKET_NAME}"
+          : "${DOCS_INSTANCE_ID:?Set repository variable DOCS_INSTANCE_ID}"
+          : "${DOCS_SSM_DOCUMENT_NAME:?Set repository variable DOCS_SSM_DOCUMENT_NAME}"
+          : "${DOCS_TARGET_GROUP_ARN:?Set repository variable DOCS_TARGET_GROUP_ARN}"
+          : "${DOCS_ALB_DNS_NAME:?Set repository variable DOCS_ALB_DNS_NAME}"
+          : "${DOCS_PUBLIC_BASE_URL:?Set repository variable DOCS_PUBLIC_BASE_URL}"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
+        with:
+          role-to-assume: ${{ env.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Select release
+        id: release
+        shell: bash
+        env:
+          REQUESTED_RELEASE_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.release_sha || '' }}
+        run: |
+          set -euo pipefail
+
+          requested_sha="${REQUESTED_RELEASE_SHA}"
+          if [[ -n "$requested_sha" ]]; then
+            sha="$requested_sha"
+            build=false
+          else
+            sha="$GITHUB_SHA"
+            build=true
+          fi
+
+          if [[ ! "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Release SHA must be 40 lowercase hexadecimal characters" >&2
+            exit 1
+          fi
+
+          {
+            echo "sha=$sha"
+            echo "build=$build"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build release
+        if: ${{ steps.release.outputs.build == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./scripts/build-release.sh "${{ steps.release.outputs.sha }}" dist/releases
+
+      - name: Publish or verify release
+        if: ${{ steps.release.outputs.build == 'true' }}
+        shell: bash
+        env:
+          RELEASE_SHA: ${{ steps.release.outputs.sha }}
+        run: |
+          set -euo pipefail
+
+          # A release is two objects, and it used to be published by two
+          # unconditional copies with nothing between them. A run cancelled
+          # after the archive landed and before its checksum did left a state
+          # this step then refused on every rerun of the same commit: the
+          # archive was present, so it took the verify branch, and the verify
+          # branch failed on the absent checksum. That commit could never be
+          # deployed through this workflow again without somebody repairing
+          # the bucket by hand.
+          #
+          # So all four presence states are answered here, and the two partial
+          # ones are completed rather than refused -- but only after proving
+          # that what is already published is what this run built. Uploading a
+          # checksum over somebody else's archive would make that archive
+          # verifiable under this commit's SHA, which is the one substitution
+          # the checksum exists to prevent.
+
+          prefix="s3://$RELEASE_BUCKET_NAME/releases"
+          archive_key="releases/$RELEASE_SHA.tar.gz"
+          checksum_key="releases/$RELEASE_SHA.tar.gz.sha256"
+          local_archive="dist/releases/$RELEASE_SHA.tar.gz"
+          local_checksum="dist/releases/$RELEASE_SHA.tar.gz.sha256"
+          remote_archive="dist/remote/$RELEASE_SHA.tar.gz"
+          remote_checksum="dist/remote/$RELEASE_SHA.tar.gz.sha256"
+
+          mkdir -p dist/remote
+
+          # Both halves of every comparison are computed by one program, so
+          # neither depends on coreutils being GNU's, and a checksum file that
+          # is not one line of '<sha256>  <filename>' is a refusal rather than
+          # an empty string that compares equal to another empty string.
+          cat > dist/release-digest.py <<'PY'
+          import hashlib
+          import re
+          import sys
+          from pathlib import Path
+
+          mode, path = sys.argv[1:3]
+
+          if mode == "file":
+              print(hashlib.sha256(Path(path).read_bytes()).hexdigest())
+              raise SystemExit(0)
+
+          if mode == "recorded":
+              expected_name = sys.argv[3]
+              parts = Path(path).read_text(encoding="utf-8").split()
+              if len(parts) != 2:
+                  raise SystemExit(f"{path} is not one '<sha256>  <filename>' line")
+              digest, filename = parts
+              if not re.fullmatch(r"[0-9a-f]{64}", digest):
+                  raise SystemExit(f"{path} does not record a sha256 digest")
+              if filename != expected_name:
+                  raise SystemExit(f"{path} names {filename!r}, not {expected_name!r}")
+              print(digest)
+              raise SystemExit(0)
+
+          raise SystemExit(f"unknown digest mode {mode!r}")
+          PY
+
+          digest_of() {
+            python dist/release-digest.py file "$1"
+          }
+
+          recorded_digest_of() {
+            python dist/release-digest.py recorded "$1" "$RELEASE_SHA.tar.gz"
+          }
+
+          remote_object_exists() {
+            aws s3api head-object \
+              --bucket "$RELEASE_BUCKET_NAME" \
+              --key "$1" > /dev/null 2>&1
+          }
+
+          # `--if-none-match "*"` is what makes "never overwrite a published
+          # release" a property of the request rather than of the presence
+          # check above it. S3 answers 412 when a current version already
+          # exists, so the window between the check and the write is a failed
+          # deployment instead of a silent replacement. The concurrency group
+          # already serialises this workflow's own runs; this is what holds
+          # when the writer is outside it.
+          upload_object() {
+            aws s3api put-object \
+              --bucket "$RELEASE_BUCKET_NAME" \
+              --key "$1" \
+              --body "$2" \
+              --if-none-match "*" > /dev/null
+          }
+
+          local_digest="$(digest_of "$local_archive")"
+          built_digest="$(recorded_digest_of "$local_checksum")"
+
+          if [[ "$built_digest" != "$local_digest" ]]; then
+            echo "This build's archive and its checksum disagree, so there is nothing" >&2
+            echo "trustworthy to publish or to compare a published release against." >&2
+            echo "Archive: $local_archive" >&2
+            exit 1
+          fi
+
+          archive_published=false
+          checksum_published=false
+          if remote_object_exists "$archive_key"; then
+            archive_published=true
+          fi
+          if remote_object_exists "$checksum_key"; then
+            checksum_published=true
+          fi
+
+          echo "Release $RELEASE_SHA in s3://$RELEASE_BUCKET_NAME:" \
+            "archive_published=$archive_published checksum_published=$checksum_published"
+
+          if [[ "$archive_published" == true && "$checksum_published" == true ]]; then
+            aws s3 cp "$prefix/$RELEASE_SHA.tar.gz.sha256" "$remote_checksum"
+            published_digest="$(recorded_digest_of "$remote_checksum")"
+
+            if [[ "$published_digest" != "$local_digest" ]]; then
+              echo "Release $RELEASE_SHA is already published with a different checksum." >&2
+              echo "Published: $published_digest" >&2
+              echo "This build: $local_digest" >&2
+              echo "Releases are immutable, so this needs a new commit, not a repaired bucket." >&2
+              exit 1
+            fi
+
+            echo "Release $RELEASE_SHA is already fully published and matches this build."
+          elif [[ "$archive_published" == true ]]; then
+            aws s3 cp "$prefix/$RELEASE_SHA.tar.gz" "$remote_archive"
+            published_digest="$(digest_of "$remote_archive")"
+
+            if [[ "$published_digest" != "$local_digest" ]]; then
+              echo "Release $RELEASE_SHA has a published archive that is not this build," >&2
+              echo "and no checksum. Publishing this build's checksum over it would" >&2
+              echo "make those bytes verifiable under this SHA, so it is refused." >&2
+              echo "Published archive: $published_digest" >&2
+              echo "This build: $local_digest" >&2
+              exit 1
+            fi
+
+            echo "Completing an interrupted publication of $RELEASE_SHA: uploading its checksum."
+            upload_object "$checksum_key" "$local_checksum"
+          elif [[ "$checksum_published" == true ]]; then
+            aws s3 cp "$prefix/$RELEASE_SHA.tar.gz.sha256" "$remote_checksum"
+            published_digest="$(recorded_digest_of "$remote_checksum")"
+
+            if [[ "$published_digest" != "$local_digest" ]]; then
+              echo "Release $RELEASE_SHA has a published checksum that does not match" >&2
+              echo "this build, and no archive. Uploading this build under that checksum" >&2
+              echo "would publish a release the installer will reject, so it is refused." >&2
+              echo "Published checksum: $published_digest" >&2
+              echo "This build: $local_digest" >&2
+              exit 1
+            fi
+
+            echo "Completing an interrupted publication of $RELEASE_SHA: uploading its archive."
+            upload_object "$archive_key" "$local_archive"
+          else
+            echo "Publishing release $RELEASE_SHA."
+            upload_object "$archive_key" "$local_archive"
+            upload_object "$checksum_key" "$local_checksum"
+          fi
+
+      - name: Verify existing release for rollback
+        if: ${{ steps.release.outputs.build != 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sha="${{ steps.release.outputs.sha }}"
+          archive_key="releases/$sha.tar.gz"
+          checksum_key="releases/$sha.tar.gz.sha256"
+
+          if ! aws s3api head-object \
+            --bucket "$RELEASE_BUCKET_NAME" \
+            --key "$archive_key" > /dev/null 2>&1; then
+            echo "Existing release archive not found in s3://$RELEASE_BUCKET_NAME/$archive_key" >&2
+            exit 1
+          fi
+
+          if ! aws s3api head-object \
+            --bucket "$RELEASE_BUCKET_NAME" \
+            --key "$checksum_key" > /dev/null 2>&1; then
+            echo "Existing release checksum not found in s3://$RELEASE_BUCKET_NAME/$checksum_key" >&2
+            exit 1
+          fi
+
+      - name: Install release through SSM
+        id: command
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sha="${{ steps.release.outputs.sha }}"
+          command_id="$(aws ssm send-command \
+            --document-name "$DOCS_SSM_DOCUMENT_NAME" \
+            --instance-ids "$DOCS_INSTANCE_ID" \
+            --parameters "ReleaseSha=${sha}" \
+            --query 'Command.CommandId' \
+            --output text)"
+          echo "id=$command_id" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for installer
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          command_id="${{ steps.command.outputs.id }}"
+          dump_invocation() {
+            aws ssm get-command-invocation \
+              --command-id "$command_id" \
+              --instance-id "$DOCS_INSTANCE_ID" \
+              --query "$1" \
+              --output text || true
+          }
+
+          if ! aws ssm wait command-executed \
+            --command-id "$command_id" \
+            --instance-id "$DOCS_INSTANCE_ID"; then
+            echo "SSM command $command_id did not finish successfully." >&2
+            echo "Status: $(dump_invocation Status)" >&2
+            echo "Response code: $(dump_invocation ResponseCode)" >&2
+            echo "Installer stdout:" >&2
+            dump_invocation StandardOutputContent >&2
+            echo "Installer stderr:" >&2
+            dump_invocation StandardErrorContent >&2
+            exit 1
+          fi
+
+          status="$(dump_invocation Status)"
+          if [[ "$status" != "Success" ]]; then
+            echo "SSM command $command_id ended with status $status." >&2
+            echo "Response code: $(dump_invocation ResponseCode)" >&2
+            echo "Installer stdout:" >&2
+            dump_invocation StandardOutputContent >&2
+            echo "Installer stderr:" >&2
+            dump_invocation StandardErrorContent >&2
+            exit 1
+          fi
+
+      - name: Wait for healthy ALB target
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if ! aws elbv2 wait target-in-service --target-group-arn "$DOCS_TARGET_GROUP_ARN"; then
+            aws elbv2 describe-target-health --target-group-arn "$DOCS_TARGET_GROUP_ARN"
+            exit 1
+          fi
+
+      - name: Verify public and protected routes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Through a file rather than a command substitution. Bash tracks
+          # quotes while it looks for the closing paren of a `$(...)`, even
+          # across a quoted heredoc, so an apostrophe in a comment inside this
+          # program decided whether the step parsed at all -- it happened to
+          # balance, which is not a property to leave load-bearing. A
+          # redirection has no such rule.
+          probe_settings="$(mktemp)"
+          trap 'rm -f "$probe_settings"' EXIT
+
+          python - "$DOCS_PUBLIC_BASE_URL" "$DOCS_ALB_DNS_NAME" > "$probe_settings" <<'PY'
+          import ipaddress
+          import re
+          import sys
+          from urllib.parse import urlsplit, urlunsplit
+
+          public_base_url, alb_dns_name = sys.argv[1:3]
+          parsed = urlsplit(public_base_url)
+
+          if parsed.scheme != "https":
+              raise SystemExit("DOCS_PUBLIC_BASE_URL must be a canonical https URL.")
+          if parsed.username is not None or parsed.password is not None:
+              raise SystemExit("DOCS_PUBLIC_BASE_URL must not include credentials.")
+          if parsed.query or parsed.fragment:
+              raise SystemExit("DOCS_PUBLIC_BASE_URL must not include a query or fragment.")
+          if parsed.hostname is None:
+              raise SystemExit("DOCS_PUBLIC_BASE_URL must include a hostname.")
+          # Before the port check, because an IPv6 literal's netloc is full of
+          # colons and this is the more useful thing to be told about it.
+          try:
+              ipaddress.ip_address(parsed.hostname)
+          except ValueError:
+              pass
+          else:
+              raise SystemExit("DOCS_PUBLIC_BASE_URL must use a DNS hostname, not an IP literal.")
+          # Any port at all, including `:443` written out. The listener serves
+          # 443 so an explicit one would probe the same endpoint, but this
+          # value is also what Terraform validates and what the server appends
+          # to when it builds the callback URI, and both of those refuse a
+          # netloc carrying a port. Accepting it here is how the workflow ends
+          # up calling an origin fine that the plan rejects and whose callback
+          # does not match the URI registered with the issuer.
+          if ":" in parsed.netloc:
+              raise SystemExit("DOCS_PUBLIC_BASE_URL must not name a port, not even the default 443.")
+          # Every route the server declares is mounted at `/` and the listener
+          # rules strip no prefix, so stripping a path here and probing
+          # underneath it produced a 404 the output did not explain. The server
+          # refuses the same value at startup; this agrees with it instead of
+          # normalising it away.
+          if parsed.path not in ("", "/"):
+              raise SystemExit("DOCS_PUBLIC_BASE_URL must not carry a path below the root.")
+
+          if not re.fullmatch(r"(?!-)[A-Za-z0-9-]{1,63}(?<!-)(?:\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))*", alb_dns_name):
+              raise SystemExit("DOCS_ALB_DNS_NAME must be a hostname, not shell syntax.")
+
+          def join_url(suffix: str) -> str:
+              return urlunsplit((parsed.scheme, parsed.netloc, suffix, "", ""))
+
+          connect_to = f"{parsed.hostname}:443:{alb_dns_name}:443"
+          public_url = join_url("/privacy-policy/")
+          protected_url = join_url("/guides/sso-integration-guide/")
+          login_url = join_url("/_auth/login")
+          callback_url = join_url("/_auth/callback")
+
+          print(f"connect_to={connect_to}")
+          print(f"docs_host={parsed.hostname}")
+          print(f"public_url={public_url}")
+          print(f"protected_url={protected_url}")
+          print(f"login_url={login_url}")
+          print(f"callback_url={callback_url}")
+          PY
+
+          connect_to=""
+          docs_host=""
+          public_url=""
+          protected_url=""
+          login_url=""
+          callback_url=""
+          while IFS='=' read -r key value; do
+            case "$key" in
+              connect_to) connect_to="$value" ;;
+              docs_host) docs_host="$value" ;;
+              public_url) public_url="$value" ;;
+              protected_url) protected_url="$value" ;;
+              login_url) login_url="$value" ;;
+              callback_url) callback_url="$value" ;;
+            esac
+          done < "$probe_settings"
+
+          : "${connect_to:?probe connect-to was not derived}"
+          : "${docs_host:?docs hostname was not derived}"
+          : "${public_url:?public probe URL was not derived}"
+          : "${protected_url:?protected probe URL was not derived}"
+          : "${login_url:?login probe URL was not derived}"
+          : "${callback_url:?callback URL was not derived}"
+
+          # Written out here rather than inside the loop below: a quoted
+          # heredoc keeps whatever indentation it is written with, YAML strips
+          # only the block's own, and an indented terminator never closes one.
+          login_check="$(mktemp)"
+          # The header dumps are removed at the end of every attempt as well;
+          # this is what covers the attempt that breaks out of the loop and the
+          # one that reaches the deadline, having just printed two of them.
+          trap 'rm -f "$probe_settings" "$login_check" "${public_headers:-}" "${protected_headers:-}" "${login_headers:-}"' EXIT
+          cat > "$login_check" <<'PY'
+          """Judge the authorization redirect `/_auth/login` answered with.
+
+          The only evidence a deployment has that the configured issuer was
+          reachable, that its discovery document parsed, and that the private
+          subnet's route out works. `site_endpoint` never contacts the OIDC
+          client, so a protected page answers its local 307 whether or not the
+          issuer exists at all.
+
+          Parsed rather than matched in the shell: the value is a URL with a
+          query string, and grep-and-cut on one is how a check ends up passing
+          on a redirect back to our own login page.
+
+          Nothing printed here carries a parameter *value*. `state` and `nonce`
+          are single-use anti-forgery material for a transaction nobody
+          completes and the challenge is a digest of a verifier this probe
+          throws away, but they would land in a public workflow log, so only
+          the names appear.
+          """
+
+          import sys
+          from urllib.parse import parse_qs, urlsplit
+
+          headers_path, docs_host, callback_url = sys.argv[1:4]
+
+          location = ""
+          with open(headers_path, encoding="utf-8", errors="replace") as headers:
+              for line in headers:
+                  name, separator, value = line.partition(":")
+                  if separator and name.strip().lower() == "location":
+                      location = value.strip()
+
+          if not location:
+              print("the login endpoint sent no Location header")
+              raise SystemExit(0)
+
+          redirect = urlsplit(location)
+
+          if redirect.scheme != "https":
+              print("the authorization endpoint is not an absolute https URL")
+              raise SystemExit(0)
+          if not redirect.hostname:
+              print("the authorization redirect names no host")
+              raise SystemExit(0)
+          if redirect.hostname.lower() == docs_host.lower():
+              print("the login endpoint redirected back to the docs host, so discovery never reached the issuer")
+              raise SystemExit(0)
+
+          parameters = parse_qs(redirect.query, keep_blank_values=True)
+          carried = {name for name, values in parameters.items() if any(values)}
+          missing = [
+              name
+              for name in ("client_id", "redirect_uri", "state", "nonce", "code_challenge")
+              if name not in carried
+          ]
+
+          if missing:
+              print(f"the authorization redirect carries no {', '.join(missing)}")
+              raise SystemExit(0)
+          if parameters.get("response_type") != ["code"]:
+              print("the authorization redirect does not ask for response_type=code")
+              raise SystemExit(0)
+          if parameters.get("code_challenge_method") != ["S256"]:
+              print("the authorization redirect does not carry an S256 PKCE challenge")
+              raise SystemExit(0)
+          if parameters.get("redirect_uri") != [callback_url]:
+              print("the authorization redirect names a redirect_uri that is not this deployment's callback")
+              raise SystemExit(0)
+
+          print("ok")
+          PY
+
+          deadline=$((SECONDS + 300))
+          attempt=0
+
+          while true; do
+            attempt=$((attempt + 1))
+            public_headers="$(mktemp)"
+            protected_headers="$(mktemp)"
+
+            public_result="$(curl --silent --show-error --max-time 30 --max-redirs 0 --connect-to "$connect_to" \
+              --output /dev/null --dump-header "$public_headers" \
+              --write-out '%{http_code} %{url_effective}' "$public_url" || true)"
+            public_status="${public_result%% *}"
+            public_status="${public_status:-000}"
+            public_final_url="${public_result#* }"
+            public_content_type="$(grep -i '^content-type:' "$public_headers" | tail -n 1 | cut -d: -f2- | tr -d '\r' | xargs || true)"
+
+            protected_status="$(curl --silent --show-error --max-time 30 --max-redirs 0 --connect-to "$connect_to" \
+              --output /dev/null --dump-header "$protected_headers" \
+              --write-out '%{http_code}' "$protected_url" || true)"
+            protected_status="${protected_status:-000}"
+            protected_location="$(grep -i '^location:' "$protected_headers" | tail -n 1 | cut -d: -f2- | tr -d '\r' | xargs || true)"
+
+            # Credential-free, and deliberately not followed. This request is
+            # what makes the deployment prove that discovery reached the
+            # issuer and that the NAT route out works; following the redirect
+            # would put the issuer's own availability inside our readiness
+            # check instead.
+            login_headers="$(mktemp)"
+            login_status="$(curl --silent --show-error --max-time 30 --max-redirs 0 --connect-to "$connect_to" \
+              --output /dev/null --dump-header "$login_headers" \
+              --write-out '%{http_code}' "$login_url" || true)"
+            login_status="${login_status:-000}"
+            # `|| true`, because everything else in this loop tolerates a
+            # transient fault and retries. Under `set -e` a failed interpreter
+            # -- an OOM kill, a full disk while writing the header dump -- ended
+            # the whole step here, before the deadline branch that prints the
+            # diagnostics, so the one probe with the most to say about a broken
+            # deployment was the one that could abort without saying it.
+            # Its stderr is discarded rather than captured: a traceback is
+            # free to quote the value that raised it, and the value here is
+            # the redirect. The verdict is the only channel out of this
+            # program, and it is written not to carry one.
+            login_verdict="$(python "$login_check" "$login_headers" "$docs_host" "$callback_url" 2>/dev/null || true)"
+            # An empty verdict is still a verdict. Left empty it would read as
+            # "got status 000, and ." in the failure message below.
+            login_verdict="${login_verdict:-the redirect could not be judged, because the check did not run}"
+
+            if [[ "$public_status" == "200" \
+              && "$public_content_type" == text/html* \
+              && "$public_final_url" == "$public_url" \
+              && "$protected_status" == "307" \
+              && "$protected_location" == /_auth/login* \
+              && "$login_status" =~ ^30[1237]$ \
+              && "$login_verdict" == ok ]]; then
+              echo "Post-deploy checks passed on attempt $attempt."
+              break
+            fi
+
+            if (( SECONDS >= deadline )); then
+              echo "Post-deploy checks failed." >&2
+              echo "Public URL: $public_url" >&2
+              echo "Expected 200 text/html with no redirect; got status $public_status, content type '${public_content_type}', final URL '${public_final_url}'." >&2
+              cat "$public_headers" >&2
+              echo "Protected URL: $protected_url" >&2
+              echo "Expected 307 redirect to /_auth/login; got status $protected_status, location '${protected_location}'." >&2
+              cat "$protected_headers" >&2
+              # The headers themselves stay out of the log: this response's
+              # `Location` carries the transaction's state, nonce, and PKCE
+              # challenge, and the verdict names what was wrong without them.
+              echo "Login URL: $login_url" >&2
+              echo "Expected a redirect to the issuer's authorization endpoint; got status $login_status, and $login_verdict." >&2
+              exit 1
+            fi
+
+            # Three dumps per attempt, once every ten seconds for five minutes.
+            # Hygiene rather than a leak that matters on an ephemeral runner,
+            # except for the login dump: its `Location` carries this
+            # transaction's state, nonce, and PKCE challenge, and that is worth
+            # removing on purpose rather than leaving for the VM teardown.
+            rm -f "$public_headers" "$protected_headers" "$login_headers"
+
+            echo "Attempt $attempt failed; retrying..."
+            sleep 10
+          done

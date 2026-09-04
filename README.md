@@ -1,253 +1,285 @@
 # Authifi Documentation
 
-Public documentation for the Authifi identity and access management platform.
+Product documentation for the Authifi identity and access management platform.
 
-**Live Site**: [https://docs.authifi.io](https://docs.authifi.io)
+**Live site**: [https://docs.authifi.io](https://docs.authifi.io)
 
-## For Documentation Writers
+## Current Architecture
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for instructions on editing documentation. **No local setup is required.** Edit directly on GitHub.com or using GitHub.dev (press `.` on the repo page).
+This repository builds a static MkDocs site and serves it behind a Starlette application that enforces Authifi OIDC login for protected docs.
 
-## Cloudflare Pages Setup
+- `docs/` contains the documentation source plus public discovery/legal assets.
+- `mkdocs build --strict` produces the static site in `site/`.
+- `server/` serves the built site, leaves specific legal/discovery paths public, and redirects protected paths through Authifi OIDC.
+- `infra/` provisions the production AWS path: an Application Load Balancer in two supplied public subnets, one private EC2 instance in a supplied private application subnet, a release bucket, and the IAM/SSM wiring for GitHub Actions deployments.
+- `.github/workflows/ci.yml` validates PRs; `.github/workflows/deploy.yml` uploads release archives to S3 and deploys them through SSM from `main`.
+- `Dockerfile` and Compose remain for local development and mock testing. They are not the production release path.
+- `overrides/` holds the MkDocs Material theme override that keeps protected navigation out of the public legal pages.
 
-To deploy this documentation site:
+There are **no per-PR hosted preview environments in v1**. Pull requests get CI only. There is also **no Cloudflare Markdown-for-Agents conversion** in this architecture; agents can read the explicitly published public files and any protected HTML they can reach after an interactive browser login.
 
-### 1. Connect Repository to Cloudflare Pages
+## Authorization Policy
 
-> **Important**: Use **Pages**, not Workers. The setup screens look similar but Pages is for static sites.
+Authorization in v1 is **authentication only**. Any identity the configured Authifi tenant accepts may read every protected page, and the server keeps only the subject plus the optional email and name in the session. There is deliberately **no group, role, or email-domain filtering in v1**: access is controlled by controlling who can sign in to the tenant and who is assigned the docs application.
 
-1. Log in to [Cloudflare Dashboard](https://dash.cloudflare.com)
-2. Go to **Workers & Pages** in the left sidebar
-3. Click **Create** button
-4. Select the **Pages** tab (not Workers)
-5. Click **Connect to Git**
-6. Authorize GitHub and select the `AxleResearch/authifi-docs` repository
-7. Configure build settings:
-   - **Project name**: `authifi` (this becomes the `*.pages.dev` hostname, i.e. `authifi.pages.dev`)
-   - **Production branch**: `main`
-   - **Framework preset**: None
-   - **Build command**: `pip install -r requirements.txt && mkdocs build`
-   - **Build output directory**: `site`
-8. Click **Save and Deploy**
+Anonymous callers learn nothing about the protected tree, not even which pages exist. A request for a protected directory page without its trailing slash answers with the login redirect rather than the canonical `308`, and the `next` parameter echoes the path as requested, so an existing page and a missing one are byte-identical to anyone who is not signed in. Public pages still canonicalise without a login, so `/privacy-policy` reaches `/privacy-policy/` as usual.
 
-> **Python version**: The build requires Python 3.10+ (`mkdocs-awesome-nav`). This repo pins it via a `.python-version` file (`3.12`), which Cloudflare Pages reads automatically. To override from the dashboard instead, set a `PYTHON_VERSION` environment variable under **Settings → Environment variables**.
+## Prerequisites
 
-### 2. Verify Deploy Previews
+- Python 3.12 and a virtual environment for MkDocs and tests
+- Docker with Compose support
+- An Authifi tenant if you want to exercise the real OIDC flow locally
+- AWS credentials and Terraform only when bootstrapping or operating production
 
-Once connected, every pull request will automatically get a preview URL. Contributors will see a comment on their PR with a link like:
-
-```
-https://abc123.authifi.pages.dev
-```
-
-### 3. Custom Domain
-
-The production site is served at the custom domain **`docs.authifi.io`**. The
-`*.pages.dev` URL keeps working and is still used for deploy previews.
-
-#### A. Add the custom domain in Cloudflare Pages
-
-1. Go to **Workers & Pages → `authifi` → Custom domains**
-2. Click **Set up a custom domain**
-3. Enter `docs.authifi.io` and click **Continue**
-
-#### B. Configure DNS
-
-If the `authifi.io` zone is managed in the **same Cloudflare account**, Pages
-creates the DNS record automatically. **Activate** it when prompted. The
-record will be:
-
-```
-Type:   CNAME
-Name:   docs
-Target: authifi.pages.dev
-Proxy:  Proxied (orange cloud)
-```
-
-If `authifi.io` is hosted with **another DNS provider**, create the record there
-manually:
-
-```
-Type:   CNAME
-Name:   docs
-Value:  authifi.pages.dev
-```
-
-#### C. Verify
-
-After DNS propagates (usually a few minutes), Cloudflare provisions a TLS
-certificate and the domain shows **Active**. Then:
+Set up the local Python environment:
 
 ```bash
-curl -sI https://docs.authifi.io/
+python3.12 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python -m pip install -r server/requirements-dev.txt
 ```
 
-The `site_url` in `mkdocs.yml` is already set to `https://docs.authifi.io`, so
-canonical links and `sitemap.xml` resolve to the custom domain after the next
-build.
+Every version comes from the checkout, including pip's own: upgrading it would
+resolve whatever is newest on PyPI today, and the runtime image is built on a
+digest-pinned base precisely so it does not depend on the day.
+
+Dependencies are locked twice over, once for each stage of the image, and each
+lock is a pair of files:
+
+| Direct dependencies, edit these | Complete closure, generated |
+|---|---|
+| `requirements.in` — the MkDocs site build | `requirements.txt` |
+| `server/requirements.in` — the server runtime | `server/requirements.txt` |
+
+Each `.txt` is the full transitive closure of its `.in`, resolved by a clean
+install in the same digest-pinned base image the corresponding build stage uses,
+and is the only file the Dockerfile and CI install. Change a direct dependency,
+then regenerate the closure with the command in the lock's header. The two locks
+hold shared packages at equal versions, because CI installs both into one
+environment.
+
+The tests in `server/tests/test_requirements.py` build both closures in a clean
+container and fail if a lock is not exactly what its direct file resolves to, so
+a stale lock is a red test rather than a surprise at deploy time.
 
 ## Local Development
 
-### Prerequisites
+### Fast content preview
 
-- Python 3.10+ (required by the `mkdocs-awesome-nav` plugin; the pinned version lives in `.python-version`)
-- pip
-
-### Setup
+Use MkDocs directly when you only need to review layout, copy, or navigation:
 
 ```bash
-# Set up a virtual environment
-python3 -m venv .venv
-source .venv/bin/activate
-
-# Install dependencies
-python3 -m pip install -r requirements.txt
-
-# Start development server
-mkdocs serve
+make serve
 ```
 
-Open http://127.0.0.1:8000 to view the documentation locally.
+This serves the static site at `http://127.0.0.1:8000` without OIDC enforcement.
 
-### Build
+### Native release archive
+
+Build the deployable release archive locally with:
 
 ```bash
-mkdocs build
+make release
 ```
 
-The static site is generated in the `site/` directory.
+The archive is content-addressed and reproducible: uid, gid, owner names, mtimes, and permission bits are all pinned by the archiver, so two builds of one commit produce the same bytes and the same checksum regardless of the build machine's umask or of any `chmod` in the checkout. This matters operationally rather than aesthetically — a workflow rerun reuses an existing S3 release only when its checksum matches the one it just built, so a mode that leaked in from the filesystem would surface as a refused redeploy.
 
-## Agent Readiness
+The archive carries the whole `server` package, minus its test suite and build by-products, rather than a hand-listed set of modules. A module added and forgotten used to break nothing at build time — no step imports the package — and fail on the host at the first request that reached it, after the candidate had already been promoted.
 
-This site publishes static assets for AI agent discovery and crawl policy control.
+Runtime dependencies are pinned to exact versions in `server/requirements.txt` and vendored into the archive's `wheelhouse/`, which is what lets installation on the host run with no package index at all. Wheels are resolved for both `manylinux_2_17_x86_64` and `manylinux_2_28_x86_64`; the target host is Ubuntu 24.04, whose glibc satisfies either, and accepting both means a pinned package that stops publishing the older tag does not break the build. The pins are not hash-locked, and that is a deliberate scope decision rather than an oversight:
 
-### Static assets (in repo)
+- PyPI does not permit a released file to be replaced. A given `name==version` filename is immutable once published; it can be yanked or deleted, but not swapped for different bytes. So a version pin cannot silently become different code.
+- The deployed artifact is byte-pinned regardless. The wheels are resolved once at build time and travel inside the archive, whose SHA-256 checksum is verified in S3 and again on the host before anything is unpacked. The install step never contacts an index, so there is no fetch to intercept.
+- The remaining window is the resolution step in CI, which `--require-hashes` would close. Adding it means every wheel for every platform tag needs a recorded hash, and `server/requirements.txt` is generated by `pip freeze` in a digest-pinned image, which emits no hashes. Getting them would mean moving the lock to `pip-compile` or `uv`. That is a worthwhile change and a separate one; it is not something to bolt onto this generator.
 
-| Path | Purpose |
-|------|---------|
-| `/robots.txt` | Crawl rules, AI bot entries, Content Signals |
-| `/_headers` | Cloudflare Link headers and Content-Type overrides |
-| `/.well-known/api-catalog` | RFC 9727 documentation catalog |
-| `/auth.md` | Agent access instructions |
-| `/.well-known/agent-skills/index.json` | Agent skills discovery index |
+### Production-like OIDC locally
 
-The MkDocs hook at `docs/hooks/agent_assets.py` generates `sitemap.xml`, copies static agent files, and updates skill SHA-256 digests on each build.
-
-### Markdown for Agents (Cloudflare dashboard)
-
-Markdown content negotiation requires a Cloudflare zone setting. It is not implemented in application code.
-
-1. Log in to the [Cloudflare dashboard](https://dash.cloudflare.com)
-2. Select the `authifi.io` zone (the zone that serves the custom docs domain `docs.authifi.io`)
-3. Open **AI Crawl Control**
-4. Enable **Markdown for Agents**
-
-Requires Pro, Business, or Enterprise. Alternatively, enable via API:
+To run the containerized docs server against a real Authifi tenant, copy `.env.example` to `.env`, fill in the local OIDC and session values, then start the stack:
 
 ```bash
-curl -X PATCH "https://api.cloudflare.com/client/v4/zones/{zone_id}/settings/content_converter" \
-  --header "Authorization: Bearer {api_token}" \
-  --header "Content-Type: application/json" \
-  --data '{"value":"on"}'
+cp .env.example .env
+make local-up
 ```
 
-Do not enable conflicting robots.txt management in AI Crawl Control while `/robots.txt` is maintained in this repository.
+The real-flow compose overlay requires:
 
-### Verification
+- `OIDC_ISSUER`
+- `OIDC_CLIENT_ID`
+- `OIDC_CLIENT_SECRET`
+- `SESSION_SECRET`
+- `PUBLIC_BASE_URL` matching the URL you will open in the browser
 
-After deploy:
+### Credential-free local mock
+
+Use the mock OIDC provider when you want the gated flow without depending on a live tenant:
 
 ```bash
-curl -sI https://docs.authifi.io/robots.txt
+make local-mock-up
+```
+
+This starts the docs server plus a local OIDC mock. The companion smoke test exercises the full login/logout path automatically:
+
+```bash
+make local-smoke
+```
+
+The smoke runner brings the stack up, drives login and logout against it, and tears it down again. Both URLs it uses can be moved, which is what you want when 8000 or 9400 is already taken:
+
+```bash
+python -m server.local_smoke --public-base-url http://localhost:9001
+python -m server.local_smoke --mock-issuer http://oidc-mock.127.0.0.1.nip.io:9500
+```
+
+These configure the stack, not just the client: `--public-base-url` sets both `PUBLIC_BASE_URL` and the published `DOCS_PORT`, and `--mock-issuer` sets the provider's network alias, its published port, and the `OIDC_ISSUER` the docs container dials. The client then reads its settings back out of that same environment, so the two halves cannot disagree — which matters because logout checks `Origin` against `PUBLIC_BASE_URL`, and a client dialling an origin the server was not told about would see every sign-out refused. Setting `DOCS_PORT`, `PUBLIC_BASE_URL`, `MOCK_OIDC_HOST`, or `MOCK_OIDC_PORT` in `.env` or the environment works the same way and is what CI uses.
+
+Both URLs have to be something the local stacks could actually answer on: `http://`, an explicit port from 1024 to 65535, and a host that resolves only to loopback. Anything else fails before Docker is touched, with a message naming the option. That is also a guard rather than pedantry — the runner tears the stack down with `--volumes` and writes a test user into whatever issuer it is given, neither of which belongs anywhere but a throwaway local stack.
+
+`--mock-issuer` additionally requires a DNS hostname rather than an address, because that host is also the provider's Compose network alias: inside the docs container `127.0.0.1` is the docs container, so an address would point discovery at the docs server instead of the provider. `--public-base-url` has no such restriction and accepts `http://127.0.0.1:9001` or `http://[::1]:9001`.
+
+Shut down either local stack with:
+
+```bash
+make local-down
+```
+
+For Docker networking details, including how the mock issuer hostname resolves from both the docs container and the host, see [`operations/aws-oidc-hosting.md`](operations/aws-oidc-hosting.md).
+
+## Authifi OIDC Client Registration
+
+Register the production docs site in Authifi as a **public client** using Authorization Code + PKCE. There is no production client secret.
+
+- Redirect URI for local real-OIDC work: `http://localhost:8000/_auth/callback`
+- Redirect URI for production: `https://docs.authifi.io/_auth/callback`
+- Post-logout redirect URI for local work: `http://localhost:8000/privacy-policy/`
+- Post-logout redirect URI for production: `https://docs.authifi.io/privacy-policy/`
+- Requested scopes: `openid profile email`
+
+Production registration values:
+
+- Client type: `public`
+- Grant: `authorization code`
+- PKCE: `required`, `S256`
+- Token endpoint authentication method: `none`
+
+The server still performs OIDC discovery and the code exchange itself, so production keeps the private-subnet NAT egress even though the client is public. Local real-OIDC Compose remains separate: it can still use a local client secret for the tenant registration you choose to test with.
+
+A sign-in lasts **eight hours, measured from the moment it completed**. The callback stamps the session with that time, and every protected request checks it, so using the site all day does not extend the session: at the eight-hour mark the next protected request clears the cookie and sends the user back through the issuer. The cookie's own `max_age` is still eight hours as well, but it answers a different question — Starlette re-issues the cookie on every response, so that clock restarts with each page view and only expires a browser that was left alone. A session with no stamp, an unparseable one, or one dated in the future is not a session: sign-ins predate this rule, and a replayed cookie can claim anything.
+
+Logout is RP-initiated: the server clears the local session and, when the tenant publishes an `end_session_endpoint`, redirects there with `client_id` and `post_logout_redirect_uri`. Tenants without an `end_session_endpoint` fall back to a plain local redirect to the same path.
+
+`/_auth/logout` answers `POST` only, and every gated page ends the session with a real `<form>` rather than a link. A `GET` gets a `405` naming `POST`, clears nothing, and never contacts the issuer, so an `<img src=".../_auth/logout">` on some other site — or a prefetcher, or a link scanner — cannot sign a reader out. Each `POST` must also carry an `Origin` matching the origin of `PUBLIC_BASE_URL`; a foreign, malformed, or absent one is refused with `403` before anything is cleared and before any outbound call. There is no CSRF token because every page here is a static file, so there is nowhere to mint one per render; `SameSite=Lax` already keeps the session cookie off a cross-site `POST`, and the `Origin` check is what turns that into a refusal and what covers the same-site-different-port case `Lax` treats as its own. Because that check is what makes sign-out work at all, `PUBLIC_BASE_URL` is validated as an absolute `http`/`https` URL at startup rather than at the first logout.
+
+The post-logout target is always the configured `POST_LOGOUT_PATH`. A `?next=` on the logout URL is ignored: the issuer only accepts the `post_logout_redirect_uri` registered with it, and letting a caller influence that value would break every logout while handing them a say in a URI the issuer is asked to trust. The local fallback uses the same path so both flows land in the same place. Logging out with no session skips discovery entirely and redirects locally, so an anonymous caller cannot drive outbound requests to the issuer.
+
+`POST_LOGOUT_PATH` must be one of the **exact** public pages the server serves, and the server validates it at startup rather than at the first logout, so a bad value fails the process immediately in local Compose and in production alike. Set it in `.env` for the local stacks, or through the `post_logout_path` Terraform variable for production, which the EC2 bootstrap writes as the same environment variable and which rejects the same values at plan time.
+
+If you run the docs server on a different base URL or port, update `PUBLIC_BASE_URL` and register the matching callback and post-logout destinations in Authifi.
+
+Because sign-out compares the browser's `Origin` against `PUBLIC_BASE_URL` and only forgives host case, that variable must name the host exactly as a browser would send it: no trailing dot, punycode rather than Unicode for an internationalised domain, and the canonical domain users actually browse. During cutover and diagnostics, do not browse the ALB hostname directly unless `PUBLIC_BASE_URL` names it; a browser origin on the ALB hostname is a different origin and logout will be refused there. See [`operations/aws-oidc-hosting.md`](operations/aws-oidc-hosting.md) for the details.
+
+## AWS Bootstrap And Deploy
+
+Use [`infra/README.md`](infra/README.md) for the full Terraform and EC2/ALB bootstrap commands. The short version is:
+
+1. Apply Terraform once with `enable_https_listener=false` to create the ALB, private EC2 instance, release bucket, SSM document, IAM roles, and ACM certificate request.
+2. Publish the ACM validation records in external DNS and wait for the certificate to become `ISSUED`.
+3. Apply Terraform again with `enable_https_listener=true` to enable the HTTPS listener.
+4. Configure the production repository variables used by `.github/workflows/deploy.yml`:
+   - `AWS_REGION`
+   - `AWS_DEPLOY_ROLE_ARN`
+   - `RELEASE_BUCKET_NAME`
+   - `DOCS_INSTANCE_ID`
+   - `DOCS_SSM_DOCUMENT_NAME`
+   - `DOCS_TARGET_GROUP_ARN`
+   - `DOCS_ALB_DNS_NAME`
+   - `DOCS_PUBLIC_BASE_URL`
+5. Prefer a protected `production` environment so the first post-merge run on `main` waits for approval. The workflow becomes manually dispatchable only once it exists on `main`, so the safest first rollout is: configure the variables first, merge, then approve the pending run or cancel it and use `workflow_dispatch` on `main`.
+6. Use the deploy workflow to build a release archive, upload it to S3, install it through SSM, wait for ALB target health, and probe the new ALB directly while preserving the canonical `DOCS_PUBLIC_BASE_URL` hostname in TLS and HTTP. The direct probes are the authoritative check. The target-health wait returns as soon as the target group reports healthy, and a target healthy before the swap can still be reporting healthy just after it, so the wait does not prove which release answered — a green wait alone is not a successful deployment.
+7. Cut `docs.authifi.io` over from Cloudflare only after those direct-ALB probes pass, then rerun the canonical verification against `https://docs.authifi.io/`.
+
+If you merge the workflow before setting the required production variables or before protecting the `production` environment, the first push-triggered run may fail fast in `Verify required repository variables`. That failure is operationally honest, but it is avoidable.
+
+After the deploy succeeds, the workflow requests `/privacy-policy/` and a protected guide URL through `curl --connect-to`, so it connects directly to `DOCS_ALB_DNS_NAME` while still presenting the canonical `DOCS_PUBLIC_BASE_URL` hostname for TLS SNI, certificate validation, redirects, and `Origin` semantics. A release that starts but cannot serve therefore fails before DNS cutover.
+
+Rerunning the deploy workflow for a SHA that is already in S3 reuses the existing release artifact and continues to the SSM install, so reruns are safe. For rollback, dispatch the workflow with an earlier 40-character `release_sha`; see [`infra/README.md`](infra/README.md) for the exact procedure and the installer's on-host rollback behavior.
+
+[`operations/aws-oidc-hosting.md`](operations/aws-oidc-hosting.md) captures the repo-specific operating notes that sit on top of the raw infrastructure instructions.
+
+## DNS Cutover And Rollback
+
+Create the ACM validation records first and leave `docs.authifi.io` on Cloudflare Pages until the new ALB has passed deployment probes.
+
+For cutover:
+
+- lower DNS TTLs before the change window if your provider allows it
+- create only the ACM validation records first, without moving `docs.authifi.io` yet
+- wait for certificate validation and the second Terraform apply to settle
+- configure `DOCS_ALB_DNS_NAME` and the rest of the production workflow variables
+- run the deploy workflow and let it connect directly to the ALB before cutover
+- cut DNS from Cloudflare to the ALB only after those direct probes pass
+- rerun the public and protected verification targets against `https://docs.authifi.io/` before announcing completion
+- **disconnect the Cloudflare Pages Git integration** for the docs project, or disable its production and preview deployments, so a later push to `main` cannot silently republish an ungated copy of the site
+- remove `docs.authifi.io` as a custom domain from the Cloudflare Pages project so it cannot reclaim the hostname
+- keep the Pages project itself until the rollback window closes
+
+For rollback:
+
+- edge rollback: restore the `docs.authifi.io` `CNAME` to `authifi.pages.dev`, re-add `docs.authifi.io` as a Cloudflare Pages custom domain, and re-enable the Pages Git integration if it was disconnected during cutover — this restores the fully public, ungated site
+- application rollback: redeploy a previous known-good 40-character release SHA through the `Deploy` workflow using the procedure in [`infra/README.md`](infra/README.md)
+
+## Post-Deploy Verification
+
+Run these checks against production after a cutover or deploy:
+
+```bash
 curl -sI https://docs.authifi.io/
-curl -sH "Accept: application/linkset+json" https://docs.authifi.io/.well-known/api-catalog
+curl -sI https://docs.authifi.io/privacy-policy/
+curl -sI https://docs.authifi.io/terms-of-service/
+curl -sI https://docs.authifi.io/sms-opt-in.html
+curl -sI https://docs.authifi.io/robots.txt
 curl -sI https://docs.authifi.io/auth.md
+curl -s https://docs.authifi.io/sitemap.xml
 curl -s https://docs.authifi.io/.well-known/agent-skills/index.json
-curl -sI https://docs.authifi.io/ -H "Accept: text/markdown"
+curl -sI https://docs.authifi.io/.well-known/api-catalog
 ```
 
-Run a full scan:
+Also confirm that a public prefix cannot be used to reach protected content:
 
 ```bash
-curl -s -X POST https://isitagentready.com/api/scan \
-  -H "Content-Type: application/json" \
-  -d '{"url":"https://docs.authifi.io"}'
+curl -sI --path-as-is 'https://docs.authifi.io/assets/%2e%2e/index.html'
+curl -sI --path-as-is 'https://docs.authifi.io/assets/%2e%2e/search/search_index.json'
 ```
 
-## Project Structure
+Expected behavior:
 
-```
-authifi-docs/
-├── .changeset/              # Changesets configuration
-├── docs/                    # Documentation source files
-│   ├── index.md            # Home page
-│   ├── robots.txt          # Crawl and AI bot policy
-│   ├── _headers            # Cloudflare Pages header rules
-│   ├── auth.md             # Agent access instructions
-│   ├── .well-known/        # Agent discovery endpoints
-│   ├── hooks/              # MkDocs build hooks
-│   ├── javascripts/        # Client-side scripts (WebMCP)
-│   ├── authorization/      # Authorization concepts
-│   ├── guides/             # Administrator guides
-│   └── security/           # Security documentation
-├── mkdocs.yml              # MkDocs configuration
-├── package.json            # Node.js dependencies (for changesets)
-├── requirements.txt        # Python dependencies
-├── CONTRIBUTING.md         # Contributor guide
-└── README.md               # This file
-```
+- `/` returns an OIDC login redirect for unauthenticated requests
+- `/privacy-policy/`, `/terms-of-service/`, `/sms-opt-in.html`, `/robots.txt`, `/auth.md`, `/sitemap.xml`, and `/.well-known/*` stay public
+- HTML pages are served as `text/html; charset=utf-8`, not `application/octet-stream`
+- encoded traversal probes return `404`
+- protected responses carry `Cache-Control: private, no-store` and `Vary: Cookie`
+- `sitemap.xml` includes only the public legal URLs
+- protected guides and security pages are absent from the sitemap and from the public legal pages' navigation
 
-## Versioning with Changesets
+## Agent-Facing Assets
 
-This project uses [Changesets](https://github.com/changesets/changesets) to manage versioning and generate changelogs.
+The build hook at `docs/hooks/agent_assets.py` publishes:
 
-### Adding a Changeset
+- `/robots.txt`
+- `/auth.md`
+- `/.well-known/api-catalog`
+- `/.well-known/agent-skills/index.json`
+- `/sitemap.xml`
 
-When you make changes that should be noted in the changelog, add a changeset:
+`docs/_headers` remains source data for the server's root `Link` headers. It is not a hosting-platform contract in this deployment model.
+
+## Versioning
+
+This repository still uses [Changesets](https://github.com/changesets/changesets) for release-note management. Add a changeset only when the change should appear in the changelog:
 
 ```bash
 npm run changeset:add
 ```
 
-This will prompt you to:
-1. Select the type of change (major, minor, or patch)
-2. Write a summary of the change
+## Contributing
 
-The changeset file is committed with your PR and consumed when releasing.
-
-### Version Types
-
-- **patch**: Bug fixes, typo corrections, small updates
-- **minor**: New documentation pages, significant content additions
-- **major**: Major restructuring, breaking changes to URL structure
-
-### Releasing (Automated)
-
-When PRs with changesets are merged to `main`, a GitHub Action automatically:
-
-1. Detects pending changesets
-2. Applies version bumps directly to `package.json` and `CHANGELOG.md`
-3. Commits and pushes the changes
-
-No manual intervention required.
-
-To manually release (if needed):
-
-```bash
-npm run version
-```
-
-### Checking Status
-
-To see pending changesets:
-
-```bash
-npm run changeset:status
-```
-
-## Technology Stack
-
-- **Static Site Generator**: [MkDocs](https://www.mkdocs.org/)
-- **Theme**: [Material for MkDocs](https://squidfunk.github.io/mkdocs-material/)
-- **Hosting**: [Cloudflare Pages](https://pages.cloudflare.com/)
-- **Features**: Full-text search, dark mode, mobile responsive, deploy previews
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the contributor workflow, local preview options, CI expectations, and reviewer checklist.

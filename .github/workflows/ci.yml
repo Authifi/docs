@@ -1,0 +1,228 @@
+name: CI
+
+on:
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  TERRAFORM_IMAGE: hashicorp/terraform:1.15.7@sha256:40e61a86763083ea987ded0ffa15f6d75e0df48ed16275811f949b3ecbcd8aae
+  HEALTH_PORT: "8080"
+  MOCK_OIDC_HOST: oidc-mock.local.test
+
+jobs:
+  validate:
+    name: Validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install Python dependencies
+        run: |
+          set -euo pipefail
+          # No bare package names, and no pip upgrade: every version installed
+          # here comes from the checkout, and pip stays the one setup-python
+          # provides for 3.12 rather than whatever PyPI has this morning, so a
+          # validation run reflects this commit and not the day it ran. The
+          # server's dependencies arrive as the full closure via requirements-dev.
+          python -m pip install -r requirements.txt -r server/requirements-dev.txt
+
+      - name: Run server tests
+        run: |
+          set -euo pipefail
+          python -m pytest server/tests
+
+      - name: Build MkDocs site
+        run: |
+          set -euo pipefail
+          mkdocs build --strict
+
+      - name: Build native release artifact
+        run: |
+          set -euo pipefail
+          ./scripts/build-release.sh "$GITHUB_SHA" dist/releases
+
+      - name: Verify offline release installation
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf dist/expanded dist/runtime dist/uvicorn.log
+          mkdir -p dist/expanded
+
+          python - "dist/releases/$GITHUB_SHA.tar.gz" "dist/expanded" <<'PY'
+          import sys
+          import tarfile
+          from pathlib import Path
+
+          archive = Path(sys.argv[1])
+          destination = Path(sys.argv[2])
+
+          with tarfile.open(archive) as release:
+              release.extractall(destination, filter="data")
+          PY
+
+          python -m venv dist/runtime
+          source dist/runtime/bin/activate
+          cmp --silent dist/expanded/requirements.txt server/requirements.txt
+          python -m pip install --no-index --find-links=dist/expanded/wheelhouse -r dist/expanded/requirements.txt
+
+      - name: Probe native release server
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cleanup_server() {
+            local status=$?
+            if [[ -n "${pid:-}" ]]; then
+              kill "$pid" 2>/dev/null || true
+              wait "$pid" 2>/dev/null || true
+            fi
+            if [[ "$status" -ne 0 && -f dist/uvicorn.log ]]; then
+              echo "Native release probe log:" >&2
+              cat dist/uvicorn.log >&2
+            fi
+            return "$status"
+          }
+          trap cleanup_server EXIT
+
+          export OIDC_ISSUER=https://issuer.example.com
+          export OIDC_CLIENT_ID=docs
+          export SESSION_SECRET=ci-session-secret
+          export "PUBLIC_BASE_URL=http://127.0.0.1:${HEALTH_PORT}"
+          export SITE_DIR="$PWD/dist/expanded/site"
+
+          dist/runtime/bin/uvicorn server.main:app \
+            --app-dir dist/expanded \
+            --host 127.0.0.1 \
+            --port "$HEALTH_PORT" \
+            >dist/uvicorn.log 2>&1 &
+          pid=$!
+
+          base_url="http://127.0.0.1:${HEALTH_PORT}"
+          healthy=0
+          for _ in $(seq 1 30); do
+            if curl --fail --silent --show-error "${base_url}/health" > /dev/null; then
+              healthy=1
+              break
+            fi
+            if ! kill -0 "$pid" 2>/dev/null; then
+              echo "Uvicorn exited before becoming healthy" >&2
+              break
+            fi
+            sleep 1
+          done
+
+          if [[ "$healthy" != "1" ]]; then
+            echo "Native release server failed health check" >&2
+            exit 1
+          fi
+
+          curl --fail --silent --show-error "${base_url}/health" | grep -q '"status":"ok"'
+
+          # Both lists are read out of the module here, before the loop starts.
+          # A heredoc written inside the loop body would carry the loop's
+          # indentation, and an indented terminator never closes a quoted
+          # heredoc: the shell swallows the rest of the step and dies at
+          # `unexpected end of file`. YAML strips the block's own indentation
+          # and nothing else, so a heredoc only works at this level.
+          mapfile -t bypass_probes < <(python - <<'PY'
+          from server.local_smoke import BYPASS_PROBE_PATHS
+
+          for path in BYPASS_PROBE_PATHS:
+              print(path)
+          PY
+          )
+          mapfile -t protected_markers < <(python - <<'PY'
+          from server.local_smoke import PROTECTED_CONTENT_MARKERS
+
+          for marker in PROTECTED_CONTENT_MARKERS:
+              print(marker)
+          PY
+          )
+
+          # An empty list would make every check below vacuous.
+          if (( ${#bypass_probes[@]} == 0 || ${#protected_markers[@]} == 0 )); then
+            echo "Expected non-empty traversal probe paths and protected content markers" >&2
+            exit 1
+          fi
+
+          for probe in "${bypass_probes[@]}"; do
+            body_file="$(mktemp)"
+            status="$(curl --silent --show-error --path-as-is \
+              --output "$body_file" \
+              --write-out '%{http_code}' "${base_url}${probe}")"
+            if [[ "$status" != "404" ]]; then
+              echo "Encoded traversal probe $probe returned $status, expected 404" >&2
+              cat "$body_file" >&2
+              rm -f "$body_file"
+              exit 1
+            fi
+
+            for marker in "${protected_markers[@]}"; do
+              if grep --fixed-strings --quiet -- "$marker" "$body_file"; then
+                echo "Encoded traversal probe $probe leaked protected content marker $marker" >&2
+                cat "$body_file" >&2
+                rm -f "$body_file"
+                exit 1
+              fi
+            done
+
+            rm -f "$body_file"
+          done
+
+      # Needed only by the host-side smoke client, which reaches the provider
+      # through the loopback-published port. The docs container resolves the
+      # same hostname through a Compose network alias.
+      - name: Resolve the mock issuer hostname locally
+        run: |
+          set -euo pipefail
+          echo "127.0.0.1 ${MOCK_OIDC_HOST}" | sudo tee -a /etc/hosts > /dev/null
+
+      - name: Credential-free local mock OIDC smoke test
+        run: |
+          set -euo pipefail
+          python -m server.local_smoke
+
+      - name: Tear down the mock OIDC stack
+        if: always()
+        run: |
+          set -uo pipefail
+          docker compose -f compose.yaml -f compose.mock.yaml down --volumes --remove-orphans || true
+
+      - name: Terraform format check
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -v "$PWD:/workspace" \
+            -w /workspace/infra \
+            "$TERRAFORM_IMAGE" \
+            fmt -check -recursive
+
+      - name: Terraform validate
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -v "$PWD:/workspace" \
+            -w /workspace/infra \
+            "$TERRAFORM_IMAGE" \
+            init -backend=false
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -v "$PWD:/workspace" \
+            -w /workspace/infra \
+            "$TERRAFORM_IMAGE" \
+            validate

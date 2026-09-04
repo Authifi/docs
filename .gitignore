@@ -1,8 +1,8 @@
 # MkDocs build output
 site/
 
-# Agent working files
-docs/superpowers/
+# Release archives, wheelhouses, and the runtimes built beside them
+dist/
 
 # Python
 __pycache__/
@@ -17,10 +17,27 @@ __pycache__/
 venv/
 .venv/
 env/
-.env/
+.env
+.env.local
+.env.*
+!.env.example
 
 # Node.js
 node_modules/
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+# Caller-supplied state backend declaration; see infra/README.md. Already
+# covered by the pattern above, named explicitly so narrowing it stays a
+# deliberate act rather than an accidental way to commit account specifics.
+infra/backend_override.tf
 
 # IDE
 .idea/

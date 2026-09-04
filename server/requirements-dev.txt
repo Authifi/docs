@@ -1,0 +1,7 @@
+# The runtime closure, plus the one thing needed to run the suite against it.
+# Pinned exactly for the same reason as the lock: a test run that resolves a
+# different pytest than yesterday is not a check on this commit. httpx used to
+# be repeated here as a range; the lock pins it, so the range only obscured it.
+
+-r requirements.txt
+pytest==8.4.2
