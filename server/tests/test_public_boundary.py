@@ -876,3 +876,105 @@ def test_every_published_path_still_fits_with_a_query_attached(built_site: Path)
     for path in published_request_paths(built_site):
         with_query = f"{path}{highlight}"
         assert normalize_next_path(with_query) == with_query, with_query
+
+
+# --- The navigation skill's access claims -------------------------------------
+#
+# Both public skills are fetchable anonymously and are read by agents that
+# cannot log in. Anything they say about how to reach a page has to be true for
+# that reader, or the agent burns requests on a boundary it cannot cross.
+
+NAVIGATION_SKILL = (
+    REPO_ROOT / "docs" / ".well-known" / "agent-skills" / "authifi-docs-navigation" / "SKILL.md"
+)
+PUBLIC_SKILLS = (NAVIGATION_SKILL, OAUTH_SKILL)
+
+# Every product path the navigation skill points an agent at.
+NAVIGATION_SKILL_PRODUCT_PATHS = (
+    "/",
+    "/authorization/",
+    "/guides/",
+    "/security/",
+    "/feature-list.html",
+    "/authorization/authorization/",
+    "/authorization/admin-roles/",
+    "/guides/sso-integration-guide/",
+    "/guides/nhe-delegated-tokens/",
+    "/security/recommended-secure-configuration/",
+)
+
+
+@pytest.mark.parametrize("skill", PUBLIC_SKILLS, ids=lambda path: path.parent.name)
+def test_no_public_skill_promises_markdown_negotiation(skill: Path) -> None:
+    """Starlette serves the built file and negotiates nothing.
+
+    `Accept: text/markdown` on a documentation page returns the same HTML, so
+    an agent told to ask for Markdown gets HTML and no signal that it asked for
+    the wrong thing.
+    """
+    text = skill.read_text(encoding="utf-8").lower()
+
+    assert "text/markdown" not in text
+    assert "markdown for agents" not in text
+
+
+@pytest.mark.parametrize("skill", PUBLIC_SKILLS, ids=lambda path: path.parent.name)
+def test_no_public_skill_calls_the_whole_site_public(skill: Path) -> None:
+    text = skill.read_text(encoding="utf-8")
+
+    assert "is public and unauthenticated" not in text
+    assert "mixed access" in text.lower()
+
+
+@pytest.mark.parametrize("skill", PUBLIC_SKILLS, ids=lambda path: path.parent.name)
+def test_every_public_skill_lists_exactly_the_server_public_allowlist(skill: Path) -> None:
+    section = skill_section(skill.read_text(encoding="utf-8"), "## Access model")
+    listed = set(re.findall(r"^- `([^`]+)`$", section, flags=re.MULTILINE))
+
+    assert listed == PUBLIC_EXACT_PATHS | set(PUBLIC_PREFIXES)
+    for path in listed:
+        assert is_public_path(path), path
+
+
+@pytest.mark.parametrize("path", NAVIGATION_SKILL_PRODUCT_PATHS)
+def test_every_page_the_navigation_skill_points_at_is_gated(path: str) -> None:
+    """None of these can be fetched by an agent without a browser session."""
+    assert not is_public_path(path)
+    assert path in NAVIGATION_SKILL.read_text(encoding="utf-8")
+
+
+def test_the_navigation_skill_says_its_pages_need_an_interactive_login() -> None:
+    text = NAVIGATION_SKILL.read_text(encoding="utf-8").lower()
+
+    assert "interactive" in text
+    assert "307" in text, "the redirect an anonymous fetch actually gets is worth naming"
+
+
+def test_the_navigation_skill_rules_out_an_api_token_bypass() -> None:
+    text = NAVIGATION_SKILL.read_text(encoding="utf-8").lower()
+
+    assert "api token" in text or "api-token" in text
+    assert "v1" in text
+
+
+def test_the_navigation_skill_scopes_the_webmcp_tools_to_a_logged_in_browser() -> None:
+    """`search_docs` queries a gated index, so it works only after login.
+
+    The tools are also registered only on pages that have the controls they
+    drive, which public pages do not; see test_webmcp.
+    """
+    text = NAVIGATION_SKILL.read_text(encoding="utf-8")
+
+    section = skill_section(text, "## Fetching content")
+    assert "search_docs" in section
+    assert "browser" in section.lower()
+    assert "after" in section.lower() and "sign" in section.lower()
+
+
+def test_the_navigation_skill_still_names_the_public_discovery_documents() -> None:
+    """The one thing an anonymous agent *can* do has to stay findable."""
+    text = NAVIGATION_SKILL.read_text(encoding="utf-8")
+
+    for path in ("/.well-known/api-catalog", "/.well-known/agent-skills/index.json", "/robots.txt"):
+        assert path in text
+        assert is_public_path(path), path

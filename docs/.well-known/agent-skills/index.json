@@ -6,7 +6,7 @@
       "type": "skill-md",
       "description": "Navigate the Authifi documentation site information architecture and find relevant guides.",
       "url": "https://docs.authifi.io/.well-known/agent-skills/authifi-docs-navigation/SKILL.md",
-      "digest": "sha256:16f79ea8608638a635fe3e56717940243ca1d0b1d8a69f91c39740bbc891878e"
+      "digest": "sha256:2af2fc87a27ec736223f44ceb3bb3e2c3fad474b8ca799363a9ffd155e0a5908"
     },
     {
       "name": "authifi-oauth-concepts",
