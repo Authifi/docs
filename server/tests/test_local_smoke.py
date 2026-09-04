@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from pathlib import Path
+import socket
 from types import SimpleNamespace
 from urllib.parse import quote, urlsplit
 
@@ -496,6 +497,12 @@ def test_dump_diagnostics_survives_a_failing_docker_command(tmp_path: Path) -> N
     dump_diagnostics(tmp_path, {}, runner=failing)
 
 
+def resolve_ci_mock_host(host: str, port: int | None, *args, **kwargs):
+    if host != "oidc-mock.local.test":
+        raise socket.gaierror(f"cannot resolve {host}")
+    return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", port or 0))]
+
+
 def test_a_failed_smoke_dumps_diagnostics_before_tearing_down(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -509,10 +516,21 @@ def test_a_failed_smoke_dumps_diagnostics_before_tearing_down(
         raise AssertionError("smoke failed")
 
     real_parse_args = local_smoke.parse_args
+    real_compose_env_for_args = local_smoke.compose_env_for_args
+    monkeypatch.setenv("MOCK_OIDC_HOST", "oidc-mock.local.test")
     monkeypatch.setattr(local_smoke, "run_compose", fake_run_compose)
     monkeypatch.setattr(local_smoke, "run_smoke", fake_run_smoke)
     monkeypatch.setattr(local_smoke, "dump_diagnostics", lambda *a, **k: calls.append("diagnostics"))
     monkeypatch.setattr(local_smoke, "parse_args", lambda: real_parse_args([]))
+    monkeypatch.setattr(
+        local_smoke,
+        "compose_env_for_args",
+        lambda args, environ=None: real_compose_env_for_args(
+            args,
+            environ=environ,
+            resolve=resolve_ci_mock_host,
+        ),
+    )
 
     with pytest.raises(AssertionError, match="smoke failed"):
         local_smoke.main()
@@ -523,10 +541,21 @@ def test_a_failed_smoke_dumps_diagnostics_before_tearing_down(
 def test_a_passing_smoke_dumps_no_diagnostics(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[str] = []
     real_parse_args = local_smoke.parse_args
+    real_compose_env_for_args = local_smoke.compose_env_for_args
+    monkeypatch.setenv("MOCK_OIDC_HOST", "oidc-mock.local.test")
     monkeypatch.setattr(local_smoke, "run_compose", lambda p, e, *a: calls.append(f"compose {a[0]}"))
     monkeypatch.setattr(local_smoke, "run_smoke", lambda s: calls.append("smoke"))
     monkeypatch.setattr(local_smoke, "dump_diagnostics", lambda *a, **k: calls.append("diagnostics"))
     monkeypatch.setattr(local_smoke, "parse_args", lambda: real_parse_args([]))
+    monkeypatch.setattr(
+        local_smoke,
+        "compose_env_for_args",
+        lambda args, environ=None: real_compose_env_for_args(
+            args,
+            environ=environ,
+            resolve=resolve_ci_mock_host,
+        ),
+    )
 
     assert local_smoke.main() == 0
     assert calls == ["compose up", "smoke", "compose down"]

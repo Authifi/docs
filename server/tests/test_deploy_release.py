@@ -332,6 +332,37 @@ while True:
         path.write_text(body, encoding="utf-8")
         path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
+    def make_python_venv_activation_copymode_shim(self) -> Path:
+        """Simulate CPython's template-mode copy leaking write bits into a venv.
+
+        The real bug was not "our Python happened to do this today", it was the
+        installer trusting whatever modes `python -m venv` left behind. This
+        shim keeps the test deterministic by delegating to the real interpreter
+        and then widening the activation scripts after a successful venv
+        creation.
+        """
+        shim = self.fake_bin / "python-venv-copymode-shim"
+        self._write_executable(
+            shim,
+            f"""#!/usr/bin/env python3
+import stat
+import subprocess
+import sys
+from pathlib import Path
+
+command = [{sys.executable!r}, *sys.argv[1:]]
+completed = subprocess.run(command)
+
+if completed.returncode == 0 and len(sys.argv) >= 4 and sys.argv[1:3] == ["-m", "venv"]:
+    for activate in Path(sys.argv[3]).glob("bin/activate*"):
+        if activate.is_file():
+            activate.chmod(activate.stat().st_mode | stat.S_IWGRP | stat.S_IWOTH)
+
+sys.exit(completed.returncode)
+""",
+        )
+        return shim
+
     def make_release(self, sha: str) -> Path:
         release = self.releases / sha
         (release / "site").mkdir(parents=True, exist_ok=True)
@@ -561,6 +592,9 @@ def test_the_installed_release_tree_is_never_group_or_other_writable(
     """
     sha = "3" * 38 + "cd"
     deploy_harness.publish_archive(sha)
+    deploy_harness.env["AUTHIFI_DOCS_PYTHON_BIN"] = str(
+        deploy_harness.make_python_venv_activation_copymode_shim()
+    )
 
     assert deploy_harness.run(sha).returncode == 0
 

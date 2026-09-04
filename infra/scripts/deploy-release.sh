@@ -213,6 +213,10 @@ tar -xzf "$archive" -C "$candidate"
 "$candidate/.venv/bin/pip" install --no-index \
   --find-links "$candidate/wheelhouse" \
   -r "$candidate/requirements.txt"
+# `python -m venv` copies its activation templates with their packaged modes,
+# so a writable template bypasses this script's umask. Normalise the whole
+# candidate only after every writer that populates it has finished.
+chmod -R go-w "$candidate"
 
 set -a
 # shellcheck disable=SC1090,SC1091
