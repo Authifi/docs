@@ -422,7 +422,7 @@ def test_login_redirects_and_persists_safe_next(site_dir: Path) -> None:
 
 @pytest.mark.parametrize(
     ("secret", "expected_method"),
-    [(None, "none"), ("confidential-secret", "client_secret_basic")],
+    [(None, "none"), ("confidential-secret", "client_secret_post")],
 )
 def test_auth_client_selects_token_authentication_from_secret_presence(
     secret: str | None,
@@ -1026,6 +1026,45 @@ def test_oidc_client_secret_is_optional_for_a_pkce_public_client(
         monkeypatch.setenv("OIDC_CLIENT_SECRET", secret)
 
     assert AppConfig.from_env().oidc_client_secret is None
+
+
+def test_app_config_resolves_named_oidc_secret(site_dir: Path) -> None:
+    requested: list[str] = []
+    values = {
+        "OIDC_ISSUER": "https://issuer.example.com",
+        "OIDC_CLIENT_ID": "docs",
+        "OIDC_CLIENT_SECRET_PARAMETER_NAME": "/authifi-docs/oidc-client-secret",
+        "SESSION_SECRET": "session-secret",
+        "PUBLIC_BASE_URL": "https://docs.example.com",
+        "SITE_DIR": str(site_dir),
+    }
+
+    config = AppConfig.from_env(
+        values,
+        parameter_loader=lambda name: requested.append(name) or "resolved-secret",
+    )
+
+    assert requested == ["/authifi-docs/oidc-client-secret"]
+    assert config.oidc_client_secret == "resolved-secret"
+
+
+def test_app_config_rejects_empty_named_oidc_secret_without_exposing_it(
+    site_dir: Path,
+) -> None:
+    parameter_name = "/authifi-docs/oidc-client-secret"
+    values = {
+        "OIDC_ISSUER": "https://issuer.example.com",
+        "OIDC_CLIENT_ID": "docs",
+        "OIDC_CLIENT_SECRET_PARAMETER_NAME": parameter_name,
+        "SESSION_SECRET": "session-secret",
+        "PUBLIC_BASE_URL": "https://docs.example.com",
+        "SITE_DIR": str(site_dir),
+    }
+
+    with pytest.raises(RuntimeError) as error:
+        AppConfig.from_env(values, parameter_loader=lambda _name: "")
+
+    assert parameter_name in str(error.value)
 
 
 def test_app_config_reads_environment_defaults() -> None:

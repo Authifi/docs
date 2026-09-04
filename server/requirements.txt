@@ -14,6 +14,7 @@
 
 # Direct -- see requirements.in for what each one is for.
 authlib==1.6.12
+boto3==1.43.89
 httpx==0.28.1
 itsdangerous==2.2.0
 starlette==0.48.0
@@ -22,6 +23,7 @@ uvicorn==0.37.0
 # Transitive, resolved above. The `via` notes are the edges that put each one
 # here; they are checked against the installed metadata by test_requirements.
 anyio==4.15.0  # via httpx, starlette
+botocore==1.43.89  # via boto3, s3transfer
 certifi==2026.7.22  # via httpcore, httpx -- TLS trust store
 cffi==2.1.1  # via cryptography
 click==8.5.0  # via uvicorn
@@ -29,5 +31,10 @@ cryptography==50.0.1  # via authlib -- JWS/JWT verification
 h11==0.16.0  # via httpcore, uvicorn -- HTTP/1.1 parsing
 httpcore==1.0.9  # via httpx -- connection pooling and TLS handshake
 idna==3.19  # via anyio, httpx -- hostname parsing
+jmespath==1.1.0  # via boto3, botocore
 pycparser==3.0  # via cffi
+python-dateutil==2.9.0.post0  # via botocore
+s3transfer==0.19.2  # via boto3
+six==1.17.0  # via python-dateutil
 typing_extensions==4.16.0  # via anyio, starlette
+urllib3==2.7.0  # via botocore

@@ -165,6 +165,39 @@ CONTROL_CHARACTERS = frozenset(chr(code) for code in range(0x20)) | {"\x7f"}
 DOT_SEGMENTS = frozenset({".", ".."})
 
 
+SecretParameterLoader = Callable[[str], str]
+
+
+def load_ssm_secure_string(name: str) -> str:
+    import boto3
+
+    response = boto3.client("ssm").get_parameter(Name=name, WithDecryption=True)
+    value = response["Parameter"]["Value"]
+    if not isinstance(value, str) or not value:
+        raise RuntimeError(f"OIDC client secret parameter {name!r} is empty")
+    return value
+
+
+def resolve_oidc_client_secret(
+    environ: Mapping[str, str],
+    parameter_loader: SecretParameterLoader = load_ssm_secure_string,
+) -> str | None:
+    direct = environ.get("OIDC_CLIENT_SECRET") or None
+    parameter_name = environ.get("OIDC_CLIENT_SECRET_PARAMETER_NAME") or None
+    if direct and parameter_name:
+        raise RuntimeError(
+            "set only one of OIDC_CLIENT_SECRET and "
+            "OIDC_CLIENT_SECRET_PARAMETER_NAME"
+        )
+    if not parameter_name:
+        return direct
+
+    value = parameter_loader(parameter_name)
+    if not value:
+        raise RuntimeError(f"OIDC client secret parameter {parameter_name!r} is empty")
+    return value
+
+
 @dataclass(frozen=True)
 class AppConfig:
     oidc_issuer: str
@@ -186,7 +219,11 @@ class AppConfig:
         return self.public_base_url.startswith("https://")
 
     @classmethod
-    def from_env(cls, environ: Mapping[str, str] | None = None) -> AppConfig:
+    def from_env(
+        cls,
+        environ: Mapping[str, str] | None = None,
+        parameter_loader: SecretParameterLoader = load_ssm_secure_string,
+    ) -> AppConfig:
         env = dict(os.environ if environ is None else environ)
         base_dir = Path(__file__).resolve().parent.parent
         site_dir_value = env.get("SITE_DIR", DEFAULT_SITE_DIR)
@@ -197,7 +234,7 @@ class AppConfig:
         return cls(
             oidc_issuer=env["OIDC_ISSUER"],
             oidc_client_id=env["OIDC_CLIENT_ID"],
-            oidc_client_secret=env.get("OIDC_CLIENT_SECRET") or None,
+            oidc_client_secret=resolve_oidc_client_secret(env, parameter_loader),
             session_secret=env["SESSION_SECRET"],
             public_base_url=env["PUBLIC_BASE_URL"],
             site_dir=site_dir,
@@ -1194,7 +1231,7 @@ class DocsOAuth(OAuth):
 def create_auth_client(config: AppConfig):
     oauth = DocsOAuth()
     token_auth_method = (
-        "client_secret_basic" if config.oidc_client_secret else "none"
+        "client_secret_post" if config.oidc_client_secret else "none"
     )
     oauth.register(
         name="authifi",
