@@ -382,6 +382,7 @@ from pathlib import Path
 # bootstrap this repository ships.
 EXPECTED_CONFIG = frozenset(
     (
+        "AWS_REGION",
         "OIDC_ISSUER",
         "OIDC_CLIENT_ID",
         "OIDC_CLIENT_SECRET_PARAMETER_NAME",

@@ -27,6 +27,7 @@ DEPLOYER = ROOT / "infra" / "scripts" / "deploy-release.sh"
 # The installer requires this key set and no other, so this is not just a
 # fixture -- it is the contract, and the tests below vary it one key at a time.
 HOST_CONFIGURATION = {
+    "AWS_REGION": "us-east-1",
     "OIDC_ISSUER": "https://issuer.authifi.io/tenants/authifi",
     "OIDC_CLIENT_ID": "authifi-docs",
     "OIDC_CLIENT_SECRET_PARAMETER_NAME": "/authifi-docs/oidc-client-secret",
@@ -407,7 +408,7 @@ Path(os.environ["UVICORN_ENV_FILE"]).write_text(
         {
             name: value
             for name, value in os.environ.items()
-            if name in ("OIDC_ISSUER", "OIDC_CLIENT_ID", "OIDC_CLIENT_SECRET_PARAMETER_NAME",
+            if name in ("AWS_REGION", "OIDC_ISSUER", "OIDC_CLIENT_ID", "OIDC_CLIENT_SECRET_PARAMETER_NAME",
                         "PUBLIC_BASE_URL", "SITE_DIR", "POST_LOGOUT_PATH", "SESSION_SECRET",
                         "AUTHIFI_ENV", "SESSION_NAME")
         }

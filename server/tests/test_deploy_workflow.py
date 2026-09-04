@@ -209,7 +209,7 @@ def test_select_release_handles_push_and_workflow_dispatch_safely() -> None:
     assert "build=true" in lines
     assert 'echo "Release SHA must be 40 lowercase hexadecimal characters" >&2' in lines
     assert (
-        'minimum_compatible_sha="1452ee44025ec71b6253d9807709d1145d9b7634"'
+        'minimum_compatible_sha="121aa83d157889acbb083cafb0d58b83ca8d42c3"'
         in lines
     )
     assert any('git cat-file -e "$sha^{commit}"' in line for line in lines)

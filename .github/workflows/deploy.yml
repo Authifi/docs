@@ -93,7 +93,7 @@ jobs:
             exit 1
           fi
 
-          minimum_compatible_sha="1452ee44025ec71b6253d9807709d1145d9b7634"
+          minimum_compatible_sha="121aa83d157889acbb083cafb0d58b83ca8d42c3"
           if ! git cat-file -e "$sha^{commit}" 2>/dev/null ||
              ! git merge-base --is-ancestor "$minimum_compatible_sha" "$sha"; then
             echo "Release $sha predates confidential OIDC client support and cannot be deployed." >&2
