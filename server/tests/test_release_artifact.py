@@ -135,6 +135,121 @@ def test_the_release_output_directory_is_not_committable() -> None:
         assert completed.returncode == 0, f"{path} is not ignored"
 
 
+def archiver_program() -> str:
+    """The Python `build-release.sh` feeds to the interpreter on its heredoc.
+
+    Running it against a synthetic tree is what makes the properties below
+    testable at all: a full release build downloads wheels from PyPI, so
+    comparing two of them byte for byte would be comparing the network as much
+    as the archiver.
+    """
+    build = BUILDER.read_text(encoding="utf-8")
+    body = build[build.index("\n", build.index("<<'PY'")) + 1 :]
+    terminator = re.search(r"(?m)^PY$", body)
+
+    assert terminator, "the archiver heredoc is not terminated"
+    return body[: terminator.start()]
+
+
+def build_archive(source: Path, destination: Path) -> Path:
+    completed = subprocess.run(
+        [sys.executable, "-", str(source), str(destination)],
+        input=archiver_program(),
+        capture_output=True,
+        text=True,
+        env={**os.environ, "SOURCE_DATE_EPOCH": "0"},
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    return destination
+
+
+def write_release_tree(root: Path, *, file_mode: int, dir_mode: int) -> None:
+    """A release-shaped tree whose every entry carries the given modes."""
+    (root / "site" / "assets").mkdir(parents=True)
+    (root / "server").mkdir()
+    (root / "wheelhouse").mkdir()
+
+    for name, content in {
+        "requirements.txt": "starlette==0.48.0\n",
+        "site/index.html": "<h1>home</h1>",
+        "site/assets/app.css": "body{}",
+        "server/main.py": "app = object()\n",
+        "wheelhouse/example-1.0-py3-none-any.whl": "not-really-a-wheel",
+    }.items():
+        path = root / name
+        path.write_text(content, encoding="utf-8")
+        path.chmod(file_mode)
+
+    # Deepest first, and the owner keeps rwx, so the walk can still descend.
+    for path in sorted(root.rglob("*"), reverse=True):
+        if path.is_dir():
+            path.chmod(dir_mode)
+
+
+# A build machine's umask (022, 002, 077), an executable source file, and a
+# world-writable one. Every one of these used to end up recorded in the archive.
+MODE_VARIANTS = ((0o644, 0o755), (0o664, 0o775), (0o600, 0o700), (0o755, 0o755), (0o666, 0o777))
+
+
+def test_source_modes_never_reach_the_release_archive(tmp_path: Path) -> None:
+    """Two builds of one commit have to produce one archive, byte for byte.
+
+    Permission bits were the last thing in the archive still read off the
+    filesystem: uid, gid, owner names, and mtime were all pinned, and the mode
+    was not. So the checksum of a release depended on the umask of whatever
+    built it, and on whether anyone had ever run `chmod` in a checkout. A
+    workflow rerun then reuses an existing S3 release only after its checksum
+    matches, which means that dependency was a failed deploy waiting for a
+    runner image to change its default umask.
+    """
+    digests: dict[str, tuple[int, int]] = {}
+
+    for index, (file_mode, dir_mode) in enumerate(MODE_VARIANTS):
+        source = tmp_path / f"source-{index}"
+        source.mkdir()
+        write_release_tree(source, file_mode=file_mode, dir_mode=dir_mode)
+        archive = build_archive(source, tmp_path / f"release-{index}.tar.gz")
+        digests.setdefault(
+            hashlib.sha256(archive.read_bytes()).hexdigest(), (file_mode, dir_mode)
+        )
+
+    assert len(digests) == 1, {
+        digest: (oct(file_mode), oct(dir_mode))
+        for digest, (file_mode, dir_mode) in digests.items()
+    }
+
+
+def test_the_archive_records_one_mode_for_files_and_one_for_directories(
+    tmp_path: Path,
+) -> None:
+    """The normalised values, so "identical" cannot mean "identically wrong".
+
+    0644 leaves nothing in a release writable, including by the root installer
+    that unpacks it, and 0755 on directories is what lets the service account
+    traverse to the site it serves. The archive's own copy of the installer is
+    provenance rather than something anything executes, so it is a file like
+    any other here.
+    """
+    source = tmp_path / "source"
+    source.mkdir()
+    write_release_tree(source, file_mode=0o600, dir_mode=0o700)
+
+    with tarfile.open(build_archive(source, tmp_path / "release.tar.gz")) as bundle:
+        members = bundle.getmembers()
+
+    assert len(members) == 9, [member.name for member in members]
+
+    for member in members:
+        assert member.mode == (0o755 if member.isdir() else 0o644), (
+            f"{member.name} is {oct(member.mode)}"
+        )
+        assert member.uid == member.gid == 0, member.name
+        assert member.uname == member.gname == "", member.name
+        assert member.mtime == 0, member.name
+
+
 def test_release_checksum_matches_archive(release: tuple[Path, str]) -> None:
     output, sha = release
     archive = output / f"{sha}.tar.gz"

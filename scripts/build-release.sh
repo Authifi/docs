@@ -58,6 +58,16 @@ with destination.open("wb") as raw:
                 info.uid = info.gid = 0
                 info.uname = info.gname = ""
                 info.mtime = epoch
+                # Permission bits were the last thing here still read off the
+                # filesystem, which made a release's checksum depend on the
+                # umask of whatever built it and on whether anyone had run
+                # chmod in the checkout. A rerun reuses an existing S3 release
+                # only when the checksum matches, so that dependency was a
+                # failed deploy waiting for a runner image to change its
+                # default. Nothing in a release needs to be writable or
+                # executable: the archive's copy of the installer is
+                # provenance, and the on-host virtualenv is built by pip.
+                info.mode = 0o755 if path.is_dir() else 0o644
                 if path.is_file():
                     with path.open("rb") as stream:
                         archive.addfile(info, stream)
