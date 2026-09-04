@@ -14,10 +14,20 @@ variable "service_name" {
   default     = "authifi-docs"
 
   validation {
-    # Also the load balancer and target group name, which AWS limits to 32
-    # characters of alphanumerics and hyphens, with no hyphen at either end.
-    condition     = can(regex("^[a-zA-Z0-9]([a-zA-Z0-9-]{0,30}[a-zA-Z0-9])?$", var.service_name))
-    error_message = "service_name must be 1-32 alphanumerics or hyphens and must not start or end with a hyphen."
+    # The intersection of what every consumer of this name accepts, which is
+    # narrower than any one of them.
+    #
+    # The load balancer and target group take 32 characters of alphanumerics
+    # and hyphens with no hyphen at either end, and they would take mixed case.
+    # `local.release_bucket_name` derives the default release bucket from the
+    # same value, and S3 bucket names are lowercase only -- so `Authifi-Docs`
+    # used to validate, plan cleanly, and then fail during apply at bucket
+    # creation, after the security groups and the certificate had already been
+    # created. Lowercasing only the bucket-derived value would leave the plan
+    # naming something that does not exist, so the constraint belongs here:
+    # one contract, valid for every resource this name reaches.
+    condition     = can(regex("^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$", var.service_name))
+    error_message = "service_name must be 1-32 lowercase alphanumerics or hyphens and must not start or end with a hyphen."
   }
 }
 

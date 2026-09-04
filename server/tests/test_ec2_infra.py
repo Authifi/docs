@@ -601,6 +601,52 @@ def test_the_advertised_origin_matches_the_name_the_certificate_covers() -> None
     assert "== var.custom_domain_name" in condition
 
 
+def test_the_derived_release_bucket_name_is_a_name_s3_will_accept() -> None:
+    """`service_name` names the load balancer *and* the release bucket, and the
+    two have different alphabets.
+
+    An ELB name may be mixed case, an S3 bucket name may not, and the bucket is
+    derived from this variable by default. `Authifi-Docs` therefore passed the
+    validation, planned cleanly, and failed during apply at bucket creation --
+    after the VPC lookups, the security groups, and the certificate had already
+    been created. One lowercase contract for the variable is what makes the
+    derived name valid by construction, rather than a second rule that
+    lowercases it and leaves the plan claiming a name nothing uses.
+    """
+    derived = attribute(LOCALS, "release_bucket_name") or ""
+
+    assert "var.service_name" in derived
+    assert "lower(" not in derived, "the variable is the contract, not a call site fix-up"
+
+    for value in ("authifi-docs", "docs", "a1", "a" * 32):
+        assert variable_accepts(VARIABLES, "service_name", value), value
+
+    for value in (
+        "Authifi-Docs",
+        "AUTHIFI-DOCS",
+        "authifi_docs",
+        "authifi.docs",
+        "-authifi-docs",
+        "authifi-docs-",
+        "",
+        "a" * 33,
+        "authifi docs",
+    ):
+        assert not variable_accepts(VARIABLES, "service_name", value), value
+
+
+@pytest.mark.parametrize("value", ["authifi-docs", "docs", "a1", "a" * 32])
+def test_every_accepted_service_name_derives_a_legal_bucket_name(value: str) -> None:
+    """The derived name is `<service_name>-releases-<12-digit account id>`, and
+    S3 judges the whole thing: 3 to 63 characters, lowercase letters, digits,
+    hyphens and periods only, and no hyphen at either end.
+    """
+    bucket = f"{value}-releases-123456789012"
+
+    assert 3 <= len(bucket) <= 63, bucket
+    assert re.fullmatch(r"[a-z0-9][a-z0-9.-]*[a-z0-9]", bucket), bucket
+
+
 # The two spellings of "the root of this origin", which mean the same
 # deployment and both have to keep working.
 PUBLIC_BASE_URLS_THAT_WORK = ("https://docs.authifi.io", "https://docs.authifi.io/")
