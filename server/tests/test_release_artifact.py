@@ -1,17 +1,25 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import os
 import re
+import shutil
 import subprocess
+import sys
 import tarfile
+import time
 from pathlib import Path
 
 import pytest
+from starlette.testclient import TestClient
+
+from server.tests.support import DummyAuthClient, HEADERS_FILE, SESSION_COOKIE_NAME, encode_session_cookie
 
 ROOT = Path(__file__).resolve().parents[2]
 BUILDER = ROOT / "scripts" / "build-release.sh"
 DOCKERFILE = ROOT / "Dockerfile"
+requires_docker = pytest.mark.skipif(shutil.which("docker") is None, reason="docker CLI is not available")
 
 
 def runtime_python_image() -> str:
@@ -21,6 +29,25 @@ def runtime_python_image() -> str:
     )
     assert match is not None, "Dockerfile no longer pins the Python 3.12 runtime image"
     return match.group(0)
+
+
+def release_app_module(release_root: Path):
+    module_path = release_root / "server" / "app.py"
+    module_name = "release_server_app"
+    spec = importlib.util.spec_from_file_location(module_name, module_path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def expected_root_links() -> list[str]:
+    return [
+        line.strip().removeprefix("Link:").strip()
+        for line in HEADERS_FILE.splitlines()
+        if line.strip().startswith("Link:")
+    ]
 
 
 @pytest.fixture(scope="module")
@@ -38,6 +65,15 @@ def release(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, str]:
     return output, sha
 
 
+@pytest.fixture
+def extracted_release(release: tuple[Path, str], tmp_path: Path) -> Path:
+    output, sha = release
+    extracted = tmp_path / "release"
+    with tarfile.open(output / f"{sha}.tar.gz") as archive:
+        archive.extractall(extracted, filter="data")
+    return extracted
+
+
 def test_release_contains_site_server_lock_and_wheelhouse(
     release: tuple[Path, str],
 ) -> None:
@@ -52,6 +88,33 @@ def test_release_contains_site_server_lock_and_wheelhouse(
     assert any(name.startswith("wheelhouse/") and name.endswith(".whl") for name in names)
 
 
+def test_release_preserves_root_link_header_behavior(extracted_release: Path) -> None:
+    app_module = release_app_module(extracted_release)
+    app = app_module.create_app(
+        config=app_module.AppConfig(
+            oidc_issuer="https://issuer.example.com",
+            oidc_client_id="client-id",
+            oidc_client_secret="client-secret",
+            session_secret="session-secret",
+            public_base_url="https://docs.example.com",
+            site_dir=extracted_release / "site",
+        ),
+        auth_client=DummyAuthClient(),
+    )
+    client = TestClient(app)
+    client.cookies.set(
+        SESSION_COOKIE_NAME,
+        encode_session_cookie(
+            {"user": {"sub": "user-123"}, "authenticated_at": int(time.time())}
+        ),
+    )
+
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert response.headers.get_list("link") == expected_root_links()
+
+
 def test_release_checksum_matches_archive(release: tuple[Path, str]) -> None:
     output, sha = release
     archive = output / f"{sha}.tar.gz"
@@ -60,15 +123,10 @@ def test_release_checksum_matches_archive(release: tuple[Path, str]) -> None:
     assert hashlib.sha256(archive.read_bytes()).hexdigest() == expected
 
 
+@requires_docker
 def test_release_dependencies_install_without_an_index(
-    release: tuple[Path, str],
-    tmp_path: Path,
+    extracted_release: Path,
 ) -> None:
-    output, sha = release
-    extracted = tmp_path / "release"
-    with tarfile.open(output / f"{sha}.tar.gz") as archive:
-        archive.extractall(extracted, filter="data")
-
     subprocess.run(
         [
             "docker",
@@ -77,7 +135,7 @@ def test_release_dependencies_install_without_an_index(
             "--platform",
             "linux/amd64",
             "--volume",
-            f"{extracted}:/release:ro",
+            f"{extracted_release}:/release:ro",
             runtime_python_image(),
             "sh",
             "-c",

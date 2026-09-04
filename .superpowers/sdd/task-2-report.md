@@ -108,3 +108,72 @@ docker offline install -> Successfully installed anyio authlib certifi cffi clic
 - `mkdocs build --strict` emits an upstream Material for MkDocs warning banner unrelated to this change; the build still succeeds.
 - The focused pytest run still reports one pre-existing Starlette/AnyIO deprecation warning from the virtualenv test dependencies.
 - The release artifact intentionally does not include any installer or deployment wrapper; Task 3 is expected to consume this artifact and add that layer.
+
+## Review Fix Addendum
+
+### Review Item 1: Preserve runtime `docs/_headers`
+
+RED command:
+
+```bash
+.venv/bin/python -m pytest server/tests/test_release_artifact.py -v
+```
+
+RED result:
+
+```text
+collected 4 items
+server/tests/test_release_artifact.py::test_release_contains_site_server_lock_and_wheelhouse PASSED
+server/tests/test_release_artifact.py::test_release_preserves_root_link_header_behavior FAILED
+server/tests/test_release_artifact.py::test_release_checksum_matches_archive PASSED
+server/tests/test_release_artifact.py::test_release_dependencies_install_without_an_index PASSED
+AssertionError: assert [] == ['</.well-known/api-catalog>; rel="api-catalog"', '</guides/nhe-delegated-tokens/>; rel="service-doc"', '</guides/sso-integration-guide/>; rel="service-doc"', '</security/recommended-secure-configuration/>; rel="service-doc"']
+```
+
+Cause verified: the release archive omitted `docs/_headers`, so an extracted native runtime loaded no root links and `/` answered without the expected `Link` headers.
+
+Fix:
+
+- `scripts/build-release.sh` now creates `docs/` in the release tree and copies `docs/_headers` into `docs/_headers`, which is one of the exact runtime input paths `server/app.py` checks through `header_candidates()`.
+- `server/tests/test_release_artifact.py` now imports the extracted release's own `server/app.py`, serves `/` from that extracted tree, and asserts the runtime `Link` headers match the committed `_headers` content.
+
+### Review Item 2: Skip Docker-only proof when Docker is unavailable
+
+Fix:
+
+- `server/tests/test_release_artifact.py` now follows the existing convention:
+
+```python
+requires_docker = pytest.mark.skipif(
+    shutil.which("docker") is None,
+    reason="docker CLI is not available",
+)
+```
+
+- The offline-install proof remains unchanged when Docker exists, including the `linux/amd64` runtime needed on Apple Silicon to validate the x86_64 wheels.
+
+### GREEN Evidence For Review Fixes
+
+Command:
+
+```bash
+.venv/bin/python -m pytest server/tests/test_release_artifact.py -v server/tests/test_app.py::test_serves_authenticated_root_with_link_headers -v
+```
+
+Result:
+
+```text
+collected 5 items
+server/tests/test_release_artifact.py::test_release_contains_site_server_lock_and_wheelhouse PASSED
+server/tests/test_release_artifact.py::test_release_preserves_root_link_header_behavior PASSED
+server/tests/test_release_artifact.py::test_release_checksum_matches_archive PASSED
+server/tests/test_release_artifact.py::test_release_dependencies_install_without_an_index PASSED
+server/tests/test_app.py::test_serves_authenticated_root_with_link_headers PASSED
+========================= 5 passed, 1 warning in 5.35s =========================
+```
+
+### Self-Review For Review Fixes
+
+- Scope stayed narrow: only the release builder, the focused release test file, and the report changed.
+- The new test proves behavior from the extracted artifact rather than from the source tree, so it cannot pass by accidentally reading the repository's own `docs/_headers`.
+- Dockerless contributors can now run the focused file without a hard failure, while Docker-enabled environments still exercise the Linux x86_64 offline-install proof.

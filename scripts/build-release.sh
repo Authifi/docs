@@ -20,9 +20,10 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
 release="$work/release"
-mkdir -p "$release/server" "$release/wheelhouse" "$output_dir"
+mkdir -p "$release/docs" "$release/server" "$release/wheelhouse" "$output_dir"
 
 "$python_bin" -m mkdocs build --strict --config-file "$root/mkdocs.yml" --site-dir "$release/site"
+cp "$root/docs/_headers" "$release/docs/_headers"
 cp "$root/server/app.py" "$root/server/main.py" "$root/server/__init__.py" "$release/server/"
 cp "$root/server/requirements.txt" "$release/requirements.txt"
 
