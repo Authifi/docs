@@ -14,6 +14,7 @@ import time
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import quote
 
 import pytest
 import uvicorn
@@ -210,3 +211,64 @@ def test_file_response_exposes_validators_for_conditional_requests(live_server: 
     assert "etag" in response.headers
     assert "last-modified" in response.headers
     assert response.headers["accept-ranges"] == "bytes"
+
+
+# A path component longer than `NAME_MAX` reaches the filesystem probe that runs
+# before the authorization decision. On the runtime image's CPython that probe
+# raises ENAMETOOLONG, so over a real socket this used to be a 500 that any
+# anonymous caller could produce at will, once per request, in the logs.
+
+OVERLONG_SEGMENT_TARGETS = [
+    f"/{'a' * 256}",
+    f"/{'a' * 300}",
+    f"/{'a' * 256}/",
+    f"/guides/{'a' * 300}/",
+    f"/assets/{'a' * 256}.css",
+    f"/javascripts/{'a' * 300}.js",
+    f"/.well-known/{'a' * 256}",
+    # 128 two-byte characters, percent-encoded as a real client would send them.
+    "/" + quote("é" * 128),
+    "/assets/" + quote("😀" * 64) + ".css",
+]
+
+
+@pytest.mark.parametrize("target", OVERLONG_SEGMENT_TARGETS)
+def test_anonymous_overlong_segment_is_a_plain_not_found(live_server: int, target: str) -> None:
+    response = raw_http_get(live_server, target)
+
+    assert response.status_code == 404
+    assert_no_protected_content(response.text)
+
+
+@pytest.mark.parametrize("target", OVERLONG_SEGMENT_TARGETS)
+def test_authenticated_overlong_segment_is_a_plain_not_found(
+    live_server: int, target: str
+) -> None:
+    cookie = encode_session_cookie({"user": {"sub": "user-123"}})
+
+    response = raw_http_get(live_server, target, cookie=cookie)
+
+    assert response.status_code == 404
+    assert_no_protected_content(response.text)
+
+
+def test_a_segment_at_the_byte_limit_is_served_by_the_ordinary_route(live_server: int) -> None:
+    """255 bytes is a legal name, so it must not be screened out as malformed.
+
+    Anonymous and protected, it has to look like any other missing protected
+    page: the length must not become a way to tell names apart.
+    """
+    at_limit = raw_http_get(live_server, f"/{'a' * 255}")
+    ordinary = raw_http_get(live_server, "/no-such-page")
+
+    assert at_limit.status_code == ordinary.status_code == 307
+    assert at_limit.headers["location"].startswith("/_auth/login?next=")
+
+
+def test_an_overlong_segment_still_carries_the_baseline_security_headers(
+    live_server: int,
+) -> None:
+    response = raw_http_get(live_server, f"/{'a' * 300}")
+
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["cache-control"] == "private, no-store"

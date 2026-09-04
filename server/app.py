@@ -39,6 +39,9 @@ PUBLIC_EXACT_PATHS = {
 }
 PUBLIC_AUTH_PATHS = {"/_auth/login", "/_auth/callback", "/_auth/logout"}
 PUBLIC_PREFIXES = ("/.well-known/", "/assets/", "/javascripts/", "/stylesheets/")
+# POSIX `NAME_MAX`, in bytes. A longer path component cannot name anything on
+# the filesystems this is deployed on, so it is refused before it is probed.
+MAX_PATH_SEGMENT_BYTES = 255
 SESSION_COOKIE_NAME = "authifi-session"
 DEFAULT_SITE_DIR = "site"
 DEFAULT_OIDC_SCOPE = "openid profile email"
@@ -536,6 +539,23 @@ def is_public_path(path: str) -> bool:
     return any(path.startswith(prefix) for prefix in PUBLIC_PREFIXES)
 
 
+def segment_is_nameable(segment: str) -> bool:
+    """Whether one path component could name a file at all.
+
+    `NAME_MAX` is 255 *bytes* on every filesystem this is deployed on, so a
+    longer component cannot exist and is not worth asking the kernel about. It
+    is worth screening: on the pinned runtime `Path.is_dir` lets ENAMETOOLONG
+    through -- pathlib absorbs ENOENT and ENOTDIR, not this -- and that probe
+    runs before the authorization decision, so any anonymous caller could turn
+    a long URL into a 500 and a log line.
+    """
+    try:
+        return len(segment.encode("utf-8")) <= MAX_PATH_SEGMENT_BYTES
+    except UnicodeError:
+        # A path the server could not even re-encode is not one we can serve.
+        return False
+
+
 def canonicalize_request_path(request_path: str) -> str | None:
     """Return the single canonical form of a request path, or ``None``.
 
@@ -550,7 +570,10 @@ def canonicalize_request_path(request_path: str) -> str | None:
         return None
     if any(character in CONTROL_CHARACTERS for character in request_path):
         return None
-    if any(segment in DOT_SEGMENTS for segment in request_path.split("/")):
+    segments = request_path.split("/")
+    if any(segment in DOT_SEGMENTS for segment in segments):
+        return None
+    if not all(segment_is_nameable(segment) for segment in segments):
         return None
     return request_path
 
@@ -588,17 +611,41 @@ def site_relative_path(canonical_path: str) -> str:
 
 def resolve_within_site(site_dir: Path, relative_path: str) -> Path | None:
     site_root = site_dir.resolve()
-    candidate = (site_root / relative_path).resolve()
     try:
+        candidate = (site_root / relative_path).resolve()
         candidate.relative_to(site_root)
-    except ValueError:
+    except (OSError, ValueError):
+        # `PATH_MAX` bounds the whole path, not just one component, so a legal
+        # path of legal segments can still be refused. Nothing to serve either
+        # way; see `is_existing_file`.
         return None
     return candidate
 
 
+def is_existing_file(path: Path) -> bool:
+    """`Path.is_file`, reading a refusal from the kernel as "no".
+
+    The per-segment screen in `canonicalize_request_path` keeps the common case
+    away from the filesystem, but this backstop is what makes the answer
+    independent of which errnos the running pathlib happens to absorb. A
+    refused stat and a missing file are the same answer to a request: 404.
+    """
+    try:
+        return path.is_file()
+    except OSError:
+        return False
+
+
+def is_existing_directory(path: Path) -> bool:
+    try:
+        return path.is_dir()
+    except OSError:
+        return False
+
+
 def resolve_site_file(site_dir: Path, canonical_path: str) -> Path | None:
     candidate = resolve_within_site(site_dir, site_relative_path(canonical_path))
-    if candidate is None or not candidate.is_file():
+    if candidate is None or not is_existing_file(candidate):
         return None
     return candidate
 
@@ -609,9 +656,9 @@ def directory_redirect_target(site_dir: Path, canonical_path: str) -> str | None
         return None
 
     candidate = resolve_within_site(site_dir, canonical_path.lstrip("/"))
-    if candidate is None or not candidate.is_dir():
+    if candidate is None or not is_existing_directory(candidate):
         return None
-    if not (candidate / "index.html").is_file():
+    if not is_existing_file(candidate / "index.html"):
         return None
     return f"{canonical_path}/"
 
