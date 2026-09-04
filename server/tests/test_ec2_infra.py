@@ -34,6 +34,7 @@ from server.tests.hcl_support import (
     statements,
     strip_comments,
     variable_accepts,
+    variable_conditions,
 )
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -650,6 +651,184 @@ def test_every_accepted_service_name_derives_a_legal_bucket_name(value: str) -> 
 
     assert 3 <= len(bucket) <= 63, bucket
     assert re.fullmatch(r"[a-z0-9][a-z0-9.-]*[a-z0-9]", bucket), bucket
+
+
+# Prefixes each of the three consumers reserves. Lowercase alphanumerics and
+# hyphens is necessary but not sufficient: every one of these is a name the
+# character rule accepts and the service refuses, which means an apply that
+# creates the VPC lookups, the security groups, and the certificate and then
+# fails partway through.
+RESERVED_SERVICE_NAMES = (
+    # S3 refuses a bucket name starting with either of these outright.
+    "xn--docs",
+    "sthree-docs",
+    "sthree-configurator-docs",
+    # An internet-facing ALB name may not start with `internal-`, which is how
+    # the API distinguishes the internal scheme.
+    "internal-docs",
+    # Systems Manager refuses a document name beginning with any of these, and
+    # `local.ssm_document_name` derives one from this variable.
+    "aws-docs",
+    "awsdocs",
+    "amazon-docs",
+    "amazondocs",
+    "amzn-docs",
+    "amzndocs",
+)
+
+# Names that merely contain a reserved word, which is fine: only the prefix is
+# reserved, and refusing these would rule out plausible service names.
+SERVICE_NAMES_THAT_ONLY_LOOK_RESERVED = (
+    "authifi-aws-docs",
+    "docs-internal",
+    "docs-xn--x",
+    "my-amazon-docs",
+    "sthre-docs",
+    "internally-managed",
+    "awful-docs",
+)
+
+
+@pytest.mark.parametrize("value", RESERVED_SERVICE_NAMES)
+def test_a_service_name_a_reserved_prefix_would_break_is_refused(value: str) -> None:
+    """The character rule alone let these through, and each one fails during
+    apply rather than during plan.
+
+    `xn--` is S3's punycode prefix and `sthree-` is reserved for its own use;
+    `internal-` is how the ELB API spells the internal scheme, so an
+    internet-facing load balancer may not be named with it; and Systems
+    Manager reserves `aws`, `amazon`, and `amzn` for document names, which
+    this variable derives one of.
+    """
+    assert not variable_accepts(VARIABLES, "service_name", value), value
+
+
+@pytest.mark.parametrize("value", SERVICE_NAMES_THAT_ONLY_LOOK_RESERVED)
+def test_a_service_name_that_merely_contains_a_reserved_word_still_works(
+    value: str,
+) -> None:
+    """Only the prefix is reserved. A rule written with `contains` rather than
+    an anchored one would refuse a perfectly good name, and the failure would
+    look like a bug in the module rather than a decision."""
+    assert variable_accepts(VARIABLES, "service_name", value), value
+
+
+def test_the_docs_say_the_config_change_replaces_the_instance() -> None:
+    """`config.json` replaced `environment` in user data, and user data is part
+    of the instance's identity under `user_data_replace_on_change`.
+
+    So applying this change destroys the running host and builds a new one,
+    which has three consequences an operator has to know before running it: the
+    new instance boots with no release under `current`, so the site is down
+    until a deploy runs; the session secret is regenerated, so every live
+    session is invalidated; and a deploy started while the replacement is in
+    progress can install onto the instance that is about to be destroyed, or
+    fail against an instance ID that no longer exists.
+
+    An operator who reads none of that runs `terraform apply` on a Friday and
+    discovers it from the outage.
+    """
+    for name, text in (
+        ("infra/README.md", INFRA_README),
+        ("operations/aws-oidc-hosting.md", OPERATIONS_DOC),
+    ):
+        lowered = text.lower()
+
+        assert "config.json" in lowered, name
+
+    section = migration_section()
+    lowered = section.lower()
+
+    assert "user_data_replace_on_change" in section
+    # The outage, and that a deploy is what ends it.
+    assert "down" in lowered
+    assert "workflow_dispatch" in lowered
+    # The instance ID changing, and the variable that has to follow it.
+    assert "docs_instance_id" in lowered
+    # Every session logged out.
+    assert "session_secret" in lowered
+    assert "invalidat" in lowered or "logged out" in lowered
+    # And the ordering hazard: a deploy started against the outgoing host.
+    assert "do not start a deploy" in lowered or "do not deploy" in lowered
+
+
+def migration_section() -> str:
+    """The `config.json` migration runbook, as its own section.
+
+    Read as a section rather than as the whole file, so a phrase that happens
+    to appear in an unrelated paragraph does not satisfy an assertion about
+    this one.
+    """
+    match = re.search(
+        r"^### Migrating an existing instance to `config\.json`$(.*?)(?=^## )",
+        INFRA_README,
+        re.MULTILINE | re.DOTALL,
+    )
+
+    assert match, "infra/README.md has no config.json migration section"
+    return match[1]
+
+
+def test_the_migration_runbook_is_ordered_and_ends_in_a_deploy() -> None:
+    """The steps only work in one order: apply, re-read the instance ID, update
+    the repository variable, then deploy. An operator who deploys before
+    updating the variable sends the command to a terminated instance."""
+    steps = re.findall(r"^\d+\. (.+)$", migration_section(), re.MULTILINE)
+
+    assert len(steps) >= 4, steps
+
+    ordered = " || ".join(steps).lower()
+
+    assert ordered.index("plan") < ordered.index("apply")
+    assert ordered.index("apply") < ordered.index("docs_instance_id")
+    assert ordered.index("docs_instance_id") < ordered.index("workflow_dispatch")
+
+
+def test_documented_commands_name_outputs_the_module_actually_declares() -> None:
+    """A migration runbook is only followed once, so a stale output name in it
+    is discovered under time pressure."""
+    outputs = set(
+        re.findall(
+            r'^output "([^"]+)"',
+            (ROOT / "infra" / "outputs.tf").read_text(encoding="utf-8"),
+            re.MULTILINE,
+        )
+    )
+
+    assert outputs, "the module declares no outputs"
+
+    for name, text in (
+        ("infra/README.md", INFRA_README),
+        ("operations/aws-oidc-hosting.md", OPERATIONS_DOC),
+    ):
+        referenced = set(re.findall(r"terraform -chdir=infra output (?:-raw )?(\w+)", text))
+
+        assert referenced, name
+        assert referenced <= outputs, f"{name} names {referenced - outputs}"
+
+
+def test_the_reserved_prefixes_cover_the_three_consumers_the_name_reaches() -> None:
+    """Read from the configuration rather than restated, so the rule is checked
+    against the resources that actually take this name.
+
+    Each of the three has its own reserved list, and the variable's validation
+    is their union. A fourth consumer with a fourth list is one this test makes
+    visible.
+    """
+    configuration = strip_comments(MAIN)
+
+    assert "var.service_name" in (attribute(LOCALS, "release_bucket_name") or "")
+    assert re.search(
+        r'resource "aws_lb" "\w+"[\s\S]*?name\s*=\s*var\.service_name', configuration
+    )
+    assert re.search(
+        r'resource "aws_ssm_document" "\w+"[\s\S]*?name\s*=\s*"\$\{var\.service_name\}',
+        configuration,
+    )
+
+    condition = " ".join(variable_conditions(VARIABLES, "service_name"))
+    for reserved in ("xn--", "sthree-", "internal-", "aws", "amazon", "amzn"):
+        assert reserved in condition, reserved
 
 
 # The two spellings of "the root of this origin", which mean the same

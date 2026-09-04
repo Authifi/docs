@@ -29,6 +29,25 @@ variable "service_name" {
     condition     = can(regex("^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$", var.service_name))
     error_message = "service_name must be 1-32 lowercase alphanumerics or hyphens and must not start or end with a hyphen."
   }
+
+  # The alphabet is necessary and not sufficient: each of the three services
+  # reserves a set of leading strings, and a name that trips one of them fails
+  # during apply, after the VPC lookups, the security groups, and the
+  # certificate have been created.
+  #
+  # S3 refuses a bucket name beginning `xn--` (its punycode prefix) or
+  # `sthree-`. An internet-facing load balancer may not be named `internal-*`,
+  # because that is how the ELB API spells the internal scheme. Systems Manager
+  # reserves `aws`, `amazon`, and `amzn` for document names, and
+  # `aws_ssm_document.deploy` is named from this value.
+  #
+  # Anchored on purpose. Only the prefix is reserved, so `authifi-aws-docs` and
+  # `docs-internal` are fine, and a rule that merely looked for the words would
+  # refuse a good name for a reason nobody could find.
+  validation {
+    condition     = length(regexall("^(xn--|sthree-|internal-|aws|amazon|amzn)", var.service_name)) == 0
+    error_message = "service_name must not begin with xn--, sthree-, internal-, aws, amazon, or amzn: S3, the load balancer, and Systems Manager each reserve those prefixes and would refuse the derived name during apply."
+  }
 }
 
 variable "vpc_id" {
@@ -171,6 +190,19 @@ variable "public_base_url" {
   validation {
     condition     = can(regex("^https://[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+/?$", var.public_base_url))
     error_message = "public_base_url must be an https URL naming a lowercase DNS host and at most the root path, such as https://docs.authifi.io."
+  }
+
+  # The pattern above accepts digits and dots, so `https://198.51.100.7`
+  # satisfied it while the deploy workflow's probe parser refused the same
+  # value -- and the probe is right. `--connect-to` rewrites the connection and
+  # never the request, so an IP literal sends the load balancer a Host header
+  # the listener rules do not match and the certificate does not cover.
+  #
+  # A final label that is entirely numeric is the standard way to say "this is
+  # an address, not a name", and it is the check the two readers now share.
+  validation {
+    condition     = length(regexall("\\.[0-9]+/?$", var.public_base_url)) == 0
+    error_message = "public_base_url must name a DNS host, not an IP literal: the ALB certificate covers a name and the listener rules match on one."
   }
 }
 
