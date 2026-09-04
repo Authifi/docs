@@ -6,8 +6,13 @@ from pathlib import Path
 import pytest
 
 from server.local_smoke import (
+    BYPASS_PROBE_PATHS,
+    PUBLIC_MIME_PROBES,
+    assert_content_type,
+    assert_no_protected_content,
     build_compose_command,
     build_mock_compose_env,
+    classify_logout_redirect,
     parse_args,
     require_redirect,
     resolve_settings,
@@ -147,6 +152,62 @@ def test_require_redirect_rejects_unexpected_location() -> None:
             location="/wrong",
             expected_prefix="/_auth/login?next=",
         )
+
+
+def test_bypass_probes_cover_every_public_prefix() -> None:
+    from server.app import PUBLIC_PREFIXES
+
+    for prefix in PUBLIC_PREFIXES:
+        assert any(path.startswith(prefix) for path in BYPASS_PROBE_PATHS), prefix
+    assert any("search_index.json" in path for path in BYPASS_PROBE_PATHS)
+
+
+def test_public_mime_probes_cover_every_exact_public_path() -> None:
+    from server.app import PUBLIC_EXACT_PATHS
+
+    probed = {path for path, _ in PUBLIC_MIME_PROBES}
+    assert PUBLIC_EXACT_PATHS <= probed
+
+
+def test_assert_no_protected_content_rejects_successful_bypass() -> None:
+    with pytest.raises(AssertionError, match="expected 404"):
+        assert_no_protected_content("/assets/%2e%2e/index.html", 200, "")
+
+
+def test_assert_no_protected_content_rejects_leaked_markers() -> None:
+    with pytest.raises(AssertionError, match="leaked protected content marker"):
+        assert_no_protected_content("/assets/%2e%2e/index.html", 404, '{"docs": []}')
+
+
+def test_assert_no_protected_content_accepts_clean_404() -> None:
+    assert_no_protected_content("/assets/%2e%2e/index.html", 404, "Not Found")
+
+
+def test_assert_content_type_rejects_octet_stream() -> None:
+    with pytest.raises(AssertionError, match="text/html"):
+        assert_content_type("/privacy-policy/", "application/octet-stream", "text/html; charset=utf-8")
+
+
+@pytest.mark.parametrize(
+    ("location", "expected_mode"),
+    [
+        ("/terms-of-service/", "local"),
+        ("http://oidc-mock.127.0.0.1.nip.io:9400/session/end?client_id=x", "rp-initiated"),
+    ],
+)
+def test_classify_logout_redirect_supports_both_modes(
+    tmp_path: Path, location: str, expected_mode: str
+) -> None:
+    settings = resolve_settings(tmp_path, environ={})
+
+    assert classify_logout_redirect(location, settings) == expected_mode
+
+
+def test_classify_logout_redirect_rejects_foreign_targets(tmp_path: Path) -> None:
+    settings = resolve_settings(tmp_path, environ={})
+
+    with pytest.raises(AssertionError, match="unexpected logout redirect target"):
+        classify_logout_redirect("https://evil.example/", settings)
 
 
 def assert_required_values(values: Mapping[str, str], expected: Mapping[str, str]) -> None:

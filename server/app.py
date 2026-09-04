@@ -1,19 +1,30 @@
 from __future__ import annotations
 
+import logging
 import mimetypes
 import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
-from urllib.parse import quote
+from urllib.parse import quote, urlencode, urlsplit, urlunsplit
 
 from authlib.integrations.starlette_client import OAuth
 from starlette.applications import Starlette
+from starlette.datastructures import MutableHeaders
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.requests import Request
-from starlette.responses import JSONResponse, PlainTextResponse, RedirectResponse, Response
+from starlette.responses import (
+    FileResponse,
+    JSONResponse,
+    PlainTextResponse,
+    RedirectResponse,
+    Response,
+)
 from starlette.routing import Route
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+
+logger = logging.getLogger("authifi.docs")
 
 PUBLIC_EXACT_PATHS = {
     "/privacy-policy/",
@@ -31,6 +42,58 @@ DEFAULT_OIDC_SCOPE = "openid profile email"
 SESSION_NEXT_KEY = "next"
 SESSION_USER_KEY = "user"
 
+SESSION_MAX_AGE_SECONDS = 8 * 60 * 60
+DEFAULT_POST_LOGOUT_PATH = "/privacy-policy/"
+
+VISIBILITY_PUBLIC = "public"
+VISIBILITY_PROTECTED = "protected"
+VISIBILITY_STATE_KEY = "cache_visibility"
+
+PUBLIC_CACHE_CONTROL = "public, max-age=300"
+PROTECTED_CACHE_CONTROL = "private, no-store"
+REFERRER_POLICY = "strict-origin-when-cross-origin"
+HSTS_VALUE = "max-age=63072000; includeSubDomains"
+
+# Content types keyed by canonical request path, for extension-less or
+# deliberately overridden resources.
+CONTENT_TYPE_BY_PATH = {
+    "/.well-known/api-catalog": (
+        'application/linkset+json; profile="https://www.rfc-editor.org/info/rfc9727"'
+    ),
+    "/.well-known/agent-skills/index.json": "application/json",
+    "/auth.md": "text/markdown; charset=utf-8",
+}
+
+# Explicit table so the served content type never depends on system MIME
+# databases, which differ between developer machines and the runtime image.
+CONTENT_TYPE_BY_SUFFIX = {
+    ".css": "text/css; charset=utf-8",
+    ".gif": "image/gif",
+    ".gz": "application/gzip",
+    ".htm": "text/html; charset=utf-8",
+    ".html": "text/html; charset=utf-8",
+    ".ico": "image/x-icon",
+    ".jpeg": "image/jpeg",
+    ".jpg": "image/jpeg",
+    ".js": "text/javascript; charset=utf-8",
+    ".json": "application/json",
+    ".map": "application/json",
+    ".md": "text/markdown; charset=utf-8",
+    ".mjs": "text/javascript; charset=utf-8",
+    ".png": "image/png",
+    ".svg": "image/svg+xml",
+    ".ttf": "font/ttf",
+    ".txt": "text/plain; charset=utf-8",
+    ".webp": "image/webp",
+    ".woff": "font/woff",
+    ".woff2": "font/woff2",
+    ".xml": "application/xml",
+}
+FALLBACK_CONTENT_TYPE = "application/octet-stream"
+
+CONTROL_CHARACTERS = frozenset(chr(code) for code in range(0x20)) | {"\x7f"}
+DOT_SEGMENTS = frozenset({".", ".."})
+
 
 @dataclass(frozen=True)
 class AppConfig:
@@ -40,6 +103,8 @@ class AppConfig:
     session_secret: str
     public_base_url: str
     site_dir: Path
+    post_logout_path: str = DEFAULT_POST_LOGOUT_PATH
+    session_max_age_seconds: int = SESSION_MAX_AGE_SECONDS
 
     @property
     def cookie_secure(self) -> bool:
@@ -61,7 +126,51 @@ class AppConfig:
             session_secret=env["SESSION_SECRET"],
             public_base_url=env["PUBLIC_BASE_URL"],
             site_dir=site_dir,
+            post_logout_path=normalize_next_path(
+                env.get("POST_LOGOUT_PATH"), default=DEFAULT_POST_LOGOUT_PATH
+            ),
         )
+
+
+class SecurityHeadersMiddleware:
+    """Apply baseline security and cache-control headers to every response.
+
+    Responses are classified as public or protected by the endpoint through
+    ``request.state``; anything unclassified is treated as protected so a new
+    route cannot accidentally become cacheable by a shared cache.
+    """
+
+    def __init__(self, app: ASGIApp, enable_hsts: bool = False) -> None:
+        self.app = app
+        self.enable_hsts = enable_hsts
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def send_with_security_headers(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                headers = MutableHeaders(scope=message)
+                headers.setdefault("x-content-type-options", "nosniff")
+                headers.setdefault("x-frame-options", "DENY")
+                headers.setdefault("referrer-policy", REFERRER_POLICY)
+                headers.setdefault("vary", "Cookie")
+                headers.setdefault("cache-control", cache_control_for(scope))
+                if self.enable_hsts:
+                    headers.setdefault("strict-transport-security", HSTS_VALUE)
+            await send(message)
+
+        await self.app(scope, receive, send_with_security_headers)
+
+
+def cache_control_for(scope: Scope) -> str:
+    visibility = scope.get("state", {}).get(VISIBILITY_STATE_KEY, VISIBILITY_PROTECTED)
+    return PUBLIC_CACHE_CONTROL if visibility == VISIBILITY_PUBLIC else PROTECTED_CACHE_CONTROL
+
+
+def set_cache_visibility(request: Request, visibility: str) -> None:
+    setattr(request.state, VISIBILITY_STATE_KEY, visibility)
 
 
 def create_app(config: AppConfig, auth_client: object | None = None) -> Starlette:
@@ -83,48 +192,109 @@ def create_app(config: AppConfig, auth_client: object | None = None) -> Starlett
         session_cookie=SESSION_COOKIE_NAME,
         same_site="lax",
         https_only=config.cookie_secure,
+        max_age=config.session_max_age_seconds,
     )
+    app.add_middleware(SecurityHeadersMiddleware, enable_hsts=config.cookie_secure)
+
+    if not is_public_path(config.post_logout_path):
+        logger.warning(
+            "Configured post-logout path %s is not public; users will be sent back to login",
+            config.post_logout_path,
+        )
     return app
 
 
 async def health_endpoint(request: Request) -> Response:
+    set_cache_visibility(request, VISIBILITY_PROTECTED)
     return JSONResponse({"status": "ok"})
 
 
 async def login_endpoint(request: Request) -> Response:
+    set_cache_visibility(request, VISIBILITY_PROTECTED)
     request.session[SESSION_NEXT_KEY] = normalize_next_path(request.query_params.get("next"))
     redirect_uri = build_public_url(request.app.state.config.public_base_url, "/_auth/callback")
     return await request.app.state.auth_client.authorize_redirect(request, redirect_uri)
 
 
 async def callback_endpoint(request: Request) -> Response:
+    set_cache_visibility(request, VISIBILITY_PROTECTED)
     next_path = normalize_next_path(request.session.pop(SESSION_NEXT_KEY, "/"))
     token = await request.app.state.auth_client.authorize_access_token(request)
+
+    try:
+        user = extract_minimal_user((token or {}).get("userinfo"))
+    except ValueError as error:
+        # Fail closed. The message is deliberately claim-shaped only: it must
+        # never carry ID or access token material into logs or the response.
+        logger.error("Rejecting Authifi OIDC callback: %s", error)
+        request.session.clear()
+        return PlainTextResponse(
+            "Authentication failed: the identity provider did not return a subject claim.",
+            status_code=500,
+        )
+
     request.session.clear()
-    request.session[SESSION_USER_KEY] = extract_minimal_user(token.get("userinfo"))
+    request.session[SESSION_USER_KEY] = user
     return RedirectResponse(url=next_path)
 
 
 async def logout_endpoint(request: Request) -> Response:
-    next_path = normalize_next_path(request.query_params.get("next"))
+    set_cache_visibility(request, VISIBILITY_PROTECTED)
+    config = request.app.state.config
+    target_path = normalize_next_path(
+        request.query_params.get("next"), default=config.post_logout_path
+    )
+
     request.session.clear()
-    return RedirectResponse(url=next_path)
+
+    end_session_endpoint = await discover_end_session_endpoint(request.app.state.auth_client)
+    if end_session_endpoint is None:
+        return RedirectResponse(url=target_path)
+
+    return RedirectResponse(url=build_end_session_url(end_session_endpoint, config, target_path))
 
 
 async def site_endpoint(request: Request) -> Response:
-    if not is_public_path(request.url.path) and not request.session.get(SESSION_USER_KEY):
-        next_path = quote(build_next_path(request), safe="")
-        return RedirectResponse(url=f"/_auth/login?next={next_path}")
+    config = request.app.state.config
+    set_cache_visibility(request, VISIBILITY_PROTECTED)
 
-    resolved_path = resolve_site_path(request.app.state.config.site_dir, request.url.path)
-    if resolved_path is None or not resolved_path.is_file():
+    # Read the raw ASGI path rather than request.url.path: URL parsing strips
+    # tab and newline characters, which would let the authorization decision
+    # and the filesystem lookup disagree about the request.
+    canonical_path = canonicalize_request_path(request.scope.get("path", ""))
+    if canonical_path is None:
         return PlainTextResponse("Not Found", status_code=404)
 
-    response = Response(content=resolved_path.read_bytes(), media_type=guess_content_type(request.url.path))
-    if request.url.path == "/":
+    query = safe_query_string(request.scope.get("query_string", b""))
+
+    redirect_target = directory_redirect_target(config.site_dir, canonical_path)
+    if redirect_target is not None:
+        set_cache_visibility(request, visibility_for(redirect_target))
+        location = f"{redirect_target}?{query}" if query else redirect_target
+        return RedirectResponse(url=location, status_code=308)
+
+    set_cache_visibility(request, visibility_for(canonical_path))
+
+    if not is_public_path(canonical_path) and not request.session.get(SESSION_USER_KEY):
+        next_path = quote(build_next_path(canonical_path, query), safe="")
+        return RedirectResponse(url=f"/_auth/login?next={next_path}")
+
+    resolved_file = resolve_site_file(config.site_dir, canonical_path)
+    if resolved_file is None:
+        return PlainTextResponse("Not Found", status_code=404)
+
+    response = FileResponse(
+        resolved_file,
+        media_type=resolve_content_type(canonical_path, resolved_file),
+    )
+    if canonical_path == "/":
         for link_value in request.app.state.root_links:
             response.headers.append("Link", link_value)
     return response
+
+
+def visibility_for(canonical_path: str) -> str:
+    return VISIBILITY_PUBLIC if is_public_path(canonical_path) else VISIBILITY_PROTECTED
 
 
 def is_public_path(path: str) -> bool:
@@ -135,48 +305,130 @@ def is_public_path(path: str) -> bool:
     return any(path.startswith(prefix) for prefix in PUBLIC_PREFIXES)
 
 
-def build_next_path(request: Request) -> str:
-    next_path = request.url.path
-    if request.url.query:
-        next_path = f"{next_path}?{request.url.query}"
-    return next_path
+def canonicalize_request_path(request_path: str) -> str | None:
+    """Return the single canonical form of a request path, or ``None``.
+
+    Authorization and file resolution must agree on exactly one string. Rather
+    than collapsing ``.``/``..`` (which would let a public prefix carry a
+    request into protected content), any path that is not already canonical is
+    rejected outright, before the path is classified as public or protected.
+    """
+    if not request_path.startswith("/"):
+        return None
+    if "\\" in request_path or "//" in request_path:
+        return None
+    if any(character in CONTROL_CHARACTERS for character in request_path):
+        return None
+    if any(segment in DOT_SEGMENTS for segment in request_path.split("/")):
+        return None
+    return request_path
 
 
-def normalize_next_path(candidate: str | None) -> str:
-    if candidate and candidate.startswith("/") and not candidate.startswith("//"):
-        return candidate
-    return "/"
+def build_next_path(canonical_path: str, query: str) -> str:
+    return f"{canonical_path}?{query}" if query else canonical_path
 
 
-def resolve_site_path(site_dir: Path, request_path: str) -> Path | None:
-    relative_path = request_path.lstrip("/")
-    if request_path.endswith("/"):
+def safe_query_string(raw_query_string: bytes) -> str:
+    """Decode the query string, dropping it entirely if it is not header-safe."""
+    query = raw_query_string.decode("latin-1")
+    if any(character in CONTROL_CHARACTERS for character in query):
+        return ""
+    return query
+
+
+def normalize_next_path(candidate: str | None, default: str = "/") -> str:
+    if not isinstance(candidate, str) or not candidate:
+        return default
+    if not candidate.startswith("/") or candidate.startswith("//"):
+        return default
+    if "\\" in candidate:
+        return default
+    if any(character in CONTROL_CHARACTERS for character in candidate):
+        return default
+    return candidate
+
+
+def site_relative_path(canonical_path: str) -> str:
+    relative_path = canonical_path.lstrip("/")
+    if canonical_path.endswith("/") or not relative_path:
         relative_path = f"{relative_path}index.html"
-    elif not relative_path:
-        relative_path = "index.html"
+    return relative_path
 
-    candidate = (site_dir / relative_path).resolve()
+
+def resolve_within_site(site_dir: Path, relative_path: str) -> Path | None:
     site_root = site_dir.resolve()
+    candidate = (site_root / relative_path).resolve()
     try:
         candidate.relative_to(site_root)
     except ValueError:
         return None
-
-    if candidate.is_dir():
-        candidate = candidate / "index.html"
     return candidate
 
 
-def guess_content_type(path: str) -> str:
-    if path == "/.well-known/api-catalog":
-        return 'application/linkset+json; profile="https://www.rfc-editor.org/info/rfc9727"'
-    if path == "/.well-known/agent-skills/index.json":
-        return "application/json"
-    if path == "/auth.md":
-        return "text/markdown; charset=utf-8"
+def resolve_site_file(site_dir: Path, canonical_path: str) -> Path | None:
+    candidate = resolve_within_site(site_dir, site_relative_path(canonical_path))
+    if candidate is None or not candidate.is_file():
+        return None
+    return candidate
 
-    guessed_type, _ = mimetypes.guess_type(path)
-    return guessed_type or "application/octet-stream"
+
+def directory_redirect_target(site_dir: Path, canonical_path: str) -> str | None:
+    """Return the trailing-slash form for an existing directory page."""
+    if canonical_path.endswith("/"):
+        return None
+
+    candidate = resolve_within_site(site_dir, canonical_path.lstrip("/"))
+    if candidate is None or not candidate.is_dir():
+        return None
+    if not (candidate / "index.html").is_file():
+        return None
+    return f"{canonical_path}/"
+
+
+def resolve_content_type(canonical_path: str, resolved_file: Path) -> str:
+    override = CONTENT_TYPE_BY_PATH.get(canonical_path)
+    if override is not None:
+        return override
+
+    known_type = CONTENT_TYPE_BY_SUFFIX.get(resolved_file.suffix.lower())
+    if known_type is not None:
+        return known_type
+
+    guessed_type, _ = mimetypes.guess_type(resolved_file.name)
+    return guessed_type or FALLBACK_CONTENT_TYPE
+
+
+async def discover_end_session_endpoint(auth_client: object) -> str | None:
+    load_server_metadata = getattr(auth_client, "load_server_metadata", None)
+    if load_server_metadata is None:
+        return None
+
+    try:
+        metadata = await load_server_metadata()
+    except Exception:
+        logger.warning(
+            "Could not load Authifi OIDC metadata for RP-initiated logout; "
+            "falling back to a local redirect",
+            exc_info=True,
+        )
+        return None
+
+    endpoint = (metadata or {}).get("end_session_endpoint")
+    if isinstance(endpoint, str) and endpoint:
+        return endpoint
+    return None
+
+
+def build_end_session_url(end_session_endpoint: str, config: AppConfig, target_path: str) -> str:
+    parts = urlsplit(end_session_endpoint)
+    logout_params = urlencode(
+        {
+            "post_logout_redirect_uri": build_public_url(config.public_base_url, target_path),
+            "client_id": config.oidc_client_id,
+        }
+    )
+    query = f"{parts.query}&{logout_params}" if parts.query else logout_params
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, query, parts.fragment))
 
 
 def load_root_links(site_dir: Path) -> list[str]:
@@ -214,7 +466,7 @@ def build_public_url(public_base_url: str, path: str) -> str:
 
 def extract_minimal_user(userinfo: Mapping[str, Any] | None) -> dict[str, str]:
     if not userinfo or not userinfo.get("sub"):
-        raise ValueError("OIDC userinfo missing required subject")
+        raise ValueError("OIDC userinfo is missing the required subject claim")
 
     user = {"sub": str(userinfo["sub"])}
     for field in ("email", "name"):

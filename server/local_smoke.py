@@ -22,6 +22,30 @@ DEFAULT_TIMEOUT_SECONDS = 60.0
 POLL_INTERVAL_SECONDS = 0.5
 COMPOSE_FILES = ("compose.yaml", "compose.mock.yaml")
 
+# httpx normalises literal ".." segments away but leaves "%2e%2e" alone, so
+# these probes reach the server exactly as written and prove that a public
+# prefix cannot carry a request into protected content.
+BYPASS_PROBE_PATHS = (
+    "/assets/%2e%2e/index.html",
+    "/assets/%2E%2E/index.html",
+    "/assets/%2e%2e/search/search_index.json",
+    "/javascripts/%2e%2e/index.html",
+    "/stylesheets/%2e%2e/index.html",
+    "/.well-known/%2e%2e/index.html",
+    "/.well-known/%2e%2e/search/search_index.json",
+)
+PROTECTED_CONTENT_MARKERS = ("md-content__inner", '"docs":', "md-nav__link")
+PUBLIC_MIME_PROBES = (
+    ("/privacy-policy/", "text/html; charset=utf-8"),
+    ("/terms-of-service/", "text/html; charset=utf-8"),
+    ("/sms-opt-in.html", "text/html; charset=utf-8"),
+    ("/robots.txt", "text/plain; charset=utf-8"),
+    ("/auth.md", "text/markdown; charset=utf-8"),
+    ("/sitemap.xml", "application/xml"),
+    ("/.well-known/agent-skills/index.json", "application/json"),
+)
+EXPECTED_PROTECTED_CONTENT_TYPE = "text/html; charset=utf-8"
+
 
 @dataclass(frozen=True)
 class SmokeSettings:
@@ -135,6 +159,19 @@ def require_redirect(
     return location.removeprefix(expected_prefix)
 
 
+def assert_no_protected_content(path: str, status_code: int, body: str) -> None:
+    if status_code != 404:
+        raise AssertionError(f"expected 404 for bypass probe {path!r}, got {status_code}")
+    for marker in PROTECTED_CONTENT_MARKERS:
+        if marker in body:
+            raise AssertionError(f"bypass probe {path!r} leaked protected content marker {marker!r}")
+
+
+def assert_content_type(path: str, actual: str | None, expected: str) -> None:
+    if actual != expected:
+        raise AssertionError(f"expected {path!r} to be served as {expected!r}, got {actual!r}")
+
+
 def run_compose(project_dir: Path, env: dict[str, str], *args: str) -> None:
     subprocess.run(
         build_compose_command(project_dir, COMPOSE_FILES, args),
@@ -173,7 +210,22 @@ def run_smoke(
 ) -> None:
     with httpx.Client(timeout=10.0, trust_env=False) as client:
         wait_for_response(client, settings.discovery_url, 200, "mock OIDC discovery")
-        wait_for_response(client, settings.public_url, 200, "public docs page")
+        public_response = wait_for_response(client, settings.public_url, 200, "public docs page")
+        assert_content_type(
+            settings.public_path,
+            public_response.headers.get("content-type"),
+            EXPECTED_PROTECTED_CONTENT_TYPE,
+        )
+
+        for path, expected_content_type in PUBLIC_MIME_PROBES:
+            probe = client.get(f"{settings.public_base_url.rstrip('/')}{path}", follow_redirects=False)
+            if probe.status_code != 200:
+                raise AssertionError(f"expected public path {path!r} to return 200, got {probe.status_code}")
+            assert_content_type(path, probe.headers.get("content-type"), expected_content_type)
+
+        for path in BYPASS_PROBE_PATHS:
+            probe = client.get(f"{settings.public_base_url.rstrip('/')}{path}", follow_redirects=False)
+            assert_no_protected_content(path, probe.status_code, probe.text)
 
         redirect_suffix = require_redirect(
             *extract_status_location(client.get(settings.protected_url, follow_redirects=False)),
@@ -224,13 +276,17 @@ def run_smoke(
             raise AssertionError(
                 f"expected authenticated protected page 200, got {protected_response.status_code}"
             )
-
-        logout_response = client.get(settings.logout_url, follow_redirects=False)
-        require_redirect(
-            logout_response.status_code,
-            logout_response.headers.get("location"),
-            settings.public_path,
+        assert_content_type(
+            settings.protected_path,
+            protected_response.headers.get("content-type"),
+            EXPECTED_PROTECTED_CONTENT_TYPE,
         )
+
+        for path in BYPASS_PROBE_PATHS:
+            probe = client.get(f"{settings.public_base_url.rstrip('/')}{path}", follow_redirects=False)
+            assert_no_protected_content(path, probe.status_code, probe.text)
+
+        complete_logout(client, settings)
 
         post_logout_redirect = require_redirect(
             *extract_status_location(client.get(settings.protected_url, follow_redirects=False)),
@@ -240,6 +296,34 @@ def run_smoke(
             raise AssertionError(
                 f"expected logout to clear session for {settings.protected_path!r}, got {post_logout_redirect!r}"
             )
+
+
+def classify_logout_redirect(location: str | None, settings: SmokeSettings) -> str:
+    """Return "local" or "rp-initiated" for a logout redirect target."""
+    if not location:
+        raise AssertionError("logout response did not include a Location header")
+    if location.startswith(settings.public_path):
+        return "local"
+    if location.startswith(settings.mock_issuer.rstrip("/")):
+        return "rp-initiated"
+    raise AssertionError(f"unexpected logout redirect target {location!r}")
+
+
+def complete_logout(client: httpx.Client, settings: SmokeSettings) -> str:
+    """Run logout, tolerating both RP-initiated and local-fallback behaviour."""
+    response = client.get(settings.logout_url, follow_redirects=False)
+    if response.status_code != 307:
+        raise AssertionError(f"expected logout status 307, got {response.status_code}")
+
+    location = response.headers.get("location")
+    mode = classify_logout_redirect(location, settings)
+    if mode == "rp-initiated":
+        issuer_response = client.get(str(location), follow_redirects=True)
+        if issuer_response.status_code >= 400:
+            raise AssertionError(
+                f"RP-initiated logout endpoint returned {issuer_response.status_code}"
+            )
+    return mode
 
 
 def extract_status_location(response: httpx.Response) -> tuple[int, str | None]:
