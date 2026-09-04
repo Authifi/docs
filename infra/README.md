@@ -289,7 +289,7 @@ The installer at `infra/scripts/deploy-release.sh` is intentionally atomic:
 1. verify the staged archive and checksum
 2. unpack into `/opt/authifi-docs/releases/<sha>`
 3. create the release virtualenv and install from the bundled wheelhouse
-4. health-check the candidate on `127.0.0.1:18080`
+4. refuse to continue if `127.0.0.1:18080` is already taken, then health-check the candidate there, running it as `authifi-docs` through `setpriv`
 5. atomically swap `/opt/authifi-docs/current`
 6. restart `authifi-docs` under systemd
 7. health-check the active service on `127.0.0.1:8080`
@@ -298,6 +298,10 @@ The installer at `infra/scripts/deploy-release.sh` is intentionally atomic:
 Both post-swap failures take the same path out. A `systemctl restart` that returns non-zero is the same outcome as a failed health check one step earlier, so it rolls back rather than leaving `current` pointing at a release that never started.
 
 If there was no previous release, a failed first activation removes `current` and stops the service instead of claiming success.
+
+Two details of step 4 are worth knowing when reading installer output. The candidate is probed as the service account rather than as root, because the question the probe answers is whether the release systemd is about to start will actually serve — and root can read a site the service user cannot. And the port is bind-tested first: a leftover uvicorn from an interrupted deploy still holding 18080 would answer the health check, promoting a candidate that was never probed.
+
+`incoming/<sha>` is cleared on every exit, including a rejected checksum, an unhealthy candidate, and a SHA that was already active. Nothing there is worth keeping — the same bytes are in S3 under the same SHA — and `aws:downloadContent` re-stages ahead of the installer on every invocation, so a retry never depends on what the last attempt left on disk. Only that SHA's directory is removed, never another deployment's.
 
 ## Diagnostics
 

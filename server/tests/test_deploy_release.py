@@ -6,6 +6,7 @@ import fcntl
 import hashlib
 import json
 import os
+import socket
 import stat
 import subprocess
 import sys
@@ -32,6 +33,7 @@ class DeployHarness:
     fake_bin: Path = field(init=False)
     events_file: Path = field(init=False)
     curl_args_file: Path = field(init=False)
+    setpriv_args_file: Path = field(init=False)
     candidate_pid_file: Path = field(init=False)
     service_state_file: Path = field(init=False)
     lock_path: Path = field(init=False)
@@ -49,6 +51,7 @@ class DeployHarness:
         self.fake_bin = self.tmp_path / "fake-bin"
         self.events_file = self.tmp_path / "events.log"
         self.curl_args_file = self.tmp_path / "curl-args.jsonl"
+        self.setpriv_args_file = self.tmp_path / "setpriv-args.jsonl"
         self.candidate_pid_file = self.tmp_path / "candidate.pid"
         self.service_state_file = self.tmp_path / "service-running"
         self.lock_path = self.root / "deploy.lock"
@@ -75,6 +78,7 @@ class DeployHarness:
             "AUTHIFI_DOCS_CURL_BIN": str(self.fake_bin / "curl"),
             "AUTHIFI_DOCS_SYSTEMCTL_BIN": str(self.fake_bin / "systemctl"),
             "AUTHIFI_DOCS_TIMEOUT_BIN": str(self.fake_bin / "timeout"),
+            "AUTHIFI_DOCS_SETPRIV_BIN": str(self.fake_bin / "setpriv"),
             "AUTHIFI_DOCS_CANDIDATE_HEALTH_ATTEMPTS": "2",
             "AUTHIFI_DOCS_ACTIVE_HEALTH_ATTEMPTS": "1",
             "AUTHIFI_DOCS_HEALTH_SLEEP_SECONDS": "0",
@@ -82,6 +86,8 @@ class DeployHarness:
             "AUTHIFI_DOCS_CURL_MAX_TIME_SECONDS": "5",
             "EVENTS_FILE": str(self.events_file),
             "CURL_ARGS_FILE": str(self.curl_args_file),
+            "SETPRIV_ARGS_FILE": str(self.setpriv_args_file),
+            "CANDIDATE_PORT": "18080",
             "CANDIDATE_PID_FILE": str(self.candidate_pid_file),
             "SERVICE_STATE_FILE": str(self.service_state_file),
             "FAIL_CANDIDATE_HEALTH_FILE": str(self.fail_candidate_health_file),
@@ -101,6 +107,30 @@ class DeployHarness:
         if not self.curl_args_file.exists():
             return []
         return [json.loads(line) for line in self.curl_args_file.read_text(encoding="utf-8").splitlines()]
+
+    @property
+    def setpriv_invocations(self) -> list[list[str]]:
+        if not self.setpriv_args_file.exists():
+            return []
+        return [
+            json.loads(line)
+            for line in self.setpriv_args_file.read_text(encoding="utf-8").splitlines()
+        ]
+
+    @property
+    def candidate_port(self) -> int:
+        return int(self.env["CANDIDATE_PORT"])
+
+    @candidate_port.setter
+    def candidate_port(self, value: int) -> None:
+        """Move the candidate probe port, for both the installer and the fake curl.
+
+        Tests that need a port genuinely occupied ask the OS for one rather than
+        contending for 18080, which something on a developer's machine may
+        already be using.
+        """
+        self.env["AUTHIFI_DOCS_CANDIDATE_PORT"] = str(value)
+        self.env["CANDIDATE_PORT"] = str(value)
 
     @property
     def candidate_pid(self) -> int | None:
@@ -161,11 +191,12 @@ from pathlib import Path
 events = Path(os.environ["EVENTS_FILE"])
 args_file = Path(os.environ["CURL_ARGS_FILE"])
 candidate_pid_file = Path(os.environ["CANDIDATE_PID_FILE"])
+candidate_port = os.environ["CANDIDATE_PORT"]
 url = sys.argv[-1]
 with args_file.open("a", encoding="utf-8") as stream:
     stream.write(json.dumps(sys.argv[1:]) + "\\n")
 
-if ":18080/health" in url:
+if f":{candidate_port}/health" in url:
     deadline = time.monotonic() + 1
     while not candidate_pid_file.exists() and time.monotonic() < deadline:
         time.sleep(0.01)
@@ -220,6 +251,34 @@ if len(sys.argv) < 3:
     sys.exit(2)
 
 os.execvp(sys.argv[2], sys.argv[2:])
+""",
+        )
+        # Records the privilege drop and then execs, the way real setpriv does.
+        # Rejecting a malformed invocation is the point: if the installer stops
+        # passing `--reuid`/`--regid` or drops the `--`, the candidate probe
+        # fails here rather than quietly running as root.
+        self._write_executable(
+            self.fake_bin / "setpriv",
+            """#!/usr/bin/env python3
+import json
+import os
+import sys
+from pathlib import Path
+
+arguments = sys.argv[1:]
+with Path(os.environ["SETPRIV_ARGS_FILE"]).open("a", encoding="utf-8") as stream:
+    stream.write(json.dumps(arguments) + "\\n")
+
+if "--" not in arguments:
+    print("usage: setpriv [options] -- COMMAND...", file=sys.stderr)
+    sys.exit(2)
+
+command = arguments[arguments.index("--") + 1 :]
+if not command:
+    print("setpriv: no command given", file=sys.stderr)
+    sys.exit(2)
+
+os.execvp(command[0], command)
 """,
         )
         self._write_executable(
@@ -424,6 +483,12 @@ def test_first_deploy_active_health_failure_removes_current_and_stops_service(
     assert "systemctl:stop" in deploy_harness.events
 
     deploy_harness.fail_active_health_once = False
+
+    # Re-staged, because the failed run cleared its own staging directory. This
+    # is what Systems Manager does too: `aws:downloadContent` runs ahead of the
+    # installer on every invocation, so a retry never depends on what the last
+    # attempt left on disk.
+    deploy_harness.publish_archive(sha)
     retry = deploy_harness.run(sha)
 
     assert retry.returncode == 0
@@ -515,6 +580,141 @@ def test_the_installed_release_tree_is_never_group_or_other_writable(
 
     assert writable == []
     assert len(tree) > 5, "the release tree was not actually installed"
+
+
+def stage_unrelated_deployment(harness: DeployHarness) -> Path:
+    """Another SHA's staged archive, which no exit path may remove.
+
+    Clearing `incoming` wholesale would be a correct-looking fix that deletes
+    an archive Systems Manager staged for a deployment this run knows nothing
+    about.
+    """
+    other = "7" * 39 + "e"
+    harness.publish_archive(other)
+    return harness.incoming_root / other
+
+
+def test_a_successful_install_clears_only_its_own_staging_directory(
+    deploy_harness: DeployHarness,
+) -> None:
+    other = stage_unrelated_deployment(deploy_harness)
+    sha = "4" * 38 + "cd"
+    deploy_harness.publish_archive(sha)
+
+    assert deploy_harness.run(sha).returncode == 0
+    assert not (deploy_harness.incoming_root / sha).exists()
+    assert other.is_dir()
+
+
+def test_a_rejected_checksum_clears_the_staging_directory_it_refused(
+    deploy_harness: DeployHarness,
+) -> None:
+    """Only the success path used to clear staging, so every failure left an
+    archive and its wheelhouse on the root volume until somebody noticed.
+    Nothing in there is worth keeping -- the same bytes are in S3 under the
+    same SHA -- and the one this test stages is a *rejected* archive.
+    """
+    deploy_harness.seed_active_release()
+    other = stage_unrelated_deployment(deploy_harness)
+    sha = "5" * 38 + "cd"
+    deploy_harness.publish_archive(sha, checksum="0" * 64)
+
+    assert deploy_harness.run(sha).returncode != 0
+    assert not (deploy_harness.incoming_root / sha).exists()
+    assert other.is_dir()
+
+
+def test_an_unhealthy_candidate_clears_its_staging_directory(
+    deploy_harness: DeployHarness,
+) -> None:
+    deploy_harness.seed_active_release()
+    sha = "6" * 38 + "cd"
+    deploy_harness.publish_archive(sha)
+    deploy_harness.fail_candidate_health = True
+
+    assert deploy_harness.run(sha).returncode != 0
+    assert not (deploy_harness.incoming_root / sha).exists()
+
+
+def test_an_already_active_release_clears_its_staging_directory(
+    deploy_harness: DeployHarness,
+) -> None:
+    """The early exit returns zero, so this path looked like a success and left
+    a full staged archive behind on every redeploy of the current release."""
+    sha = "8" * 38 + "cd"
+    deploy_harness.publish_archive(sha)
+
+    assert deploy_harness.run(sha).returncode == 0
+
+    deploy_harness.publish_archive(sha)
+    result = deploy_harness.run(sha)
+
+    assert result.returncode == 0
+    assert "already active" in result.stderr
+    assert not (deploy_harness.incoming_root / sha).exists()
+
+
+def test_the_candidate_server_is_probed_as_the_service_account(
+    deploy_harness: DeployHarness,
+) -> None:
+    """The candidate probe answers "will the release systemd is about to start
+    actually serve?", and root can read a site the service user cannot. Probed
+    as root, that difference surfaces after the swap instead of before it.
+    """
+    deploy_harness.seed_active_release()
+    sha = "9" * 38 + "cd"
+    deploy_harness.publish_archive(sha)
+
+    assert deploy_harness.run(sha).returncode == 0
+
+    invocations = deploy_harness.setpriv_invocations
+    assert len(invocations) == 1
+
+    arguments = invocations[0]
+    separator = arguments.index("--")
+
+    assert arguments[:separator] == [
+        "--reuid=authifi-docs",
+        "--regid=authifi-docs",
+        "--init-groups",
+        "--no-new-privs",
+    ]
+
+    command = arguments[separator + 1 :]
+    assert command[0] == str(deploy_harness.fake_bin / "uvicorn")
+    assert "server.main:app" in command
+    assert command[-2:] == ["--port", "18080"]
+
+
+def test_an_occupied_candidate_port_fails_before_the_swap(
+    deploy_harness: DeployHarness,
+) -> None:
+    """A leftover uvicorn from an interrupted deploy still holding the candidate
+    port would answer the health check, and the release that passed would be the
+    old one: a candidate promoted without ever having been probed.
+
+    The port is one the OS hands out rather than 18080, so this test cannot
+    collide with whatever is listening on the machine running it.
+    """
+    old = deploy_harness.seed_active_release()
+    sha = "a" * 38 + "cd"
+    deploy_harness.publish_archive(sha)
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as holder:
+        holder.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        holder.bind(("127.0.0.1", 0))
+        holder.listen(1)
+        deploy_harness.candidate_port = holder.getsockname()[1]
+
+        result = deploy_harness.run(sha)
+
+    assert result.returncode != 0
+    assert "already in use" in result.stderr
+    assert deploy_harness.current.resolve() == old
+    assert deploy_harness.candidate_pid is None
+    assert deploy_harness.setpriv_invocations == []
+    assert "systemctl:restart" not in deploy_harness.events
+    assert not (deploy_harness.incoming_root / sha).exists()
 
 
 def test_lock_prevents_concurrent_install(deploy_harness: DeployHarness) -> None:

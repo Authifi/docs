@@ -15,6 +15,12 @@ uvicorn_bin="${AUTHIFI_DOCS_UVICORN_BIN:-}"
 curl_bin="${AUTHIFI_DOCS_CURL_BIN:-curl}"
 systemctl_bin="${AUTHIFI_DOCS_SYSTEMCTL_BIN:-systemctl}"
 timeout_bin="${AUTHIFI_DOCS_TIMEOUT_BIN:-timeout}"
+# setpriv rather than runuser or su: it execs the command instead of forking a
+# supervised child, so the candidate server stays a direct child of `timeout`
+# and the kill that stops it still reaches uvicorn.
+setpriv_bin="${AUTHIFI_DOCS_SETPRIV_BIN:-setpriv}"
+service_user="${AUTHIFI_DOCS_SERVICE_USER:-authifi-docs}"
+candidate_port="${AUTHIFI_DOCS_CANDIDATE_PORT:-18080}"
 candidate_attempts="${AUTHIFI_DOCS_CANDIDATE_HEALTH_ATTEMPTS:-30}"
 active_attempts="${AUTHIFI_DOCS_ACTIVE_HEALTH_ATTEMPTS:-15}"
 health_sleep_seconds="${AUTHIFI_DOCS_HEALTH_SLEEP_SECONDS:-1}"
@@ -71,6 +77,37 @@ PY
   fi
   exit 0
 fi
+
+candidate_pid=""
+
+stop_candidate_server() {
+  if [[ -n "$candidate_pid" ]]; then
+    kill "$candidate_pid" 2>/dev/null || true
+    wait "$candidate_pid" 2>/dev/null || true
+    candidate_pid=""
+  fi
+}
+
+# One exit handler for the whole run, installed before anything is staged or
+# started, and only inside the branch that holds the lock: the outer invocation
+# must not clear staging for a deployment it just refused to interleave with.
+#
+# `incoming/<sha>` is this deployment's staging directory and nothing else's,
+# so clearing it on every path — a rejected checksum, an unhealthy candidate, a
+# SHA that was already active, a signal — never touches another deployment's
+# data. Only the success path used to clear it, which left a failed deploy's
+# archive on the root volume until somebody noticed, and there is nothing in
+# there worth keeping: the same bytes are in S3 under the same SHA.
+on_exit() {
+  local status=$?
+
+  stop_candidate_server
+  rm -rf "$incoming"
+
+  return "$status"
+}
+
+trap on_exit EXIT
 
 if [[ ! -s "$archive" || ! -s "$checksum_file" ]]; then
   echo "SSM did not stage the release archive and checksum" >&2
@@ -188,28 +225,49 @@ if [[ -z "$uvicorn_bin" ]]; then
   uvicorn_bin="$candidate/.venv/bin/uvicorn"
 fi
 
+# A leftover uvicorn from an interrupted deploy still holding the candidate port
+# would answer the health check below, and the release that passed would be the
+# old one — a candidate promoted without ever having been probed. Asking for the
+# port the way uvicorn asks for it is the check: SO_REUSEADDR set, so a
+# TIME_WAIT connection is not mistaken for a listener, and no listener is
+# mistaken for a free port.
+"$python_bin" - "$candidate_port" <<'PY'
+import socket
+import sys
+
+port = int(sys.argv[1])
+with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+    probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        probe.bind(("127.0.0.1", port))
+    except OSError as error:
+        raise SystemExit(f"candidate port {port} is already in use: {error}")
+PY
+
+# As the service account, not as root. The candidate probe exists to answer
+# "will the release systemd is about to start actually serve?", and root can
+# read a site the service user cannot — which is exactly the failure this step
+# is supposed to catch before the swap rather than after it.
 SITE_DIR="$candidate/site" "$timeout_bin" 30 \
+  "$setpriv_bin" \
+  --reuid="$service_user" \
+  --regid="$service_user" \
+  --init-groups \
+  --no-new-privs \
+  -- \
   "$uvicorn_bin" server.main:app \
   --app-dir "$candidate" \
   --host 127.0.0.1 \
-  --port 18080 &
+  --port "$candidate_port" &
 candidate_pid=$!
 
-cleanup_candidate_server() {
-  kill "$candidate_pid" 2>/dev/null || true
-  wait "$candidate_pid" 2>/dev/null || true
-}
-
-trap cleanup_candidate_server EXIT
-
-if ! poll_health "http://127.0.0.1:18080/health" "$candidate_attempts"; then
+if ! poll_health "http://127.0.0.1:$candidate_port/health" "$candidate_attempts"; then
   echo "candidate release failed health check" >&2
   rm -rf "$candidate"
   exit 1
 fi
 
-cleanup_candidate_server
-trap - EXIT
+stop_candidate_server
 
 # Everything past the swap fails the same way and has to be undone the same
 # way. `systemctl restart` returning non-zero used to end the installer on the
@@ -251,4 +309,3 @@ if ! poll_health "http://127.0.0.1:8080/health" "$active_attempts"; then
 fi
 
 prune_releases "$candidate"
-rm -rf "$incoming"
