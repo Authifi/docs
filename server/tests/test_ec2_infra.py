@@ -1182,8 +1182,33 @@ def test_the_instance_role_reads_only_the_release_prefix() -> None:
     statement = statement_with_action(policy, "s3:GetObject")
 
     # The whole grant, read from the actions lists rather than searched for.
-    assert actions(policy) == ["s3:GetObject"]
+    assert actions(policy) == ["s3:GetObject", "ssm:GetParameter"]
     assert attribute(statement, "resources") == '["${aws_s3_bucket.releases.arn}/releases/*"]'
+
+
+def test_oidc_secret_parameter_name_and_role_permissions_are_fixed() -> None:
+    parameter_name = "/authifi-docs/oidc-client-secret"
+    assert variable_accepts(
+        VARIABLES, "oidc_client_secret_parameter_name", parameter_name
+    )
+    assert not variable_accepts(
+        VARIABLES, "oidc_client_secret_parameter_name", f"{parameter_name}-other"
+    )
+
+    instance_policy = hcl_block(
+        MAIN, 'data "aws_iam_policy_document" "instance_releases"'
+    )
+    instance_statement = statement_with_action(instance_policy, "ssm:GetParameter")
+    deploy_policy = hcl_block(
+        MAIN, 'data "aws_iam_policy_document" "github_deploy"'
+    )
+    deploy_statement = statement_with_action(deploy_policy, "ssm:PutParameter")
+
+    expected_resource = "[local.oidc_client_secret_parameter_arn]"
+    assert attribute(instance_statement, "resources") == expected_resource
+    assert attribute(deploy_statement, "resources") == expected_resource
+    assert "kms:" not in instance_policy
+    assert "kms:" not in deploy_policy
 
 
 def test_the_private_subnet_is_checked_for_a_route_to_the_shared_nat() -> None:
@@ -1393,6 +1418,7 @@ def test_deploy_role_is_limited_to_s3_ssm_and_target_health() -> None:
     assert actions(policy) == [
         "s3:GetObject",
         "s3:PutObject",
+        "ssm:PutParameter",
         "ssm:SendCommand",
         "ssm:GetCommandInvocation",
         "ssm:ListCommandInvocations",
@@ -1656,7 +1682,15 @@ def test_no_terraform_variable_output_or_template_input_carries_a_secret() -> No
     the prose explaining why the value is absent.
     """
     for filename, source in (("main.tf", MAIN), ("variables.tf", VARIABLES), ("outputs.tf", OUTPUTS)):
-        found = SECRET_MATERIAL.search(strip_comments(source))
+        configuration = strip_comments(source)
+        for permitted_name in (
+            "OIDC_CLIENT_SECRET_PARAMETER_NAME",
+            "oidc_client_secret_parameter_name",
+            "oidc_client_secret_parameter_arn",
+            "/authifi-docs/oidc-client-secret",
+        ):
+            configuration = configuration.replace(permitted_name, "")
+        found = SECRET_MATERIAL.search(configuration)
 
         assert found is None, f"{filename} names secret material: {found and found[0]}"
 
@@ -1729,6 +1763,7 @@ def test_user_data_no_longer_carries_the_installer() -> None:
 BOOTSTRAP_VALUES = {
     "oidc_issuer": "https://issuer.authifi.io/tenants/authifi",
     "oidc_client_id": "authifi-docs",
+    "oidc_client_secret_parameter_name": "/authifi-docs/oidc-client-secret",
     "public_base_url": "https://docs.authifi.io",
     "site_dir": "/opt/authifi-docs/current/site",
     "post_logout_path": "/privacy-policy/",
@@ -2008,6 +2043,7 @@ def test_the_template_channel_is_one_json_document_and_the_port() -> None:
     assert set(host_config_mapping()) == {
         "OIDC_ISSUER",
         "OIDC_CLIENT_ID",
+        "OIDC_CLIENT_SECRET_PARAMETER_NAME",
         "PUBLIC_BASE_URL",
         "SITE_DIR",
         "POST_LOGOUT_PATH",

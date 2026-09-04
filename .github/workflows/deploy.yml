@@ -71,6 +71,19 @@ jobs:
           role-to-assume: ${{ env.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
+      - name: Synchronize OIDC client secret
+        shell: bash
+        env:
+          OIDC_CLIENT_SECRET: ${{ secrets.OIDC_CLIENT_SECRET }}
+        run: |
+          set -euo pipefail
+          : "${OIDC_CLIENT_SECRET:?Set production environment secret OIDC_CLIENT_SECRET}"
+          aws ssm put-parameter \
+            --name "/authifi-docs/oidc-client-secret" \
+            --type SecureString \
+            --value "$OIDC_CLIENT_SECRET" \
+            --overwrite >/dev/null
+
       - name: Select release
         id: release
         shell: bash

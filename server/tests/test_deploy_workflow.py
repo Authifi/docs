@@ -136,6 +136,7 @@ def test_deploy_job_uses_pinned_oidc_and_expected_step_shape() -> None:
         "Install Python dependencies",
         "Verify required repository variables",
         "Configure AWS credentials",
+        "Synchronize OIDC client secret",
         "Select release",
         "Build release",
         "Publish or verify release",
@@ -166,6 +167,25 @@ def test_required_repository_variables_are_validated_before_aws_mutation() -> No
         "DOCS_PUBLIC_BASE_URL",
     ):
         assert f': "${{{variable}:?Set repository variable {variable}}}"' in run
+
+
+def test_environment_secret_is_synchronized_before_the_ssm_deployment() -> None:
+    sync_name = "Synchronize OIDC client secret"
+    sync = step(sync_name)
+    run = step_run(sync_name)
+
+    assert step_index("Configure AWS credentials") < step_index(sync_name)
+    assert step_index(sync_name) < step_index("Install release through SSM")
+    assert sync["env"] == {
+        "OIDC_CLIENT_SECRET": "${{ secrets.OIDC_CLIENT_SECRET }}"
+    }
+    assert ': "${OIDC_CLIENT_SECRET:?Set production environment secret OIDC_CLIENT_SECRET}"' in run
+    assert 'aws ssm put-parameter \\' in run
+    assert '--name "/authifi-docs/oidc-client-secret" \\' in run
+    assert "--type SecureString \\" in run
+    assert '--value "$OIDC_CLIENT_SECRET" \\' in run
+    assert "--overwrite >/dev/null" in run
+    assert "set -x" not in run
 
 
 def test_select_release_handles_push_and_workflow_dispatch_safely() -> None:
@@ -1587,5 +1607,6 @@ def test_obsolete_deploy_tooling_is_absent_from_parsed_actions_and_shell() -> No
     shell_text = "\n".join(step_run(candidate["name"]) for candidate in STEPS).lower()
 
     assert "aws-actions/amazon-ecr-login" not in used_actions
-    for forbidden in ("self-hosted", "docker ", "docker/", "buildx", "ghcr.io", "ecr", "apprunner"):
+    for forbidden in ("self-hosted", "docker ", "docker/", "buildx", "ghcr.io", "apprunner"):
         assert forbidden not in shell_text
+    assert re.search(r"(^|[^a-z0-9])ecr([^a-z0-9]|$)", shell_text) is None

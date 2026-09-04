@@ -381,7 +381,14 @@ from pathlib import Path
 # has to hold if the file is ever written by something other than the
 # bootstrap this repository ships.
 EXPECTED_CONFIG = frozenset(
-    ("OIDC_ISSUER", "OIDC_CLIENT_ID", "PUBLIC_BASE_URL", "SITE_DIR", "POST_LOGOUT_PATH")
+    (
+        "OIDC_ISSUER",
+        "OIDC_CLIENT_ID",
+        "OIDC_CLIENT_SECRET_PARAMETER_NAME",
+        "PUBLIC_BASE_URL",
+        "SITE_DIR",
+        "POST_LOGOUT_PATH",
+    )
 )
 # Generated on the host, and the only thing that file is for.
 EXPECTED_SESSION = frozenset(("SESSION_SECRET",))

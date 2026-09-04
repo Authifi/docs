@@ -29,6 +29,7 @@ DEPLOYER = ROOT / "infra" / "scripts" / "deploy-release.sh"
 HOST_CONFIGURATION = {
     "OIDC_ISSUER": "https://issuer.authifi.io/tenants/authifi",
     "OIDC_CLIENT_ID": "authifi-docs",
+    "OIDC_CLIENT_SECRET_PARAMETER_NAME": "/authifi-docs/oidc-client-secret",
     "PUBLIC_BASE_URL": "https://docs.authifi.io",
     "SITE_DIR": "/opt/authifi-docs/current/site",
     "POST_LOGOUT_PATH": "/privacy-policy/",
@@ -406,8 +407,9 @@ Path(os.environ["UVICORN_ENV_FILE"]).write_text(
         {
             name: value
             for name, value in os.environ.items()
-            if name in ("OIDC_ISSUER", "OIDC_CLIENT_ID", "PUBLIC_BASE_URL", "SITE_DIR",
-                        "POST_LOGOUT_PATH", "SESSION_SECRET", "AUTHIFI_ENV", "SESSION_NAME")
+            if name in ("OIDC_ISSUER", "OIDC_CLIENT_ID", "OIDC_CLIENT_SECRET_PARAMETER_NAME",
+                        "PUBLIC_BASE_URL", "SITE_DIR", "POST_LOGOUT_PATH", "SESSION_SECRET",
+                        "AUTHIFI_ENV", "SESSION_NAME")
         }
     ),
     encoding="utf-8",

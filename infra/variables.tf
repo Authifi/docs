@@ -178,6 +178,17 @@ variable "oidc_client_id" {
   }
 }
 
+variable "oidc_client_secret_parameter_name" {
+  description = "Fixed SSM SecureString name synchronized from the GitHub production environment."
+  type        = string
+  default     = "/authifi-docs/oidc-client-secret"
+
+  validation {
+    condition     = contains(["/authifi-docs/oidc-client-secret"], var.oidc_client_secret_parameter_name)
+    error_message = "oidc_client_secret_parameter_name is fixed to /authifi-docs/oidc-client-secret."
+  }
+}
+
 variable "public_base_url" {
   description = "Public HTTPS origin for this deployment. Fixed to https://docs.authifi.io because MkDocs output and static agent assets are authored for that origin."
   type        = string
