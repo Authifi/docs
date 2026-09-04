@@ -281,6 +281,7 @@ def set_cache_visibility(request: Request, visibility: str) -> None:
 
 
 def create_app(config: AppConfig, auth_client: object | None = None) -> Starlette:
+    validate_oidc_issuer(config.oidc_issuer)
     validate_public_base_url(config.public_base_url)
     validate_post_logout_path(config.post_logout_path)
 
@@ -378,6 +379,52 @@ def request_is_same_origin(request: Request, config: AppConfig) -> bool:
     return submitted is not None and submitted == normalize_origin(
         config.public_base_url, allow_root_path=True
     )
+
+
+def validate_oidc_issuer(oidc_issuer: str) -> str:
+    """Refuse an issuer URL discovery cannot be built from, at startup.
+
+    Authlib loads ``/.well-known/openid-configuration`` by appending that path
+    to this value after stripping a trailing slash. A query, a fragment, or
+    credentials therefore produce a discovery URL the issuer never serves, and
+    a hostname is required because there is nothing to discover against
+    otherwise.
+    """
+    if any(character in CONTROL_CHARACTERS for character in oidc_issuer):
+        raise ValueError(
+            f"OIDC_ISSUER must not contain control characters, got {oidc_issuer!r}"
+        )
+
+    parts = urlsplit(oidc_issuer)
+    if parts.scheme not in ORIGIN_DEFAULT_PORTS:
+        raise ValueError(
+            "OIDC_ISSUER must be an absolute http or https URL naming a DNS "
+            f"host and an optional path, with no query, fragment, or credentials, "
+            f"got {oidc_issuer!r}"
+        )
+    if parts.query or parts.fragment:
+        raise ValueError(
+            f"OIDC_ISSUER must not carry a query or fragment, got {oidc_issuer!r}"
+        )
+
+    try:
+        hostname = parts.hostname
+    except ValueError:
+        hostname = None
+    if not hostname or parts.username or parts.password:
+        raise ValueError(
+            "OIDC_ISSUER must name a DNS host with no credentials, got "
+            f"{oidc_issuer!r}"
+        )
+
+    if parts.path.startswith("//") or "//" in parts.path.lstrip("/"):
+        raise ValueError(
+            "OIDC_ISSUER path must be safe to append "
+            "'/.well-known/openid-configuration' to, got "
+            f"{oidc_issuer!r}"
+        )
+
+    return oidc_issuer
 
 
 def validate_public_base_url(public_base_url: str) -> str:

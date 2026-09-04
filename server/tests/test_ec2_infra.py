@@ -22,7 +22,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from server.app import normalize_origin
+from server.app import normalize_origin, validate_oidc_issuer
 from server.tests.hcl_support import (
     actions,
     attribute,
@@ -889,6 +889,72 @@ def test_terraform_never_accepts_a_public_base_url_the_server_would_refuse(
         assert normalize_origin(value, allow_root_path=True) is not None
 
 
+OIDC_ISSUERS_THAT_WORK = (
+    "https://issuer.example.com",
+    "https://issuer.authifi.io/tenants/authifi",
+    "https://issuer.example.com/",
+)
+
+OIDC_ISSUERS_THAT_CANNOT_WORK = (
+    "http://issuer.example.com",
+    "https://",
+    "issuer.example.com",
+    "https://issuer.example.com?probe=1",
+    "https://issuer.example.com/?probe=1",
+    "https://issuer.example.com#fragment",
+    "https://user:pass@issuer.example.com",
+    "https://issuer.example.com//tenants/authifi",
+)
+
+
+@pytest.mark.parametrize("value", OIDC_ISSUERS_THAT_WORK)
+def test_terraform_accepts_an_oidc_issuer_discovery_can_use(value: str) -> None:
+    assert variable_accepts(VARIABLES, "oidc_issuer", value)
+
+
+@pytest.mark.parametrize("value", OIDC_ISSUERS_THAT_CANNOT_WORK)
+def test_terraform_refuses_an_oidc_issuer_discovery_could_not_use(value: str) -> None:
+    assert not variable_accepts(VARIABLES, "oidc_issuer", value)
+
+
+@pytest.mark.parametrize("value", (*OIDC_ISSUERS_THAT_WORK, *OIDC_ISSUERS_THAT_CANNOT_WORK))
+def test_terraform_never_accepts_an_oidc_issuer_the_server_would_refuse(value: str) -> None:
+    if variable_accepts(VARIABLES, "oidc_issuer", value):
+        validate_oidc_issuer(value)
+
+
+INSTANCE_TYPES_THAT_WORK = ("t3.micro", "t3.small", "m5.large", "c5.xlarge")
+
+ARM_INSTANCE_TYPES = (
+    "a1.medium",
+    "a1.large",
+    "t4g.micro",
+    "m6g.large",
+    "c7g.xlarge",
+    "r6g.4xlarge",
+)
+
+
+@pytest.mark.parametrize("value", INSTANCE_TYPES_THAT_WORK)
+def test_terraform_accepts_x86_instance_types(value: str) -> None:
+    assert variable_accepts(VARIABLES, "instance_type", value)
+
+
+@pytest.mark.parametrize("value", ARM_INSTANCE_TYPES)
+def test_terraform_refuses_arm_instance_types(value: str) -> None:
+    assert not variable_accepts(VARIABLES, "instance_type", value)
+
+
+def test_the_arm_instance_type_refusal_names_the_amd64_contract() -> None:
+    body = hcl_block(VARIABLES, 'variable "instance_type"')
+    messages = " ".join(
+        (attribute(block, "error_message") or "").strip('"')
+        for block in nested_blocks(body, "validation")
+    ).lower()
+    assert "a1" in messages
+    assert "x86" in messages or "arm" in messages or "amd64" in messages
+
+
 def test_the_certificate_is_not_blocked_on_validation_at_apply_time() -> None:
     """`aws_acm_certificate_validation` waits for records this root cannot
     create, so its presence would deadlock the very first apply."""
@@ -1080,6 +1146,30 @@ def test_the_release_bucket_refuses_requests_that_are_not_over_tls() -> None:
 
     attachment = hcl_block(MAIN, 'resource "aws_s3_bucket_policy" "releases"')
     assert attribute(attachment, "policy") == "data.aws_iam_policy_document.releases_bucket.json"
+
+
+def test_the_release_bucket_refuses_accidental_destruction_by_default() -> None:
+    """The bucket is versioned and holds every release archive. Terraform's
+    default is to refuse `destroy` while any object remains, which is the safe
+    posture; emptying it has to be an explicit, separate step."""
+    bucket = hcl_block(MAIN, 'resource "aws_s3_bucket" "releases"')
+
+    assert attribute(bucket, "force_destroy") == "var.release_bucket_force_destroy"
+    assert variable_default("release_bucket_force_destroy") == "false"
+    assert "release_bucket_force_destroy" in TFVARS_EXAMPLE
+
+
+def test_teardown_docs_apply_both_deletion_flags_before_destroy() -> None:
+    """A versioned bucket and a deletion-protected load balancer each need one
+    apply that opts in before `destroy` can succeed. The runbook names both."""
+    section = INFRA_README.lower()
+    assert "release_bucket_force_destroy" in section
+    assert "enable_alb_deletion_protection" in section
+    assert "destroy" in section
+
+    apply_pos = section.index("release_bucket_force_destroy")
+    destroy_pos = section.rindex("destroy")
+    assert apply_pos < destroy_pos
 
 
 # --- The public edge, continued -----------------------------------------------

@@ -415,7 +415,8 @@ resource "aws_lb_listener" "https" {
 # --- Release storage ----------------------------------------------------------
 
 resource "aws_s3_bucket" "releases" {
-  bucket = local.release_bucket_name
+  bucket        = local.release_bucket_name
+  force_destroy = var.release_bucket_force_destroy
 
   tags = merge(local.common_tags, { Name = local.release_bucket_name })
 }

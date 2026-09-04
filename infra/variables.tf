@@ -89,9 +89,14 @@ variable "private_app_subnet_id" {
 }
 
 variable "instance_type" {
-  description = "EC2 instance type for the docs server."
+  description = "EC2 instance type for the docs server. Must be x86_64: the selected AMI and the Linux wheelhouse built into each release are amd64 only."
   type        = string
   default     = "t3.micro"
+
+  validation {
+    condition     = !can(regex("^a1\\.", var.instance_type)) && !can(regex("^[a-z0-9]+g\\.", var.instance_type))
+    error_message = "instance_type must be x86_64: the AMI and Linux wheelhouse are amd64 only. ARM families a1.* and Graviton *g.* (for example t4g, m6g) are not supported."
+  }
 }
 
 variable "root_volume_size_gib" {
@@ -141,9 +146,18 @@ variable "oidc_issuer" {
   description = "OIDC issuer base URL the docs server discovers and exchanges codes against."
   type        = string
 
+  # Authlib appends `/.well-known/openid-configuration` to this value after
+  # stripping a trailing slash, so the plan refuses anything that would make
+  # discovery URL the issuer never serves. `server/app.py` re-checks the same
+  # shapes at startup via `validate_oidc_issuer`.
   validation {
-    condition     = startswith(var.oidc_issuer, "https://")
-    error_message = "oidc_issuer must be an https URL."
+    condition     = can(regex("^https://[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+(/[a-z0-9][a-z0-9._-]*(/[a-z0-9][a-z0-9._-]*)*)?/?$", var.oidc_issuer))
+    error_message = "oidc_issuer must be an https URL naming a lowercase DNS host and an optional path, such as https://issuer.example.com/tenants/acme."
+  }
+
+  validation {
+    condition     = length(regexall("[?#@]", var.oidc_issuer)) == 0
+    error_message = "oidc_issuer must not contain a query, fragment, or credentials."
   }
 
   # See site_dir for why every value that travels in user data is checked for
@@ -268,9 +282,15 @@ variable "custom_domain_name" {
 }
 
 variable "enable_alb_deletion_protection" {
-  description = "Refuse to delete the load balancer. Teardown means applying with this false first, then destroying."
+  description = "Refuse to delete the load balancer. Teardown means applying with this false and release_bucket_force_destroy true first, then destroying."
   type        = bool
   default     = true
+}
+
+variable "release_bucket_force_destroy" {
+  description = "Allow Terraform to delete the versioned release bucket even when it holds objects. Teardown means applying with this true first, then destroying."
+  type        = bool
+  default     = false
 }
 
 variable "enable_https_listener" {
