@@ -317,6 +317,8 @@ Two details of step 4 are worth knowing when reading installer output. The candi
 
 `incoming/<sha>` is cleared on every exit, including a rejected checksum, an unhealthy candidate, and a SHA that was already active. Nothing there is worth keeping — the same bytes are in S3 under the same SHA — and `aws:downloadContent` re-stages ahead of the installer on every invocation, so a retry never depends on what the last attempt left on disk. Only that SHA's directory is removed, never another deployment's.
 
+Pruning old releases, the last thing the installer does, is the one step that is best effort. Reaching it means the release is already swapped in, restarted, and answering its health check, so a failure to delete a stale directory is housekeeping rather than a failed deployment. The installer prints `release pruning failed; deployment is active` on stderr and exits successfully. Treat that line as a real problem to fix — a host that stops pruning will fill its root volume eventually — but not as a reason to roll back. Every other failure past the swap still rolls back and exits non-zero.
+
 ## Diagnostics
 
 When a workflow deployment fails, start with the exact stage that failed:

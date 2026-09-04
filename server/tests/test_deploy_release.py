@@ -828,6 +828,62 @@ def test_pruning_preserves_directory_symlinks(
     assert deploy_harness.current.resolve().exists()
 
 
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores the mode bits this relies on")
+def test_a_failed_prune_does_not_fail_an_activated_deployment(
+    deploy_harness: DeployHarness,
+) -> None:
+    """Pruning runs after the release is live, and it is only housekeeping.
+
+    `prune_releases` was the installer's last statement, so under `set -e`
+    anything that went wrong inside it became the script's exit status: an
+    `EPERM` on one stale directory, an `EBUSY` from something still holding a
+    file open, an `ENOSPC` part-way through an rmtree. Systems Manager reports
+    that as a failed command and the workflow treats it as a failed
+    deployment -- on a host that is serving the new release and passing its
+    health check. The operator is then told to roll back a deployment that
+    worked, because a directory nobody is going to read again could not be
+    deleted.
+
+    The failure is forced here only where it can be reached: after the swap,
+    the restart, and the active health check have all succeeded.
+    """
+    stale = [deploy_harness.make_release(digit * 40) for digit in "123"]
+    for offset, release in enumerate(stale, start=20):
+        deploy_harness.set_mtime(release, offset)
+
+    # The oldest, so it is the one release `prune_releases` reaches -- two
+    # non-active releases are kept. Clearing write on the release directory is
+    # what makes rmtree fail: it can list and empty `site/`, then cannot rmdir
+    # it. A real `chmod`, not a stubbed error, so the installer is answering
+    # the same failure the kernel would give it on the host.
+    unprunable = stale[0]
+    unprunable.chmod(0o555)
+
+    sha = "d" * 40
+    deploy_harness.publish_archive(sha)
+
+    try:
+        result = deploy_harness.run(sha)
+    finally:
+        # Restored unconditionally: a directory left unwritable here would
+        # break pytest's own cleanup of this tmp_path on a later run.
+        unprunable.chmod(0o755)
+
+    # Activated and verified, all before pruning was reachable at all.
+    assert deploy_harness.current.resolve().name == sha
+    assert deploy_harness.service_running
+    assert "active-health" in deploy_harness.events
+
+    assert result.returncode == 0, result.stderr
+    assert "release pruning failed; deployment is active" in result.stderr
+
+    # Nothing rolled back and nothing restarted twice: this is a successful
+    # deployment that could not tidy up, not a failure that recovered.
+    assert "previous release" not in result.stderr
+    assert deploy_harness.events.count("systemctl:restart") == 1
+    assert unprunable.is_dir()
+
+
 def test_successful_install_stops_candidate_probe_process(
     deploy_harness: DeployHarness,
 ) -> None:

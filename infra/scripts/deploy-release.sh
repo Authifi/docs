@@ -308,4 +308,20 @@ if ! poll_health "http://127.0.0.1:8080/health" "$active_attempts"; then
   abandon_activation "active release failed health check"
 fi
 
-prune_releases "$candidate"
+# Best effort, and deliberately the only step here that is. Everything above
+# either succeeded or exited non-zero already, so reaching this line means the
+# release is swapped in, restarted, and answering its health check. Pruning old
+# releases is housekeeping on top of that: an EPERM on one stale directory, an
+# EBUSY from something still holding a file open, an ENOSPC part-way through an
+# rmtree. As the script's last statement under `set -e`, any of those became
+# the exit status, which Systems Manager reports as a failed command and the
+# workflow treats as a failed deployment -- telling an operator to roll back a
+# release that is live and healthy because a directory nobody will read again
+# could not be deleted.
+#
+# The failure is still reported, on stderr, where the SSM invocation output
+# picks it up: a host that stops pruning will fill its root volume eventually,
+# so this is worth seeing, just not worth failing for.
+if ! prune_releases "$candidate"; then
+  echo "release pruning failed; deployment is active" >&2
+fi
