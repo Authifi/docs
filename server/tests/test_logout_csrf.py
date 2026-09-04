@@ -406,6 +406,75 @@ def test_a_public_base_url_with_a_path_still_has_an_origin() -> None:
     assert normalize_origin("https://docs.example.com/docs/") is None
 
 
+# --- The configured host has to be the one the browser sends ------------------
+#
+# The comparison is deliberately strict: it lowercases the host and folds a
+# default port, and does nothing else. It does not strip a trailing dot or
+# convert a Unicode host to punycode, because both would widen what counts as
+# this site's own origin, which is the opposite of what the check is for.
+#
+# The consequence belongs in the operations documentation rather than in code,
+# and these tests are what keeps that note true: `PUBLIC_BASE_URL` has to name
+# the host in the same form the browser will put in `Origin`.
+
+
+def test_a_configured_host_with_a_trailing_dot_matches_nothing_a_browser_sends(
+    site_dir: Path,
+) -> None:
+    """`docs.example.com.` is the same name to DNS and a different string here.
+    A browser sends the form in the address bar, which has no trailing dot."""
+    client = authenticated_client(site_dir, public_base_url="https://docs.example.com.")
+
+    response = client.post(
+        "/_auth/logout",
+        headers={"origin": "https://docs.example.com"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 403
+
+
+def test_a_configured_unicode_host_does_not_match_the_punycode_a_browser_sends(
+    site_dir: Path,
+) -> None:
+    """Browsers send an internationalised host as A-labels, so the
+    configuration has to be written that way too."""
+    client = authenticated_client(site_dir, public_base_url="https://dócs.example.com")
+
+    response = client.post(
+        "/_auth/logout",
+        headers={"origin": "https://xn--dcs-8na.example.com"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 403
+
+
+def test_a_punycode_host_configured_as_punycode_works(site_dir: Path) -> None:
+    """The supported way to run on an internationalised domain."""
+    punycode = "https://xn--dcs-8na.example.com"
+    client = authenticated_client(site_dir, public_base_url=punycode)
+
+    response = client.post(
+        "/_auth/logout", headers={"origin": punycode}, follow_redirects=False
+    )
+
+    assert response.status_code == LOGOUT_REDIRECT_STATUS
+
+
+def test_the_host_case_is_the_one_difference_that_is_forgiven(site_dir: Path) -> None:
+    """Hostnames are case-insensitive, so this one really is the same origin."""
+    client = authenticated_client(site_dir, public_base_url="https://DOCS.example.com")
+
+    response = client.post(
+        "/_auth/logout",
+        headers={"origin": "https://docs.example.com"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == LOGOUT_REDIRECT_STATUS
+
+
 def test_a_deployment_whose_public_base_url_is_not_an_origin_fails_at_startup(
     site_dir: Path,
 ) -> None:

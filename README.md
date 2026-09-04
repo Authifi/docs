@@ -149,6 +149,8 @@ The post-logout target is always the configured `POST_LOGOUT_PATH`. A `?next=` o
 
 If you run the docs server on a different base URL or port, update `PUBLIC_BASE_URL` and register the matching callback and post-logout destinations in Authifi.
 
+Because sign-out compares the browser's `Origin` against `PUBLIC_BASE_URL` and only forgives host case, that variable must name the host exactly as a browser would send it: no trailing dot, punycode rather than Unicode for an internationalised domain, and the canonical domain users actually browse. A service reachable both at a custom domain and at its App Runner `*.awsapprunner.com` address will refuse sign-out on whichever one `PUBLIC_BASE_URL` does not name. See [`docs/operations/aws-oidc-hosting.md`](docs/operations/aws-oidc-hosting.md) for the details.
+
 ## AWS Bootstrap And Deploy
 
 Use [`infra/README.md`](infra/README.md) for the full Terraform and App Runner bootstrap commands. The short version is:

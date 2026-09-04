@@ -191,6 +191,35 @@ somebody else writing to your logs, and the response does not echo it either.
 value that is not an absolute `http` or `https` URL fails the container
 immediately instead of letting it serve traffic and refuse every sign-out.
 
+#### Write PUBLIC_BASE_URL The Way A Browser Would
+
+The comparison lowercases the host and treats a scheme's default port as absent.
+That is all it does. It does not strip a trailing dot, and it does not convert
+an internationalised host to punycode, because either would widen what counts
+as this site's own origin — and widening it is the opposite of what the check
+exists for.
+
+So `PUBLIC_BASE_URL` has to name the host in exactly the form a browser will put
+in `Origin`, which is the form in the address bar:
+
+- **No trailing dot.** `https://docs.authifi.io.` is the same name to DNS and a
+  different string here. No browser sends the dot, so every sign-out would
+  answer `403`.
+- **A-labels, not Unicode.** An internationalised domain must be written in its
+  punycode form, since that is what browsers send. `https://dócs.example.com`
+  never matches the `https://xn--dcs-8na.example.com` that arrives.
+- **The host users actually browse.** Case is the one difference that is
+  forgiven. Everything else — a different subdomain, a different port, `http`
+  where users get `https` — is a different origin.
+
+The practical trap is a custom domain. If `PUBLIC_BASE_URL` names the custom
+domain but the service is also reachable at its App Runner
+`*.awsapprunner.com` address, sign-out works on the first and answers `403` on
+the second, because the browser reports the origin it actually loaded. Point
+users at the canonical domain, and set `PUBLIC_BASE_URL` to that same canonical
+form. `server/tests/test_logout_csrf.py` holds each of these cases, so this note
+cannot quietly stop being true.
+
 ### Signing Out Clears Everything, Not Just This Tab
 
 `/_auth/logout` clears the whole session cookie: the signed-in identity and
