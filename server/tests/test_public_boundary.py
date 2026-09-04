@@ -311,6 +311,20 @@ def test_hook_source_is_not_published(built_site: Path) -> None:
     assert list(built_site.rglob("*.pyc")) == []
 
 
+def test_internal_planning_documents_are_not_published(built_site: Path) -> None:
+    """The plans and specs under `docs/superpowers/` are working notes on this
+    deployment: role names, bucket layout, and the reasoning behind them. They
+    live under `docs/` for the agent that writes them, and `exclude_docs` is
+    the only thing keeping them out of the site. Dropping that one line
+    publishes them as pages and indexes them for search, where every reader who
+    can sign in can read them.
+    """
+    assert (REPO_ROOT / "docs" / "superpowers").is_dir()
+
+    assert not (built_site / "superpowers").exists()
+    assert list(built_site.rglob("*ec2-oidc-hosting*")) == []
+
+
 # --- Allowlist drift ----------------------------------------------------------
 
 
