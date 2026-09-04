@@ -35,6 +35,17 @@ locals {
     Service    = var.service_name
   })
 
+  # The installer is bash, so it is full of dollar signs, brace expansions, and
+  # heredocs of its own. Base64 is what carries it through a JSON document and
+  # a shell heredoc without either language touching it.
+  #
+  # It travels with the command that runs it rather than in user data. Anything
+  # in user data is part of the instance's identity under
+  # `user_data_replace_on_change`, so while the installer lived there, editing
+  # it destroyed and rebuilt the host: a new session secret, every user signed
+  # out, an empty release tree, and a redeploy needed before the site answered.
+  deploy_script_base64 = base64encode(file("${path.module}/scripts/deploy-release.sh"))
+
   user_data = templatefile("${path.module}/templates/user-data.sh.tftpl", {
     oidc_issuer      = var.oidc_issuer
     oidc_client_id   = var.oidc_client_id
@@ -42,10 +53,6 @@ locals {
     site_dir         = var.site_dir
     post_logout_path = var.post_logout_path
     app_port         = var.app_port
-
-    # The installer is bash. Base64 is what keeps its own `${...}` out of
-    # Terraform's template language and out of the heredoc that carries it.
-    deploy_script_base64 = base64encode(file("${path.module}/scripts/deploy-release.sh"))
   })
 }
 
@@ -83,6 +90,15 @@ data "aws_subnet" "app" {
       error_message = "private_app_subnet_id must belong to vpc_id."
     }
   }
+}
+
+# The route table the subnet is actually associated with, read because this root
+# no longer owns it. Whether the shared NAT route exists is now an assumption
+# about someone else's Terraform, and the instance below turns it into a check:
+# a subnet that is merely not public is indistinguishable, until first boot,
+# from one with no way out at all.
+data "aws_route_table" "app" {
+  subnet_id = var.private_app_subnet_id
 }
 
 # --- Security groups ----------------------------------------------------------
@@ -268,6 +284,15 @@ resource "aws_acm_certificate" "docs" {
 
   lifecycle {
     create_before_destroy = true
+
+    # The host advertises `public_base_url` as its OIDC redirect origin, and the
+    # load balancer serves only this certificate's name. A mismatch is a sign-in
+    # loop whose first symptom is Authifi rejecting the redirect URI, which
+    # points at the identity provider rather than at these two variables.
+    precondition {
+      condition     = try(regex("^https://([^/?#]+)", var.public_base_url)[0], "") == var.custom_domain_name
+      error_message = "public_base_url's host must equal custom_domain_name; the load balancer serves no other name."
+    }
   }
 }
 
@@ -315,6 +340,12 @@ resource "aws_lb_listener" "http" {
   }
 
   tags = local.common_tags
+
+  # On the flip, this listener stops answering and starts redirecting to 443.
+  # Without the ordering Terraform is free to make that change before creating
+  # the listener on 443, leaving a window where every request is redirected to
+  # a closed port — worse than the holding response it replaced.
+  depends_on = [aws_lb_listener.https]
 }
 
 resource "aws_lb_listener" "https" {
@@ -500,6 +531,14 @@ resource "aws_instance" "docs" {
       condition     = data.aws_subnet.app.map_public_ip_on_launch == false
       error_message = "private_app_subnet_id must name a private subnet; this one auto-assigns public addresses."
     }
+
+    # Not public is not the same as reachable. Both halves are checked: a
+    # default route to an internet gateway carries no nat_gateway_id, and a NAT
+    # route for a narrower prefix is not a default route.
+    precondition {
+      condition     = anytrue([for route in data.aws_route_table.app.routes : route.cidr_block == "0.0.0.0/0" && route.nat_gateway_id != ""])
+      error_message = "private_app_subnet_id's route table must send 0.0.0.0/0 to the shared NAT Gateway; the docs server needs that egress for OIDC discovery, the authorization-code exchange, Systems Manager, and first-boot package installation."
+    }
   }
 
   # First boot does two things that need the network already permitted: it
@@ -567,12 +606,33 @@ resource "aws_ssm_document" "deploy" {
           destinationPath = "/opt/authifi-docs/incoming/{{ ReleaseSha }}/"
         }
       },
+      # The installer is delivered here, immediately before it runs, so that
+      # editing it produces a new document version rather than replacing the
+      # instance. The provider promotes that version: on a content change it
+      # calls UpdateDocument and then UpdateDocumentDefaultVersion with the
+      # version returned, and SendCommand naming no version resolves the
+      # default. Schema 2.2 is what allows the in-place update at all.
+      #
+      # The agent hardcodes `sh` and hands it the assembled script, so this runs
+      # under dash on Ubuntu and the shebang is never consulted: no `pipefail`,
+      # no `[[`, no here-strings. `set -eu` is also what makes a failed decode
+      # fail the step, since the agent otherwise reports only the last command's
+      # status. The installer's own shebang still selects bash for the installer.
       {
         action = "aws:runShellScript"
         name   = "installRelease"
         inputs = {
           runCommand = [
-            "/usr/local/sbin/authifi-docs-deploy '{{ ReleaseSha }}'",
+            "set -eu",
+            # /run is root-owned tmpfs; /tmp is world-writable.
+            "install -d -m 0700 -o root -g root /run/authifi-docs",
+            "installer=\"$(mktemp /run/authifi-docs/deploy-release.XXXXXXXX)\"",
+            "trap 'rm -f \"$installer\"' EXIT HUP INT TERM",
+            "base64 -d > \"$installer\" <<'AUTHIFI_DOCS_INSTALLER'",
+            local.deploy_script_base64,
+            "AUTHIFI_DOCS_INSTALLER",
+            "chmod 0700 \"$installer\"",
+            "\"$installer\" '{{ ReleaseSha }}'",
           ]
         }
       },

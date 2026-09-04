@@ -14,7 +14,15 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from server.tests.hcl_support import hcl_block, statement_with_action
+from server.tests.hcl_support import (
+    actions,
+    hcl_block,
+    hcl_list,
+    nested_blocks,
+    resource_bodies,
+    statement_with_action,
+    strip_comments,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 MAIN = (ROOT / "infra" / "main.tf").read_text(encoding="utf-8")
@@ -36,11 +44,39 @@ def attribute(body: str, name: str) -> str | None:
 
 
 def security_group_rules(direction: str) -> dict[str, str]:
-    header = f'resource "aws_vpc_security_group_{direction}_rule"'
+    return resource_bodies(MAIN, f"aws_vpc_security_group_{direction}_rule")
+
+
+def app_rules(direction: str) -> dict[str, str]:
+    """Every rule attached to the app security group, by resource name."""
     return {
-        name: hcl_block(MAIN, f'{header} "{name}"')
-        for name in re.findall(rf'{re.escape(header)} "([^"]+)"', MAIN)
+        name: body
+        for name, body in security_group_rules(direction).items()
+        if attribute(body, "security_group_id") == "aws_security_group.app.id"
     }
+
+
+def instance_preconditions() -> list[str]:
+    return nested_blocks(hcl_block(MAIN, 'resource "aws_instance" "docs"'), "precondition")
+
+
+def user_data_statements() -> str:
+    """User data with its whole-line shell comments removed.
+
+    Same reason `strip_comments` exists for the HCL: a comment explaining why
+    a construct is used otherwise counts as a use of it.
+    """
+    return re.sub(r"(?m)^[ \t]*#.*$", "", USER_DATA)
+
+
+def ssm_install_script() -> str:
+    """The shell the deployment document runs, as the agent will assemble it.
+
+    The agent joins `runCommand` entries with newlines into one script file, so
+    reading them joined is reading the script.
+    """
+    document = hcl_block(MAIN, 'resource "aws_ssm_document" "deploy"')
+    return "\n".join(hcl_list(document, "runCommand"))
 
 
 # --- The App Runner architecture is gone, not merely unused ------------------
@@ -58,10 +94,10 @@ def test_app_runner_and_ecr_are_absent() -> None:
 
 def test_instance_is_private_and_uses_encrypted_ebs() -> None:
     instance = hcl_block(MAIN, 'resource "aws_instance" "docs"')
-    assert "associate_public_ip_address = false" in instance
-    assert "subnet_id                   = var.private_app_subnet_id" in instance
-    root = hcl_block(instance, "root_block_device")
-    assert "encrypted = true" in root
+
+    assert attribute(instance, "associate_public_ip_address") == "false"
+    assert attribute(instance, "subnet_id") == "var.private_app_subnet_id"
+    assert attribute(hcl_block(instance, "root_block_device"), "encrypted") == "true"
 
 
 # --- The shared network is consumed, not rebuilt -------------------------------
@@ -80,7 +116,7 @@ def test_terraform_reuses_the_shared_vpc_and_subnets() -> None:
         assert resource not in MAIN, resource
 
     alb = hcl_block(MAIN, 'resource "aws_lb" "docs"')
-    assert "subnets            = var.public_subnet_ids" in alb
+    assert attribute(alb, "subnets") == "var.public_subnet_ids"
 
 
 def test_the_target_group_lives_in_the_shared_vpc() -> None:
@@ -157,10 +193,51 @@ def test_the_instance_is_registered_with_the_target_group() -> None:
 
 
 def test_only_the_alb_security_group_can_reach_the_app_port() -> None:
-    ingress = hcl_block(MAIN, 'resource "aws_vpc_security_group_ingress_rule" "app_from_alb"')
-    assert "referenced_security_group_id = aws_security_group.alb.id" in ingress
-    assert "from_port                    = var.app_port" in ingress
-    assert "cidr_ipv4" not in ingress
+    """Enumerated, not spot-checked. `app_from_alb` being exactly right says
+    nothing about a second ingress rule opening 22 to the world beside it, and
+    that rule is the whole difference between a private host and a public one.
+    """
+    ingress = app_rules("ingress")
+
+    assert set(ingress) == {"app_from_alb"}
+
+    rule = ingress["app_from_alb"]
+    assert attribute(rule, "referenced_security_group_id") == "aws_security_group.alb.id"
+    assert attribute(rule, "from_port") == "var.app_port"
+    assert attribute(rule, "to_port") == "var.app_port"
+
+    # Any of these would admit something other than the load balancer.
+    for opener in ("cidr_ipv4", "cidr_ipv6", "prefix_list_id"):
+        assert attribute(rule, opener) is None, opener
+
+
+def test_no_security_group_rule_anywhere_opens_ssh() -> None:
+    every_rule = {**security_group_rules("ingress"), **security_group_rules("egress")}
+    ports = {attribute(body, "from_port") for body in every_rule.values()}
+
+    assert "22" not in ports
+
+
+def test_security_groups_declare_no_inline_rules() -> None:
+    """An inline `ingress` block is invisible to the enumeration above, so a
+    port opened there would pass every rule assertion in this file."""
+    for name in ("alb", "app"):
+        group = strip_comments(hcl_block(MAIN, f'resource "aws_security_group" "{name}"'))
+
+        assert not nested_blocks(group, "ingress"), name
+        assert not nested_blocks(group, "egress"), name
+
+
+def test_the_instance_has_no_ssh_key_pair() -> None:
+    """Systems Manager is the only way onto this host. A key pair would put a
+    credential outside that path, usable by anyone holding the private half and
+    leaving none of the audit trail Session Manager does.
+    """
+    instance = hcl_block(MAIN, 'resource "aws_instance" "docs"')
+
+    assert attribute(instance, "key_name") is None
+    assert "key_name" not in strip_comments(instance)
+    assert 'resource "aws_key_pair"' not in MAIN
 
 
 def test_app_egress_supports_shared_nat_oidc_and_bootstrap() -> None:
@@ -170,13 +247,11 @@ def test_app_egress_supports_shared_nat_oidc_and_bootstrap() -> None:
     permit them; VPC endpoints no longer stand in for that egress.
     """
     for name, port in (("app_http", 80), ("app_https", 443)):
-        rule = hcl_block(
-            MAIN,
-            f'resource "aws_vpc_security_group_egress_rule" "{name}"',
-        )
-        assert f"from_port   = {port}" in rule
-        assert f"to_port     = {port}" in rule
-        assert 'cidr_ipv4   = "0.0.0.0/0"' in rule
+        rule = app_rules("egress")[name]
+
+        assert attribute(rule, "from_port") == str(port)
+        assert attribute(rule, "to_port") == str(port)
+        assert attribute(rule, "cidr_ipv4") == '"0.0.0.0/0"'
 
     assert 'resource "aws_vpc_endpoint"' not in MAIN
 
@@ -197,11 +272,7 @@ def test_app_egress_is_confined_to_named_ports() -> None:
     A blanket `ip_protocol = "-1"` rule would satisfy the flows above while
     opening every outbound port on the instance.
     """
-    app_egress = {
-        name: body
-        for name, body in security_group_rules("egress").items()
-        if attribute(body, "security_group_id") == "aws_security_group.app.id"
-    }
+    app_egress = app_rules("egress")
 
     assert set(app_egress) == {
         "app_dns_tcp",
@@ -219,10 +290,12 @@ def test_app_egress_is_confined_to_named_ports() -> None:
 
 
 def test_alb_redirects_http_and_checks_application_health() -> None:
-    http = hcl_block(MAIN, 'resource "aws_lb_listener" "http"')
-    target = hcl_block(MAIN, 'resource "aws_lb_target_group" "docs"')
-    assert 'status_code = "HTTP_301"' in http
-    assert 'path                = "/health"' in hcl_block(target, "health_check")
+    redirect = hcl_block(MAIN, 'resource "aws_lb_listener" "http"')
+    health = hcl_block(hcl_block(MAIN, 'resource "aws_lb_target_group" "docs"'), "health_check")
+
+    assert attribute(redirect, "status_code") == '"HTTP_301"'
+    assert attribute(health, "path") == '"/health"'
+    assert attribute(health, "matcher") == '"200"' 
 
 
 def test_one_stable_listener_owns_port_eighty() -> None:
@@ -259,6 +332,34 @@ def test_https_is_served_only_once_the_certificate_is_enabled() -> None:
     assert attribute(https, "certificate_arn") == "aws_acm_certificate.docs.arn"
 
 
+def test_the_redirect_never_points_at_a_listener_that_does_not_exist_yet() -> None:
+    """On the apply that flips to HTTPS, port 80 stops answering and starts
+    redirecting to 443. Terraform is otherwise free to make that change before
+    creating the listener on 443, leaving a window in which every request is
+    redirected to a closed port — worse than the holding response it replaced.
+    """
+    redirect = hcl_block(MAIN, 'resource "aws_lb_listener" "http"')
+
+    assert attribute(redirect, "depends_on") == "[aws_lb_listener.https]"
+
+
+def test_the_advertised_origin_matches_the_name_the_certificate_covers() -> None:
+    """The host advertises `public_base_url` as its OIDC redirect origin and the
+    load balancer serves only `custom_domain_name`. A mismatch is a sign-in loop
+    whose first visible symptom is Authifi rejecting the redirect URI, so it is
+    worth catching in a plan rather than in production.
+    """
+    precondition = next(
+        block
+        for block in nested_blocks(hcl_block(MAIN, 'resource "aws_acm_certificate" "docs"'), "precondition")
+        if "public_base_url" in block
+    )
+    condition = attribute(precondition, "condition") or ""
+
+    assert "var.public_base_url" in condition
+    assert "== var.custom_domain_name" in condition
+
+
 def test_the_certificate_is_not_blocked_on_validation_at_apply_time() -> None:
     """`aws_acm_certificate_validation` waits for records this root cannot
     create, so its presence would deadlock the very first apply."""
@@ -271,11 +372,18 @@ def test_the_certificate_is_not_blocked_on_validation_at_apply_time() -> None:
 
 def test_ssm_document_stages_both_objects_before_running_the_installer() -> None:
     document = hcl_block(MAIN, 'resource "aws_ssm_document" "deploy"')
+
     assert document.count('"aws:downloadContent"') == 2
     assert ".tar.gz" in document
     assert ".tar.gz.sha256" in document
-    assert '"aws:runShellScript"' in document
-    assert "/usr/local/sbin/authifi-docs-deploy" in document
+
+    # Order, not just presence: the installer exits non-zero when either object
+    # is missing, so staging after the run step would fail every deploy.
+    assert re.findall(r'action = "(aws:[A-Za-z]+)"', document) == [
+        "aws:downloadContent",
+        "aws:downloadContent",
+        "aws:runShellScript",
+    ]
 
 
 def test_ssm_stages_the_release_into_the_directory_the_installer_reads() -> None:
@@ -307,15 +415,78 @@ def test_the_release_sha_is_the_only_thing_a_deploy_can_inject() -> None:
     assert len(placeholders) == 5
 
 
+def test_the_instance_role_carries_exactly_the_two_expected_policies() -> None:
+    """Enumerated and pinned, because an `AmazonS3FullAccess` attachment sits
+    perfectly happily beside a correctly scoped `instance_releases` one, and
+    every assertion that reads only the expected attachments still passes.
+
+    This role is assumable by anything running on the host, so its total grant
+    is what an application compromise gets.
+    """
+    attachments = {
+        name: body
+        for name, body in resource_bodies(MAIN, "aws_iam_role_policy_attachment").items()
+        if attribute(body, "role") == "aws_iam_role.instance.name"
+    }
+
+    assert set(attachments) == {"instance_ssm_core", "instance_releases"}
+    assert attribute(attachments["instance_ssm_core"], "policy_arn") == (
+        '"arn:${data.aws_partition.current.partition}:iam::aws:policy/AmazonSSMManagedInstanceCore"'
+    )
+    assert attribute(attachments["instance_releases"], "policy_arn") == (
+        "aws_iam_policy.instance_releases.arn"
+    )
+
+    # Three ways to grant a role something without an attachment resource.
+    assert 'resource "aws_iam_role_policy"' not in MAIN
+    role = strip_comments(hcl_block(MAIN, 'resource "aws_iam_role" "instance"'))
+    assert not nested_blocks(role, "inline_policy")
+    assert attribute(role, "managed_policy_arns") is None
+
+
+def test_no_customer_managed_policy_exists_beyond_the_two_expected() -> None:
+    """A second policy is only harmless while nothing attaches it, and the
+    attachment is one line away."""
+    assert set(resource_bodies(MAIN, "aws_iam_policy")) == {"instance_releases", "github_deploy"}
+
+
 def test_the_instance_role_reads_only_the_release_prefix() -> None:
-    managed = hcl_block(MAIN, 'resource "aws_iam_role_policy_attachment" "instance_ssm_core"')
     policy = hcl_block(MAIN, 'data "aws_iam_policy_document" "instance_releases"')
     statement = statement_with_action(policy, "s3:GetObject")
 
-    assert "AmazonSSMManagedInstanceCore" in managed
+    # The whole grant, read from the actions lists rather than searched for.
+    assert actions(policy) == ["s3:GetObject"]
     assert attribute(statement, "resources") == '["${aws_s3_bucket.releases.arn}/releases/*"]'
-    assert "s3:PutObject" not in policy
-    assert "s3:DeleteObject" not in policy
+
+
+def test_the_private_subnet_is_checked_for_a_route_to_the_shared_nat() -> None:
+    """`map_public_ip_on_launch == false` proves the subnet is not public. It
+    does not prove there is a way out, and a subnet with no default route at all
+    passes it — the symptom being an instance whose sign-in and whose Systems
+    Manager registration both silently never work.
+
+    Now that this root does not own the route table, reading it is the only way
+    to know the shared NAT route is really there.
+    """
+    lookup = hcl_block(MAIN, 'data "aws_route_table" "app"')
+    assert attribute(lookup, "subnet_id") == "var.private_app_subnet_id"
+
+    precondition = next(
+        block for block in instance_preconditions() if "aws_route_table" in block
+    )
+    condition = attribute(precondition, "condition") or ""
+
+    # Both halves, so the check is not vacuous: a default route to an internet
+    # gateway has no nat_gateway_id, and a NAT route for some narrower prefix
+    # is not a default route. Either alone would pass a one-sided condition.
+    assert "data.aws_route_table.app.routes" in condition
+    assert 'route.cidr_block == "0.0.0.0/0"' in condition
+    assert 'route.nat_gateway_id != ""' in condition
+    assert condition.startswith("anytrue(")
+
+    message = attribute(precondition, "error_message") or ""
+    assert "private_app_subnet_id" in message
+    assert "NAT" in message
 
 
 # --- The release bucket -------------------------------------------------------
@@ -350,8 +521,16 @@ def test_deploy_role_is_limited_to_s3_ssm_and_target_health() -> None:
     assert statement_with_action(policy, "ssm:SendCommand")
     assert statement_with_action(policy, "ssm:GetCommandInvocation")
     assert statement_with_action(policy, "elasticloadbalancing:DescribeTargetHealth")
-    for forbidden in ("ecr:", "apprunner:", "iam:PassRole"):
-        assert forbidden not in policy
+    # The whole grant, enumerated. Searching for the absent strings read the
+    # comments beside the statements as well as the statements.
+    assert actions(policy) == [
+        "s3:GetObject",
+        "s3:PutObject",
+        "ssm:SendCommand",
+        "ssm:GetCommandInvocation",
+        "ssm:ListCommandInvocations",
+        "elasticloadbalancing:DescribeTargetHealth",
+    ]
 
 
 def test_send_command_names_the_one_document_and_the_one_instance() -> None:
@@ -384,7 +563,6 @@ def test_bootstrap_creates_a_non_root_service_and_root_only_session_key() -> Non
     assert "Group=authifi-docs" in USER_DATA
     assert "chmod 0600 /etc/authifi-docs/session.env" in USER_DATA
     assert "openssl rand -hex 32" in USER_DATA
-    assert "SESSION_SECRET=" not in MAIN
 
 
 def test_bootstrap_installs_the_venv_package_ubuntu_leaves_out() -> None:
@@ -395,9 +573,38 @@ def test_bootstrap_installs_the_venv_package_ubuntu_leaves_out() -> None:
     It has to happen before the service is enabled, and it is only reachable at
     all because the private subnet routes through the shared NAT.
     """
-    assert "apt-get update" in USER_DATA
-    assert "apt-get install --yes python3-venv" in USER_DATA
-    assert USER_DATA.index("apt-get install") < USER_DATA.index("systemctl enable")
+    bootstrap = user_data_statements()
+
+    assert "apt-get update" in bootstrap
+    assert re.search(r"apt-get install --yes .*\bpython3-venv\b", bootstrap)
+    assert bootstrap.index("apt-get install") < bootstrap.index("systemctl enable authifi-docs")
+
+
+def test_the_host_is_pointed_at_the_only_time_source_it_can_reach() -> None:
+    """Egress permits UDP 123 to 169.254.169.123 and nowhere else, and Noble
+    does not reliably use it. Ubuntu's chrony ships the ntp.ubuntu.com NTS
+    pools, which need UDP 123 and TCP 4460 to the internet, and AWS's own Ubuntu
+    instructions are to add the link-local server by hand.
+
+    Unconfigured, the clock drifts behind a security group that silently drops
+    every NTP packet, and on this host drift is an OIDC failure: `iat` and `exp`
+    are the first things it breaks.
+    """
+    rule = app_rules("egress")["app_time_sync"]
+
+    assert attribute(rule, "cidr_ipv4") == '"169.254.169.123/32"'
+    assert attribute(rule, "ip_protocol") == '"udp"'
+
+    bootstrap = user_data_statements()
+
+    assert re.search(r"apt-get install --yes .*\bchrony\b", bootstrap)
+    assert "server 169.254.169.123 prefer iburst" in bootstrap
+    assert "systemctl restart chrony" in bootstrap
+
+    # The distro pools are unreachable through that rule, so both layouts
+    # Ubuntu has shipped them in are neutralised rather than left to time out.
+    assert ": > /etc/chrony/sources.d/ubuntu-ntp-pools.sources" in bootstrap
+    assert r"ubuntu\.com" in bootstrap
 
 
 def test_the_bootstrap_package_install_does_not_fail_on_one_bad_response() -> None:
@@ -405,8 +612,87 @@ def test_the_bootstrap_package_install_does_not_fail_on_one_bad_response() -> No
     would turn a transient apt failure into an instance with no service unit and
     no installer.
     """
-    assert "DEBIAN_FRONTEND=noninteractive" in USER_DATA
-    assert re.search(r"for attempt in .*; do", USER_DATA)
+    bootstrap = user_data_statements()
+
+    assert "DEBIAN_FRONTEND=noninteractive" in bootstrap
+
+    # Pinned to the real count: `for attempt in 1; do` matched a loop that
+    # retries nothing, and the terminal branch is what keeps a permanent
+    # failure from looking like a successful boot.
+    attempts = re.search(r"for attempt in ([\d ]+); do", bootstrap)
+    assert attempts is not None
+    assert attempts[1].split() == ["1", "2", "3", "4", "5"]
+
+    # And the last attempt gives up rather than looping or continuing.
+    assert 'if [[ "$attempt" -eq 5 ]]; then' in bootstrap
+    assert re.search(r"-eq 5 \]\]; then\n.*\n\s*exit 1", bootstrap)
+
+
+SECRET_MATERIAL = re.compile(r"session[_ -]?secret|client[_ -]?secret", re.IGNORECASE)
+
+TEMPLATE_INPUTS = 'templatefile("${path.module}/templates/user-data.sh.tftpl",'
+
+
+def test_no_terraform_variable_output_or_template_input_carries_a_secret() -> None:
+    """`"SESSION_SECRET=" not in MAIN` was the entire guard, and it holds for a
+    `variable "session_secret"` piped through `templatefile`, for an
+    `output "session_secret"`, and for a `locals` entry holding one — every way
+    the value could actually end up in Terraform state or in a plan file.
+
+    Comments are stripped first, so the guard reads configuration rather than
+    the prose explaining why the value is absent.
+    """
+    for filename, source in (("main.tf", MAIN), ("variables.tf", VARIABLES), ("outputs.tf", OUTPUTS)):
+        found = SECRET_MATERIAL.search(strip_comments(source))
+
+        assert found is None, f"{filename} names secret material: {found and found[0]}"
+
+
+def test_the_template_receives_only_non_secret_configuration() -> None:
+    """The template's inputs are the one channel from Terraform onto the host,
+    so they are enumerated rather than searched: a name that does not read as a
+    secret can still carry one.
+    """
+    inputs = strip_comments(hcl_block(MAIN, TEMPLATE_INPUTS))
+
+    assert set(re.findall(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=", inputs, re.MULTILINE)) == {
+        "oidc_issuer",
+        "oidc_client_id",
+        "public_base_url",
+        "site_dir",
+        "post_logout_path",
+        "app_port",
+    }
+
+
+def test_the_session_secret_is_generated_on_the_host_and_kept_root_only() -> None:
+    """Terraform never sees it, so the only thing that may assign it is the
+    host's own CSPRNG, and the file it lands in must never be readable by the
+    service user: systemd reads `EnvironmentFile` as root before dropping
+    privileges, so 0600 root-owned is sufficient and necessary.
+    """
+    assert re.search(
+        r"printf 'SESSION_SECRET=%s\\n' \"\$\(openssl rand -hex 32\)\"", USER_DATA
+    ), "the secret must come from openssl rand"
+
+    # One writer, so there is no second path that could set a fixed value.
+    assert user_data_statements().count("SESSION_SECRET") == 1
+
+    # `umask` alone would leave the mode depending on when the file was made.
+    assert re.search(r"\(\s*umask 077", USER_DATA)
+    assert "chmod 0600 /etc/authifi-docs/session.env" in USER_DATA
+
+
+def test_the_umask_for_the_session_secret_does_not_leak_into_the_rest() -> None:
+    """A bare `umask 077` stays in effect for every file created after it, so
+    the mode of anything written later would depend on statement order."""
+    subshell = re.search(r"\(\s*\n\s*umask 077\n(.*?)\n\s*\)\n", USER_DATA, re.DOTALL)
+
+    assert subshell is not None
+    assert "session.env" in subshell[1]
+
+    # One `umask` statement, so there is no second unscoped one to reason about.
+    assert user_data_statements().count("umask") == 1
 
 
 def test_the_session_secret_survives_a_reboot() -> None:
@@ -416,13 +702,76 @@ def test_the_session_secret_survives_a_reboot() -> None:
     assert "if [[ ! -s /etc/authifi-docs/session.env ]]; then" in USER_DATA
 
 
-def test_the_installer_is_delivered_to_the_host_without_shell_interpolation() -> None:
-    """The installer is a bash script full of `$`, `${}`, and heredocs. Pasting
-    it into a `templatefile` body would have Terraform try to interpolate it;
-    base64 keeps the two languages apart.
+def test_user_data_no_longer_carries_the_installer() -> None:
+    """`user_data_replace_on_change = true` makes everything in user data part
+    of the instance's identity, so while the installer lived here every edit to
+    `deploy-release.sh` destroyed and rebuilt the host — which regenerates the
+    session secret, signs every user out, empties the release tree, and needs a
+    redeploy before the site answers again.
     """
-    assert "${deploy_script_base64}" in USER_DATA
+    bootstrap = user_data_statements()
+
+    assert "deploy_script_base64" not in bootstrap
+    assert "authifi-docs-deploy" not in bootstrap
+    assert "base64" not in bootstrap
+    assert "deploy_script_base64" not in strip_comments(hcl_block(MAIN, TEMPLATE_INPUTS))
+
+
+def test_the_document_delivers_the_installer_with_the_command_that_runs_it() -> None:
+    """Carried by the document instead of the host, so an installer edit is a
+    new document version rather than a replaced instance.
+
+    The provider handles the promotion: on a content change it calls
+    UpdateDocument and then UpdateDocumentDefaultVersion with the version that
+    call returned, so `SendCommand` naming no version still resolves to the
+    installer that was just applied.
+    """
+    document = hcl_block(MAIN, 'resource "aws_ssm_document" "deploy"')
+    script = ssm_install_script()
+
+    assert "local.deploy_script_base64" in document
     assert 'base64encode(file("${path.module}/scripts/deploy-release.sh"))' in MAIN
+
+    # Only schema 2.0 and later can be updated in place; a 1.x document would
+    # have to be destroyed and recreated on every installer edit.
+    assert 'schemaVersion = "2.2"' in document
+    assert "base64 -d" in script
+
+
+def test_the_delivered_installer_is_root_only_and_does_not_outlive_the_command() -> None:
+    """It is written to disk with the credentials of the SSM agent, which is
+    root, and it is the thing that installs the site. A world-readable or
+    lingering copy in a shared directory is a local privilege-escalation
+    foothold on the next deploy.
+    """
+    script = ssm_install_script()
+
+    # /run is root-owned tmpfs, unlike /tmp, which is world-writable.
+    assert "install -d -m 0700 -o root -g root /run/authifi-docs" in script
+    assert "mktemp /run/authifi-docs/" in script
+    assert 'chmod 0700 "$installer"' in script
+    assert re.search(r"trap 'rm -f \"\$installer\"' EXIT", script)
+
+
+def test_the_installer_wrapper_stays_within_posix_shell() -> None:
+    """The agent hardcodes `sh` and passes the assembled script to it, so on
+    Ubuntu this runs under dash and the shebang is never consulted. `pipefail`,
+    `[[`, and here-strings are all syntax errors there, and the failure would
+    arrive as a broken deploy rather than as a broken plan.
+    """
+    script = ssm_install_script()
+
+    assert script.startswith("set -eu\n")
+    for bashism in ("pipefail", "[[", "<<<", "function "):
+        assert bashism not in script, bashism
+
+
+def test_the_release_archive_still_carries_its_own_copy_of_the_installer() -> None:
+    """Provenance: the archive records which installer its release was built
+    against, independently of whichever document version ran."""
+    build = (ROOT / "scripts" / "build-release.sh").read_text(encoding="utf-8")
+
+    assert "deploy/deploy-release.sh" in build
 
 
 def test_the_example_variables_carry_no_secret_material() -> None:

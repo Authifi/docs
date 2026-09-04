@@ -1,25 +1,56 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# The Noble cloud image ships python3 3.12 without `ensurepip`, which Ubuntu
-# packages separately as python3.12-venv. Without it the release installer's
-# `python3 -m venv` fails on the very first deploy. The package comes over the
-# private subnet's shared NAT route.
+# python3-venv, because the Noble cloud image ships python3 3.12 without
+# `ensurepip` — Ubuntu packages that module separately — so the release
+# installer's `python3 -m venv` would fail on the very first deploy.
 #
-# Retried, because this is the first thing on the host to depend on that route
-# and `set -e` would otherwise turn one bad response into an instance with no
-# service unit and no installer.
+# chrony, because this host's only permitted time source is the link-local one
+# configured below, and the image does not reliably point a daemon at it.
+#
+# Both arrive over the private subnet's shared NAT route. Retried, because this
+# is the first thing on the host to depend on that route and `set -e` would
+# otherwise turn one bad mirror response into an instance with no service unit.
 export DEBIAN_FRONTEND=noninteractive
 for attempt in 1 2 3 4 5; do
-  if apt-get update && apt-get install --yes python3-venv; then
+  if apt-get update && apt-get install --yes python3-venv chrony; then
     break
   fi
   if [[ "$attempt" -eq 5 ]]; then
-    echo "could not install python3-venv" >&2
+    echo "could not install python3-venv and chrony" >&2
     exit 1
   fi
   sleep "$((attempt * 5))"
 done
+
+# This instance may send UDP 123 to 169.254.169.123 and nowhere else, and Noble
+# does not reliably use it: Ubuntu's chrony ships the ntp.ubuntu.com NTS pools,
+# which need UDP 123 and TCP 4460 to the internet, and AWS's own Ubuntu
+# instructions are to add the link-local server by hand. Left alone the clock
+# drifts behind a security group that silently drops every packet, and drift on
+# this host is an OIDC failure: `iat` and `exp` are the first things it breaks.
+install -d -m 0755 /etc/chrony/conf.d
+printf 'server 169.254.169.123 prefer iburst minpoll 4 maxpoll 4\n' \
+  > /etc/chrony/conf.d/amazon-time-sync.conf
+
+# Ubuntu gained `confdir` at different times across releases, so this makes the
+# drop-in read rather than assuming it is.
+if ! grep -qE '^[[:space:]]*confdir[[:space:]]+/etc/chrony/conf\.d' /etc/chrony/chrony.conf; then
+  printf 'confdir /etc/chrony/conf.d\n' >> /etc/chrony/chrony.conf
+fi
+
+# The distro pools are unreachable through that rule, so they go rather than
+# time out on every poll. Ubuntu has moved them between chrony.conf and
+# sources.d across releases, so both layouts are handled; emptying the file
+# rather than deleting it keeps a later chrony upgrade from prompting.
+if [[ -e /etc/chrony/sources.d/ubuntu-ntp-pools.sources ]]; then
+  : > /etc/chrony/sources.d/ubuntu-ntp-pools.sources
+fi
+sed -i -E 's,^([[:space:]]*(pool|server)[[:space:]]+[^[:space:]]*ubuntu\.com.*)$,# \1,' \
+  /etc/chrony/chrony.conf
+
+systemctl enable chrony
+systemctl restart chrony
 
 useradd --system --home-dir /opt/authifi-docs --shell /sbin/nologin authifi-docs || true
 install -d -o authifi-docs -g authifi-docs /opt/authifi-docs/releases /opt/authifi-docs/incoming
@@ -38,19 +69,16 @@ chmod 0600 /etc/authifi-docs/environment
 # regenerated: rewriting it on every boot would invalidate every live session
 # cookie, and instances reboot for reasons that have nothing to do with deploys.
 if [[ ! -s /etc/authifi-docs/session.env ]]; then
-  umask 077
-  printf 'SESSION_SECRET=%s\n' "$(openssl rand -hex 32)" \
-    > /etc/authifi-docs/session.env
+  # Scoped to a subshell. A bare `umask 077` stays in effect for the rest of
+  # this script, so the mode of everything written later would depend on where
+  # in the file it happens to appear.
+  (
+    umask 077
+    printf 'SESSION_SECRET=%s\n' "$(openssl rand -hex 32)" \
+      > /etc/authifi-docs/session.env
+  )
 fi
 chmod 0600 /etc/authifi-docs/session.env
-
-# The installer is bash, so it is full of dollar signs, brace expansions, and
-# heredocs of its own. Base64 keeps Terraform's template language, which reads
-# this whole file including these comments, from touching any of it.
-base64 -d > /usr/local/sbin/authifi-docs-deploy <<'SCRIPT'
-${deploy_script_base64}
-SCRIPT
-chmod 0750 /usr/local/sbin/authifi-docs-deploy
 
 cat > /etc/systemd/system/authifi-docs.service <<'UNIT'
 [Unit]

@@ -13,15 +13,58 @@ from __future__ import annotations
 
 import re
 
+_CLOSING = {"{": "}", "[": "]"}
+
+
+def _end_of_string(source: str, quote: int) -> int:
+    """The offset just past the double-quoted string opening at `quote`."""
+    offset = quote + 1
+    while offset < len(source):
+        if source[offset] == "\\":
+            offset += 2
+            continue
+        if source[offset] == '"':
+            return offset + 1
+        offset += 1
+    raise AssertionError(f"unterminated string from offset {quote}")
+
+
+def _matching(source: str, opening: int) -> int:
+    """The offset of the delimiter that closes the one at `opening`.
+
+    Strings and comments are skipped rather than counted. Without that, the
+    braces in `"{{ ReleaseSha }}"` and the brackets in `"^[0-9a-f]{40}$"` are
+    structure, and a block's apparent end depends on whether its regexes happen
+    to be balanced.
+    """
+    opener = source[opening]
+    closer = _CLOSING[opener]
+    depth = 0
+    offset = opening
+
+    while offset < len(source):
+        character = source[offset]
+        if character == '"':
+            offset = _end_of_string(source, offset)
+            continue
+        if character == "#" or source.startswith("//", offset):
+            newline = source.find("\n", offset)
+            offset = len(source) if newline == -1 else newline
+            continue
+        if character == opener:
+            depth += 1
+        elif character == closer:
+            depth -= 1
+            if depth == 0:
+                return offset
+        offset += 1
+
+    raise AssertionError(f"unbalanced {opener} from offset {opening}")
+
 
 def block_body(source: str, opening_brace: int) -> str:
     """The text of an HCL block, from the brace that opens it to its match."""
-    depth = 0
-    for offset, character in enumerate(source[opening_brace:], start=opening_brace):
-        depth += {"{": 1, "}": -1}.get(character, 0)
-        if depth == 0:
-            return source[opening_brace + 1 : offset]
-    raise AssertionError(f"unbalanced braces from offset {opening_brace}")
+    return source[opening_brace + 1 : _matching(source, opening_brace)]
 
 
 def hcl_block(source: str, header: str) -> str:
@@ -35,11 +78,91 @@ def hcl_block(source: str, header: str) -> str:
     return block_body(source, source.index("{", start + len(header)))
 
 
+def hcl_list(source: str, name: str) -> list[str]:
+    """The string elements of the `name = [ ... ]` list, unescaped.
+
+    Terraform's own escapes are undone, so a caller reading a shell snippet out
+    of an SSM document sees the shell it will actually run.
+    """
+    match = re.search(rf"\b{re.escape(name)}\s*=\s*\[", source)
+    assert match, f"no {name} list here"
+
+    body = source[match.end() - 1 : _matching(source, match.end() - 1) + 1]
+    return [
+        element.replace('\\"', '"').replace("\\\\", "\\")
+        for element in re.findall(r'"((?:[^"\\]|\\.)*)"', body)
+    ]
+
+
+def nested_blocks(body: str, label: str) -> list[str]:
+    """Every `label { ... }` block declared directly in `body`."""
+    return [
+        block_body(body, match.end() - 1)
+        for match in re.finditer(rf"(?:^|\n)[ \t]*{re.escape(label)}\s*\{{", body)
+    ]
+
+
+def resource_bodies(source: str, resource_type: str) -> dict[str, str]:
+    """Every `resource "<type>" "<name>"` block in `source`, keyed by name.
+
+    Enumerating is what lets a test say "and nothing else". Reading one policy
+    attachment and finding it correctly scoped says nothing about a second
+    attachment sitting beside it with `AmazonS3FullAccess`.
+    """
+    header = f'resource "{resource_type}"'
+    return {
+        match[1]: block_body(source, source.index("{", match.end()))
+        for match in re.finditer(rf'{re.escape(header)} "([^"]+)"', source)
+    }
+
+
+def strip_comments(source: str) -> str:
+    """HCL with `#`, `//`, and `/* */` comments removed, strings left alone.
+
+    Negative assertions are why this exists. `"iam:PassRole" not in policy`
+    passes or fails on prose, which makes it a test of the documentation rather
+    than of the configuration, and it fails the moment a comment explains why
+    the grant is absent.
+    """
+    kept: list[str] = []
+    offset = 0
+
+    while offset < len(source):
+        character = source[offset]
+        if character == '"':
+            end = _end_of_string(source, offset)
+            kept.append(source[offset:end])
+            offset = end
+            continue
+        if character == "#" or source.startswith("//", offset):
+            newline = source.find("\n", offset)
+            offset = len(source) if newline == -1 else newline
+            continue
+        if source.startswith("/*", offset):
+            end = source.find("*/", offset + 2)
+            offset = len(source) if end == -1 else end + 2
+            continue
+        kept.append(character)
+        offset += 1
+
+    return "".join(kept)
+
+
 def statements(document_body: str) -> list[str]:
     """Every `statement` block in an `aws_iam_policy_document` body."""
+    return nested_blocks(document_body, "statement")
+
+
+def actions(document_body: str) -> list[str]:
+    """Every action granted by every statement in the body, in order.
+
+    Read from the `actions` lists themselves, so an action named only in a
+    comment neither satisfies nor breaks an assertion about the grant.
+    """
     return [
-        block_body(document_body, match.end() - 1)
-        for match in re.finditer(r"\n\s*statement\s*\{", document_body)
+        action
+        for statement in statements(strip_comments(document_body))
+        for action in hcl_list(statement, "actions")
     ]
 
 
