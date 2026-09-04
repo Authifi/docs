@@ -1,3 +1,58 @@
+# Generated file: the complete dependency closure of `requirements.in`, as
+# resolved by a clean install in the same digest-pinned base image the
+# site-builder stage uses. Do not edit by hand -- edit `requirements.in` and
+# regenerate:
+#
+#   docker run --rm -v "$PWD:/repo:ro" \
+#     python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea \
+#     sh -c 'python -m pip install --quiet --no-cache-dir -r /repo/requirements.in && python -m pip freeze'
+#
+# The build decides the HTML that gets served, so it gets the same treatment as
+# the server's runtime: every package exact, transitives included, nothing left
+# for the resolver to pick by the calendar. Versions shared with
+# `server/requirements.txt` are held equal, because CI installs both at once.
+# `pip` itself is deliberately absent: the pinned base image already fixes the
+# installer, and this file describes the build.
+
+# Direct -- see requirements.in for what each one is for.
 mkdocs==1.6.1
 mkdocs-material==9.7.7
 mkdocs-awesome-nav==3.3.0
+
+# Transitive, resolved above. The `via` notes are the edges that put each one
+# here; they are checked against the installed metadata by test_requirements.
+annotated-types==0.8.0  # via pydantic
+babel==2.18.0  # via mkdocs-material
+backrefs==8.0  # via mkdocs-material
+bracex==3.0.1  # via wcmatch
+certifi==2026.7.22  # via requests
+charset-normalizer==3.5.1  # via requests
+click==8.5.0  # via mkdocs
+colorama==0.4.6  # via mkdocs-material
+ghp-import==2.1.0  # via mkdocs
+idna==3.19  # via requests
+Jinja2==3.1.6  # via mkdocs, mkdocs-material -- renders the overridden header
+Markdown==3.10.3  # via mkdocs, mkdocs-material, pymdown-extensions
+MarkupSafe==3.0.3  # via mkdocs, jinja2
+mergedeep==1.3.4  # via mkdocs, mkdocs-get-deps
+mkdocs-get-deps==0.2.2  # via mkdocs
+mkdocs-material-extensions==1.3.1  # via mkdocs-material
+natsort==8.4.0  # via mkdocs-awesome-nav
+packaging==26.3  # via mkdocs
+paginate==0.5.7  # via mkdocs-material
+pathspec==1.1.1  # via mkdocs
+platformdirs==4.11.7  # via mkdocs-get-deps
+pydantic==2.13.5  # via mkdocs-awesome-nav
+pydantic_core==2.46.5  # via pydantic
+Pygments==2.21.0  # via mkdocs-material -- code highlighting in built pages
+pymdown-extensions==11.0.2  # via mkdocs-material
+python-dateutil==2.9.0.post0  # via ghp-import
+PyYAML==6.0.3  # via mkdocs, mkdocs-get-deps, pymdown-extensions, pyyaml-env-tag
+pyyaml_env_tag==1.1  # via mkdocs
+requests==2.34.2  # via mkdocs-material
+six==1.17.0  # via python-dateutil
+typing-inspection==0.4.4  # via pydantic
+typing_extensions==4.16.0  # via pydantic, pydantic-core, typing-inspection
+urllib3==2.7.0  # via requests
+watchdog==6.0.0  # via mkdocs
+wcmatch==11.0.1  # via mkdocs-awesome-nav

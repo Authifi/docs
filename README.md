@@ -44,13 +44,24 @@ Every version comes from the checkout, including pip's own: upgrading it would
 resolve whatever is newest on PyPI today, and the runtime image is built on a
 digest-pinned base precisely so it does not depend on the day.
 
-The server's dependencies live in two files. `server/requirements.in` holds the
-five distributions the server imports, at reviewed versions; edit that one.
-`server/requirements.txt` is the complete closure resolved from it in that same
-pinned base image -- transitives included -- and is what the image and CI
-install. Regenerate it with the command in its header after changing the direct
-set; the tests in `server/tests/test_requirements.py` build the closure in a
-clean container and fail if the two disagree.
+Dependencies are locked twice over, once for each stage of the image, and each
+lock is a pair of files:
+
+| Direct dependencies, edit these | Complete closure, generated |
+|---|---|
+| `requirements.in` — the MkDocs site build | `requirements.txt` |
+| `server/requirements.in` — the server runtime | `server/requirements.txt` |
+
+Each `.txt` is the full transitive closure of its `.in`, resolved by a clean
+install in the same digest-pinned base image the corresponding build stage uses,
+and is the only file the Dockerfile and CI install. Change a direct dependency,
+then regenerate the closure with the command in the lock's header. The two locks
+hold shared packages at equal versions, because CI installs both into one
+environment.
+
+The tests in `server/tests/test_requirements.py` build both closures in a clean
+container and fail if a lock is not exactly what its direct file resolves to, so
+a stale lock is a red test rather than a surprise at deploy time.
 
 ## Local Development
 
