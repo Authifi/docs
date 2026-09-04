@@ -55,8 +55,58 @@ PUBLIC_PAGE_SOURCES = (
 )
 
 # "navigation" is Material's own page metadata. "search" is consumed by
-# overrides/main.html, which swaps in a header without the search control.
+# overrides/partials/header.html, which omits the search control and the
+# sign-out link on those pages.
 PUBLIC_PAGE_HIDDEN_CHROME = ("navigation", "search")
+
+# Gated HTML that MkDocs copies verbatim instead of rendering, so it gets none
+# of Material's chrome and no sign-out link from the header partial. These are
+# generated upstream in idbroker and carry a notice not to edit them here, so
+# the built artifact is augmented and the source is left alone.
+AUGMENTED_ARTIFACTS = ("feature-list.html",)
+
+SESSION_NAV_SENTINEL = "<!-- authifi:session-nav -->"
+
+# The page has none of Material's custom properties, so every colour here is
+# literal. White on this slate is about 16:1, well past the 4.5:1 wanted for
+# text, and the underline means the link is identifiable without relying on
+# colour at all.
+SESSION_NAV_STYLE = f"""{SESSION_NAV_SENTINEL}
+<style>
+.authifi-session-nav {{
+  background: #0f172a;
+  padding: 0.75rem 1.5rem;
+  text-align: right;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 1rem;
+}}
+.authifi-session-nav a {{
+  color: #ffffff;
+  font-weight: 600;
+  text-decoration: underline;
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.25rem;
+}}
+.authifi-session-nav a:hover {{
+  background: #1e293b;
+}}
+.authifi-session-nav a:focus-visible {{
+  outline: 3px solid #ffffff;
+  outline-offset: 2px;
+}}
+</style>
+"""
+
+SESSION_NAV_MARKUP = f"""{SESSION_NAV_SENTINEL}
+<nav class="authifi-session-nav" aria-label="Session">
+  <a href="/_auth/logout">Sign out</a>
+</nav>
+"""
+
+# `<style>` is metadata content, so it goes in the head and the link in the
+# body. Both have to be there exactly once: no match means the upstream file
+# changed shape, and two would make the insertion ambiguous.
+SESSION_NAV_INSERTION_POINTS = ("</head>", "<body>")
 
 
 def _sha256_digest(path: Path) -> str:
@@ -140,6 +190,45 @@ def _copy_static_files(docs_dir: Path, site_dir: Path) -> None:
         target.write_bytes(source.read_bytes())
 
 
+def _with_session_nav(html: str, label: str) -> str:
+    """Return ``html`` with a sign-out link, adding it at most once.
+
+    Idempotent because a `--dirty` rebuild can leave an already-augmented copy
+    in the site directory, and two sign-out links would be two controls with the
+    same accessible name. Loud on a missing or ambiguous insertion point: the
+    upstream file is not ours to depend on, and quietly doing nothing would ship
+    a gated page with no way out of the session.
+    """
+    if SESSION_NAV_SENTINEL in html:
+        return html
+
+    for insertion_point in SESSION_NAV_INSERTION_POINTS:
+        found = html.count(insertion_point)
+        if found != 1:
+            raise RuntimeError(
+                f"{label}: expected exactly one {insertion_point!r} to attach the "
+                f"session navigation to, found {found}. The upstream copy has "
+                "changed shape; update docs/hooks/agent_assets.py to match."
+            )
+
+    head_close, body_open = SESSION_NAV_INSERTION_POINTS
+    html = html.replace(head_close, SESSION_NAV_STYLE + head_close, 1)
+    return html.replace(body_open, f"{body_open}\n{SESSION_NAV_MARKUP}", 1)
+
+
+def _augment_copied_artifacts(site_dir: Path) -> None:
+    for relative_path in AUGMENTED_ARTIFACTS:
+        target = site_dir / relative_path
+        if not target.is_file():
+            raise RuntimeError(
+                f"{relative_path} is listed in AUGMENTED_ARTIFACTS but was not built. "
+                "Remove it from that list if the page is gone; a gated page with no "
+                "sign-out link must not ship by accident."
+            )
+        augmented = _with_session_nav(target.read_text(encoding="utf-8"), relative_path)
+        target.write_text(augmented, encoding="utf-8")
+
+
 def on_page_markdown(markdown, page, config, files, **kwargs):
     """Hide protected chrome from pages that anonymous visitors can read."""
     if page.file.src_uri in PUBLIC_PAGE_SOURCES:
@@ -157,5 +246,6 @@ def on_post_build(config, **kwargs) -> None:
     site_url = config.site_url or ""
 
     _copy_static_files(docs_dir, site_dir)
+    _augment_copied_artifacts(site_dir)
     _write_sitemap(site_dir, site_url)
     _write_agent_skills_index(site_dir, site_url, docs_dir)

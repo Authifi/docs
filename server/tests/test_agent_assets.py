@@ -17,6 +17,19 @@ assert SPEC is not None and SPEC.loader is not None
 agent_assets = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(agent_assets)
 
+# A minimal stand-in for the copied upstream artifact.
+UPSTREAM_HEAD = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Upstream</title>
+</head>
+<body>
+<p>Upstream content.</p>
+</body>
+</html>
+"""
+
 
 def test_write_sitemap_includes_only_public_content(tmp_path: Path) -> None:
     agent_assets._write_sitemap(tmp_path, "https://docs.authifi.io")
@@ -42,10 +55,14 @@ def test_post_build_does_not_require_site_headers_file(tmp_path: Path) -> None:
         ".well-known/api-catalog": '{"links":[]}\n',
         ".well-known/agent-skills/authifi-docs-navigation/SKILL.md": "# Skill\n",
         ".well-known/agent-skills/authifi-oauth-concepts/SKILL.md": "# Skill\n",
+        "feature-list.html": UPSTREAM_HEAD,
     }.items():
         target = docs_dir / relative_path
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
+
+    # MkDocs copies this one verbatim rather than rendering it.
+    (site_dir / "feature-list.html").write_text(UPSTREAM_HEAD, encoding="utf-8")
 
     config = SimpleNamespace(
         docs_dir=str(docs_dir),
@@ -148,3 +165,117 @@ def test_committed_index_covers_every_defined_skill() -> None:
     names = {entry["name"] for entry in committed_index()["skills"]}
 
     assert names == {definition["name"] for definition in agent_assets.SKILL_DEFINITIONS}
+
+
+# --- Session navigation injected into copied artifacts ------------------------
+#
+# `docs/feature-list.html` is generated upstream in idbroker and carries a
+# notice not to edit it here, so its source has to stay byte-identical. It is
+# also gated, and being a copied file rather than a rendered page it gets none
+# of Material's chrome -- including the header sign-out link. The built artifact
+# is augmented instead.
+
+
+
+def test_the_augmented_artifact_gains_one_session_nav(tmp_path: Path) -> None:
+    augmented = agent_assets._with_session_nav(UPSTREAM_HEAD, "feature-list.html")
+
+    assert augmented.count('href="/_auth/logout"') == 1
+    assert augmented.count('aria-label="Session"') == 1
+
+
+def test_the_link_and_its_styling_land_where_they_are_valid() -> None:
+    """`<style>` is metadata content, so it belongs in the head, not the body."""
+    augmented = agent_assets._with_session_nav(UPSTREAM_HEAD, "feature-list.html")
+
+    head = augmented[: augmented.index("</head>")]
+    body = augmented[augmented.index("<body>") :]
+
+    assert "<style>" in head
+    assert "<style>" not in body
+    assert 'href="/_auth/logout"' in body
+    assert 'href="/_auth/logout"' not in head
+
+
+def test_the_nav_carries_visible_text_and_no_ad_hoc_aria() -> None:
+    augmented = agent_assets._with_session_nav(UPSTREAM_HEAD, "feature-list.html")
+
+    assert ">Sign out</a>" in augmented
+    assert "aria-label=\"Sign out\"" not in augmented
+    assert "role=" not in augmented
+    assert "onclick" not in augmented
+
+
+def test_the_styling_stands_on_its_own() -> None:
+    """The page has none of Material's variables, so nothing may be inherited."""
+    augmented = agent_assets._with_session_nav(UPSTREAM_HEAD, "feature-list.html")
+
+    style = augmented[augmented.index("<style>") : augmented.index("</style>")]
+
+    assert "--md-" not in style
+    assert ":focus-visible" in style
+    assert "color:" in style and "background" in style
+
+
+def test_augmenting_twice_does_not_stack_two_links() -> None:
+    """A `--dirty` rebuild can leave an already-augmented copy in place."""
+    once = agent_assets._with_session_nav(UPSTREAM_HEAD, "feature-list.html")
+    twice = agent_assets._with_session_nav(once, "feature-list.html")
+
+    assert twice == once
+
+
+@pytest.mark.parametrize(
+    "html",
+    [
+        "<!DOCTYPE html><html><head></head><p>no body tag</p></html>",
+        "<!DOCTYPE html><html><body><p>no head close</p></body></html>",
+        '<!DOCTYPE html><html><head></head><body class="upstream"></body></html>',
+        "<!DOCTYPE html><html><head></head><body></body><body></body></html>",
+    ],
+)
+def test_a_missing_or_ambiguous_insertion_point_fails_the_build(html: str) -> None:
+    """Silence here would ship a gated page with no way out of the session."""
+    with pytest.raises(RuntimeError, match="feature-list.html"):
+        agent_assets._with_session_nav(html, "feature-list.html")
+
+
+def test_only_the_named_artifacts_are_augmented() -> None:
+    """Rendered pages get their link from the header partial instead."""
+    assert agent_assets.AUGMENTED_ARTIFACTS == ("feature-list.html",)
+
+
+def test_post_build_augments_the_artifact_in_the_site_directory(tmp_path: Path) -> None:
+    docs_dir = tmp_path / "docs"
+    site_dir = tmp_path / "site"
+    docs_dir.mkdir()
+    site_dir.mkdir()
+
+    for relative_path, content in {
+        "auth.md": "# Auth\n",
+        ".well-known/api-catalog": '{"links":[]}\n',
+        ".well-known/agent-skills/authifi-docs-navigation/SKILL.md": "# Skill\n",
+        ".well-known/agent-skills/authifi-oauth-concepts/SKILL.md": "# Skill\n",
+    }.items():
+        path = docs_dir / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+
+    source = docs_dir / "feature-list.html"
+    source.write_text(UPSTREAM_HEAD, encoding="utf-8")
+    (site_dir / "feature-list.html").write_text(UPSTREAM_HEAD, encoding="utf-8")
+
+    agent_assets.on_post_build(
+        SimpleNamespace(
+            docs_dir=str(docs_dir), site_dir=str(site_dir), site_url="https://docs.authifi.io"
+        )
+    )
+
+    assert 'href="/_auth/logout"' in (site_dir / "feature-list.html").read_text(encoding="utf-8")
+    assert source.read_text(encoding="utf-8") == UPSTREAM_HEAD
+
+
+def test_a_listed_artifact_that_was_never_built_fails_the_build(tmp_path: Path) -> None:
+    """Losing the page silently would lose its sign-out link with it."""
+    with pytest.raises(RuntimeError, match="AUGMENTED_ARTIFACTS"):
+        agent_assets._augment_copied_artifacts(tmp_path)

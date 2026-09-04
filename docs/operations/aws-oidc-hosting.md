@@ -54,11 +54,27 @@ ending that session here would be a denial of service dressed up as caution.
 
 ### Signing Out Ends Everything, Not Just This Tab
 
-Every page Material renders carries a **Sign out** link in the header, next to
-the palette and search controls, pointing at `/_auth/logout`. Public pages omit
-it — there is no session to end there. `feature-list.html` is copied HTML rather
-than a rendered page, so it has no header and no link; readers there reach
-`/_auth/logout` directly.
+Every gated page carries a **Sign out** link pointing at `/_auth/logout`, by one
+of two routes. Pages Material renders get it from the header partial, next to
+the palette and search controls. Public pages omit it — there is no session to
+end there.
+
+`feature-list.html` is generated upstream in idbroker and copied into the site
+verbatim, so it never passes through a template and carries a notice not to edit
+it here. The post-build hook in `docs/hooks/agent_assets.py` adds the link to
+the *built artifact* instead: a `<nav aria-label="Session">` after `<body>` and
+its own self-contained styling before `</head>`, since that page never loads
+Material's stylesheet. The source file is left byte-identical, which a test
+checks by asking `git` whether the build dirtied it.
+
+Two properties of that injection matter if you touch it. It is idempotent, keyed
+on a sentinel comment, because `mkdocs build --dirty` reuses the site directory
+and would otherwise run over an already-augmented copy. And it fails the build
+if the insertion points are missing or ambiguous, or if a listed artifact was
+never built: the file is upstream's to change, and quietly doing nothing would
+ship a gated page with no way out of the session. If an upstream reshape breaks
+the build, fix the insertion points rather than dropping the page from
+`AUGMENTED_ARTIFACTS`.
 
 `/_auth/logout` clears the whole session cookie: the signed-in identity and
 every in-flight sign-in in every other tab. That is deliberate — signing out

@@ -505,8 +505,13 @@ PUBLIC_BUILT_PAGES = (
 )
 
 # Hand-written HTML copied into the site rather than rendered by Material, so
-# there is no header template to hang a link off.
+# there is no header template to hang a link off. `feature-list.html` is gated,
+# so the post-build hook adds one to the built artifact instead; `sms-opt-in`
+# is public and needs none.
 HEADERLESS_BUILT_PAGES = ("feature-list.html", "sms-opt-in.html")
+AUGMENTED_BUILT_PAGES = ("feature-list.html",)
+SESSION_NAV_SENTINEL = "<!-- authifi:session-nav -->"
+UPSTREAM_SOURCE = REPO_ROOT / "docs" / "feature-list.html"
 
 
 class AnchorCollector(HTMLParser):
@@ -558,26 +563,18 @@ def built_html_pages(built_site: Path) -> list[str]:
 
 
 def test_every_protected_page_offers_exactly_one_way_out(built_site: Path) -> None:
-    rendered = [
-        page
-        for page in built_html_pages(built_site)
-        if page not in PUBLIC_BUILT_PAGES and page not in HEADERLESS_BUILT_PAGES
-    ]
+    protected = [page for page in built_html_pages(built_site) if page not in PUBLIC_BUILT_PAGES]
 
-    assert rendered, "no built pages found"
-    for page in rendered:
+    assert protected, "no built pages found"
+    for page in protected:
         found = logout_links((built_site / page).read_text(encoding="utf-8"))
         assert len(found) == 1, f"{page} has {len(found)} sign-out links"
 
 
-def test_the_pages_with_no_header_to_put_a_link_in_are_the_known_ones(
-    built_site: Path,
-) -> None:
+def test_the_pages_with_no_material_header_are_the_known_ones(built_site: Path) -> None:
     """Copied HTML has no Material header, so a new one must be noticed.
 
-    `feature-list.html` is generated upstream in idbroker and carries a notice
-    not to edit it here, so it gets no link and its readers have to reach
-    `/_auth/logout` another way.
+    A gated one needs adding to the hook's list; a public one needs nothing.
     """
     headerless = [
         page
@@ -723,3 +720,113 @@ def test_only_one_copy_of_materials_header_is_vendored() -> None:
     )
 
     assert vendored == ["header.html"]
+
+
+# --- Session navigation on the copied upstream artifact -----------------------
+
+
+@pytest.mark.parametrize("page", AUGMENTED_BUILT_PAGES)
+def test_the_copied_artifact_gains_exactly_one_sign_out_link(built_site: Path, page: str) -> None:
+    html = (built_site / page).read_text(encoding="utf-8")
+
+    (link,) = logout_links(html)
+    assert str(link["text"]).strip() == LOGOUT_LABEL
+    assert "nav" in link["ancestors"], link["ancestors"]
+
+
+@pytest.mark.parametrize("page", AUGMENTED_BUILT_PAGES)
+def test_the_injected_nav_names_itself(built_site: Path, page: str) -> None:
+    """Several navigations in one document each need their own name."""
+    html = (built_site / page).read_text(encoding="utf-8")
+
+    assert html.count('<nav class="authifi-session-nav" aria-label="Session">') == 1
+
+
+@pytest.mark.parametrize("page", AUGMENTED_BUILT_PAGES)
+def test_the_injected_markup_is_valid_where_it_lands(built_site: Path, page: str) -> None:
+    """`<style>` is metadata content: head only. The link is flow content: body."""
+    html = (built_site / page).read_text(encoding="utf-8")
+    head = html[: html.index("</head>")]
+    body = html[html.index("<body>") :]
+
+    assert ".authifi-session-nav" in head
+    assert "<style>" not in body
+    assert LOGOUT_PATH in body
+    assert LOGOUT_PATH not in head
+    assert unclosed_tags(body[: body.index("<!-- HERO -->")]) == ["body"]
+
+
+@pytest.mark.parametrize("page", AUGMENTED_BUILT_PAGES)
+def test_the_injected_styling_does_not_lean_on_material(built_site: Path, page: str) -> None:
+    """This page never loads Material's stylesheet, so nothing is inherited."""
+    html = (built_site / page).read_text(encoding="utf-8")
+    style = html[html.index(".authifi-session-nav") :]
+    style = style[: style.index("</style>")]
+
+    assert "--md-" not in style
+    assert ":focus-visible" in style
+    assert "#ffffff" in style
+
+
+def test_the_upstream_source_is_left_byte_identical(built_site: Path) -> None:
+    """The build augments the artifact, never the file idbroker owns."""
+    source = UPSTREAM_SOURCE.read_text(encoding="utf-8")
+
+    assert SESSION_NAV_SENTINEL not in source
+    assert LOGOUT_PATH not in source
+
+    status = subprocess.run(
+        ["git", "status", "--porcelain", "--", str(UPSTREAM_SOURCE)],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert status.stdout == "", f"the build modified the upstream source: {status.stdout}"
+
+
+def run_build(site_dir: Path, *extra: str) -> None:
+    subprocess.run(
+        [sys.executable, "-m", "mkdocs", "build", "--site-dir", str(site_dir), *extra],
+        cwd=REPO_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def assert_one_link_per_augmented_page(site_dir: Path) -> None:
+    for page in AUGMENTED_BUILT_PAGES:
+        html = (site_dir / page).read_text(encoding="utf-8")
+        assert len(logout_links(html)) == 1, f"{page} accumulated links across rebuilds"
+        # One for the style in the head, one for the nav in the body.
+        assert html.count(SESSION_NAV_SENTINEL) == 2
+
+
+def test_a_strict_rebuild_does_not_stack_two_links(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    site_dir = tmp_path_factory.mktemp("mkdocs-rebuild")
+
+    run_build(site_dir, "--strict")
+    run_build(site_dir, "--strict")
+
+    assert_one_link_per_augmented_page(site_dir)
+
+
+def test_a_dirty_rebuild_over_an_augmented_copy_does_not_stack_two_links(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    """The case the sentinel exists for.
+
+    A clean build re-copies the artifact, so the injection starts from upstream
+    every time. `--dirty` reuses whatever is already in the site directory,
+    which is the augmented copy. (It is run without `--strict` because MkDocs
+    treats its own "this is a dirty build" warning as fatal under it.)
+    """
+    site_dir = tmp_path_factory.mktemp("mkdocs-dirty")
+
+    run_build(site_dir, "--strict")
+    run_build(site_dir, "--dirty")
+
+    assert_one_link_per_augmented_page(site_dir)
