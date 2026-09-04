@@ -89,6 +89,42 @@ E       Extra items in the right set:
 E       'deploy'
 ```
 
+### RED 5: review follow-up findings reproduced
+
+Command:
+
+```bash
+.venv/bin/python -m pytest server/tests/test_deploy_release.py \
+  -k 'first_deploy_active_health_failure_removes_current_and_stops_service or \
+health_probes_use_bounded_curl_invocation or \
+pruning_preserves_unrelated_directories or \
+pruning_preserves_directory_symlinks or \
+successful_install_stops_candidate_probe_process or \
+failed_candidate_health_stops_candidate_probe_process' -v
+```
+
+Observed result before the fix:
+
+```text
+============ 4 failed, 2 passed, 7 deselected, 1 warning in 16.90s ============
+```
+
+Observed failures included:
+
+```text
+E       AssertionError: assert not True
+E        +  where True = current.exists()
+
+E       At index 0 diff:
+E       ['--fail', '--silent', 'http://127.0.0.1:18080/health']
+E       != ['--fail', '--silent', '--connect-timeout', '2', '--max-time', '5', ...]
+
+E       AssertionError: assert False
+E        +  where False = shared-cache.is_dir()
+
+E       OSError: Cannot call rmtree on a symbolic link
+```
+
 ## GREEN Evidence
 
 ### Targeted greens
@@ -165,6 +201,20 @@ E       'deploy'
 
   Result: `1 passed, 3 deselected`
 
+- Review-followup slice:
+
+  ```bash
+  .venv/bin/python -m pytest server/tests/test_deploy_release.py \
+    -k 'first_deploy_active_health_failure_removes_current_and_stops_service or \
+  health_probes_use_bounded_curl_invocation or \
+  pruning_preserves_unrelated_directories or \
+  pruning_preserves_directory_symlinks or \
+  successful_install_stops_candidate_probe_process or \
+  failed_candidate_health_stops_candidate_probe_process' -v
+  ```
+
+  Result: `6 passed, 7 deselected`
+
 ### Final verification
 
 Command:
@@ -179,7 +229,7 @@ shellcheck infra/scripts/deploy-release.sh scripts/build-release.sh
 Observed result:
 
 ```text
-======================== 11 passed, 1 warning in 27.99s ========================
+======================== 17 passed, 1 warning in 47.76s ========================
 ```
 
 ShellCheck was rerun after suppressing the dynamic-source `SC1091` info lines
@@ -190,6 +240,14 @@ for the environment files; the final ShellCheck invocation returned exit code 0.
 - The installer does not move `current` until the candidate health probe passes.
 - If the post-restart active health probe fails, the previous symlink target is
   restored before the second restart, so the earlier release remains recoverable.
+- If the very first deploy fails active health, `current` is removed, the
+  service is stopped, and the error no longer claims a restoration that never
+  happened; retrying the same SHA goes through a normal install path.
+- Every health probe now carries explicit `curl` connect and total timeouts, and
+  the harness asserts the exact bounded probe invocation.
+- Pruning now ignores unrelated directories and directory symlinks, matches only
+  real release directories named as 40 lowercase hex characters, and excludes
+  the active target from deletion.
 - Locking uses real kernel `flock` semantics through Python `fcntl.flock`,
   which keeps the behavior testable on macOS without depending on GNU `flock`.
 - The release archive contract now includes a provenance copy at
@@ -201,6 +259,6 @@ for the environment files; the final ShellCheck invocation returned exit code 0.
 - Terraform wiring was intentionally left untouched per the task brief.
 - The focused test slice still emits one pre-existing `DeprecationWarning` from
   `starlette.testclient`; it is unrelated to this task.
-- I did not add coverage for malformed checksum-file formatting or redeploying
-  the already-active SHA, since those behaviors were outside the requested Task
-  3 brief.
+- I did not add coverage for malformed checksum-file formatting or a no-op
+  redeploy of an already-active SHA, since those behaviors were outside the
+  requested follow-up scope.

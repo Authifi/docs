@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import contextlib
+import errno
 import fcntl
 import hashlib
+import json
 import os
 import stat
 import subprocess
@@ -29,6 +31,9 @@ class DeployHarness:
     current: Path = field(init=False)
     fake_bin: Path = field(init=False)
     events_file: Path = field(init=False)
+    curl_args_file: Path = field(init=False)
+    candidate_pid_file: Path = field(init=False)
+    service_state_file: Path = field(init=False)
     lock_path: Path = field(init=False)
     fail_candidate_health_file: Path = field(init=False)
     fail_active_health_file: Path = field(init=False)
@@ -42,6 +47,9 @@ class DeployHarness:
         self.current = self.root / "current"
         self.fake_bin = self.tmp_path / "fake-bin"
         self.events_file = self.tmp_path / "events.log"
+        self.curl_args_file = self.tmp_path / "curl-args.jsonl"
+        self.candidate_pid_file = self.tmp_path / "candidate.pid"
+        self.service_state_file = self.tmp_path / "service-running"
         self.lock_path = self.root / "deploy.lock"
         self.fail_candidate_health_file = self.tmp_path / "fail-candidate-health"
         self.fail_active_health_file = self.tmp_path / "fail-active-health"
@@ -68,7 +76,12 @@ class DeployHarness:
             "AUTHIFI_DOCS_CANDIDATE_HEALTH_ATTEMPTS": "2",
             "AUTHIFI_DOCS_ACTIVE_HEALTH_ATTEMPTS": "1",
             "AUTHIFI_DOCS_HEALTH_SLEEP_SECONDS": "0",
+            "AUTHIFI_DOCS_CURL_CONNECT_TIMEOUT_SECONDS": "2",
+            "AUTHIFI_DOCS_CURL_MAX_TIME_SECONDS": "5",
             "EVENTS_FILE": str(self.events_file),
+            "CURL_ARGS_FILE": str(self.curl_args_file),
+            "CANDIDATE_PID_FILE": str(self.candidate_pid_file),
+            "SERVICE_STATE_FILE": str(self.service_state_file),
             "FAIL_CANDIDATE_HEALTH_FILE": str(self.fail_candidate_health_file),
             "FAIL_ACTIVE_HEALTH_FILE": str(self.fail_active_health_file),
             "PATH": f"{self.fake_bin}:{env['PATH']}",
@@ -79,6 +92,22 @@ class DeployHarness:
         if not self.events_file.exists():
             return []
         return self.events_file.read_text(encoding="utf-8").splitlines()
+
+    @property
+    def curl_invocations(self) -> list[list[str]]:
+        if not self.curl_args_file.exists():
+            return []
+        return [json.loads(line) for line in self.curl_args_file.read_text(encoding="utf-8").splitlines()]
+
+    @property
+    def candidate_pid(self) -> int | None:
+        if not self.candidate_pid_file.exists():
+            return None
+        return int(self.candidate_pid_file.read_text(encoding="utf-8").strip())
+
+    @property
+    def service_running(self) -> bool:
+        return self.service_state_file.exists()
 
     @property
     def fail_candidate_health(self) -> bool:
@@ -107,12 +136,22 @@ class DeployHarness:
             self.fake_bin / "curl",
             """#!/usr/bin/env python3
 import os
+import json
 import sys
+import time
 from pathlib import Path
 
 events = Path(os.environ["EVENTS_FILE"])
+args_file = Path(os.environ["CURL_ARGS_FILE"])
+candidate_pid_file = Path(os.environ["CANDIDATE_PID_FILE"])
 url = sys.argv[-1]
+with args_file.open("a", encoding="utf-8") as stream:
+    stream.write(json.dumps(sys.argv[1:]) + "\\n")
+
 if ":18080/health" in url:
+    deadline = time.monotonic() + 1
+    while not candidate_pid_file.exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
     event = "candidate-health"
     should_fail = Path(os.environ["FAIL_CANDIDATE_HEALTH_FILE"]).exists()
 elif ":8080/health" in url:
@@ -136,9 +175,14 @@ import sys
 from pathlib import Path
 
 events = Path(os.environ["EVENTS_FILE"])
+service_state = Path(os.environ["SERVICE_STATE_FILE"])
 event = sys.argv[1] if len(sys.argv) > 1 else "unknown"
 with events.open("a", encoding="utf-8") as stream:
     stream.write(f"systemctl:{event}\\n")
+if event == "restart":
+    service_state.write_text("running\\n", encoding="utf-8")
+elif event == "stop":
+    service_state.unlink(missing_ok=True)
 sys.exit(0)
 """,
         )
@@ -183,9 +227,13 @@ finally:
         self._write_executable(
             self.fake_bin / "uvicorn",
             """#!/usr/bin/env python3
+import os
 import signal
 import sys
 import time
+from pathlib import Path
+
+Path(os.environ["CANDIDATE_PID_FILE"]).write_text(f"{os.getpid()}\\n", encoding="utf-8")
 
 def stop(_signum, _frame):
     sys.exit(0)
@@ -265,6 +313,21 @@ while True:
             finally:
                 fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
 
+    @staticmethod
+    def process_exists(pid: int | None) -> bool:
+        if pid is None:
+            return False
+        try:
+            os.kill(pid, 0)
+        except OSError as error:
+            if error.errno == errno.ESRCH:
+                return False
+            raise
+        return True
+
+    def set_mtime(self, path: Path, timestamp: int) -> None:
+        os.utime(path, (timestamp, timestamp), follow_symlinks=False)
+
 
 @pytest.fixture
 def deploy_harness(tmp_path: Path) -> DeployHarness:
@@ -321,9 +384,33 @@ def test_failed_active_health_restores_previous_release(
     assert deploy_harness.events.count("systemctl:restart") == 2
 
 
+def test_first_deploy_active_health_failure_removes_current_and_stops_service(
+    deploy_harness: DeployHarness,
+) -> None:
+    sha = "5" * 40
+    deploy_harness.publish_archive(sha)
+    deploy_harness.fail_active_health_once = True
+
+    first = deploy_harness.run(sha)
+
+    assert first.returncode != 0
+    assert not deploy_harness.current.exists()
+    assert not deploy_harness.service_running
+    assert "previous release restored" not in first.stderr
+    assert "no previous release to restore" in first.stderr
+    assert "systemctl:stop" in deploy_harness.events
+
+    deploy_harness.fail_active_health_once = False
+    retry = deploy_harness.run(sha)
+
+    assert retry.returncode == 0
+    assert "already active" not in retry.stderr
+    assert deploy_harness.current.resolve().name == sha
+
+
 def test_lock_prevents_concurrent_install(deploy_harness: DeployHarness) -> None:
     with deploy_harness.hold_lock():
-        result = deploy_harness.run("5" * 40)
+        result = deploy_harness.run("6" * 40)
 
     assert result.returncode == 75
     assert "deployment already running" in result.stderr
@@ -332,8 +419,8 @@ def test_lock_prevents_concurrent_install(deploy_harness: DeployHarness) -> None
 def test_explicit_older_sha_is_a_normal_rollback(
     deploy_harness: DeployHarness,
 ) -> None:
-    older = "6" * 40
-    newer = "7" * 40
+    older = "7" * 40
+    newer = "8" * 40
     deploy_harness.publish_archive(older)
     deploy_harness.publish_archive(newer)
 
@@ -345,9 +432,119 @@ def test_explicit_older_sha_is_a_normal_rollback(
 def test_successful_install_keeps_only_three_releases(
     deploy_harness: DeployHarness,
 ) -> None:
-    keep = ["9" * 40, "a" * 40, "b" * 40]
-    for sha in ["8" * 40, *keep]:
+    keep = ["a" * 40, "b" * 40, "c" * 40]
+    for sha in ["9" * 40, *keep]:
         deploy_harness.publish_archive(sha)
         assert deploy_harness.run(sha).returncode == 0
 
     assert sorted(path.name for path in deploy_harness.releases.iterdir()) == sorted(keep)
+
+
+def test_health_probes_use_bounded_curl_invocation(
+    deploy_harness: DeployHarness,
+) -> None:
+    old = deploy_harness.seed_active_release()
+    deploy_harness.current.unlink()
+    deploy_harness.current.symlink_to(old)
+    sha = "d" * 40
+    deploy_harness.publish_archive(sha)
+
+    result = deploy_harness.run(sha)
+
+    assert result.returncode == 0
+    assert deploy_harness.curl_invocations == [
+        [
+            "--fail",
+            "--silent",
+            "--connect-timeout",
+            "2",
+            "--max-time",
+            "5",
+            "http://127.0.0.1:18080/health",
+        ],
+        [
+            "--fail",
+            "--silent",
+            "--connect-timeout",
+            "2",
+            "--max-time",
+            "5",
+            "http://127.0.0.1:8080/health",
+        ],
+    ]
+
+
+def test_pruning_preserves_unrelated_directories(
+    deploy_harness: DeployHarness,
+) -> None:
+    preserved = deploy_harness.releases / "shared-cache"
+    preserved.mkdir()
+    deploy_harness.set_mtime(preserved, 10)
+
+    for offset, sha in enumerate(["1" * 40, "2" * 40, "3" * 40], start=20):
+        release = deploy_harness.make_release(sha)
+        deploy_harness.set_mtime(release, offset)
+
+    sha = "e" * 40
+    deploy_harness.publish_archive(sha)
+
+    result = deploy_harness.run(sha)
+
+    assert result.returncode == 0
+    assert preserved.is_dir()
+    assert deploy_harness.current.resolve().exists()
+
+
+def test_pruning_preserves_directory_symlinks(
+    deploy_harness: DeployHarness,
+) -> None:
+    target = deploy_harness.tmp_path / "linked-target"
+    target.mkdir()
+    deploy_harness.set_mtime(target, 10)
+    link = deploy_harness.releases / "linked-release"
+    link.symlink_to(target, target_is_directory=True)
+
+    for offset, sha in enumerate(["4" * 40, "5" * 40, "6" * 40], start=20):
+        release = deploy_harness.make_release(sha)
+        deploy_harness.set_mtime(release, offset)
+
+    sha = "f" * 40
+    deploy_harness.publish_archive(sha)
+
+    result = deploy_harness.run(sha)
+
+    assert result.returncode == 0
+    assert link.is_symlink()
+    assert target.exists()
+    assert deploy_harness.current.resolve().exists()
+
+
+def test_successful_install_stops_candidate_probe_process(
+    deploy_harness: DeployHarness,
+) -> None:
+    old = deploy_harness.seed_active_release()
+    deploy_harness.current.unlink()
+    deploy_harness.current.symlink_to(old)
+    sha = "1" * 39 + "a"
+    deploy_harness.publish_archive(sha)
+
+    result = deploy_harness.run(sha)
+
+    assert result.returncode == 0
+    assert deploy_harness.candidate_pid is not None
+    assert not deploy_harness.process_exists(deploy_harness.candidate_pid)
+
+
+def test_failed_candidate_health_stops_candidate_probe_process(
+    deploy_harness: DeployHarness,
+) -> None:
+    deploy_harness.seed_active_release()
+    sha = "1" * 39 + "b"
+    deploy_harness.publish_archive(sha)
+    deploy_harness.fail_candidate_health = True
+
+    result = deploy_harness.run(sha)
+
+    assert result.returncode != 0
+    assert deploy_harness.candidate_pid is not None
+    assert not deploy_harness.process_exists(deploy_harness.candidate_pid)

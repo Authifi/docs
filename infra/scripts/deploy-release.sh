@@ -18,6 +18,8 @@ timeout_bin="${AUTHIFI_DOCS_TIMEOUT_BIN:-timeout}"
 candidate_attempts="${AUTHIFI_DOCS_CANDIDATE_HEALTH_ATTEMPTS:-30}"
 active_attempts="${AUTHIFI_DOCS_ACTIVE_HEALTH_ATTEMPTS:-15}"
 health_sleep_seconds="${AUTHIFI_DOCS_HEALTH_SLEEP_SECONDS:-1}"
+curl_connect_timeout_seconds="${AUTHIFI_DOCS_CURL_CONNECT_TIMEOUT_SECONDS:-2}"
+curl_max_time_seconds="${AUTHIFI_DOCS_CURL_MAX_TIME_SECONDS:-5}"
 
 releases="$root/releases"
 current="$root/current"
@@ -90,7 +92,12 @@ poll_health() {
   local attempt
 
   for ((attempt = 1; attempt <= attempts; attempt += 1)); do
-    if "$curl_bin" --fail --silent "$url" >/dev/null; then
+    if "$curl_bin" \
+      --fail \
+      --silent \
+      --connect-timeout "$curl_connect_timeout_seconds" \
+      --max-time "$curl_max_time_seconds" \
+      "$url" >/dev/null; then
       return 0
     fi
     if (( attempt < attempts )); then
@@ -115,14 +122,26 @@ PY
 }
 
 prune_releases() {
-  "$python_bin" - "$releases" <<'PY'
+  "$python_bin" - "$releases" "$1" <<'PY'
+import os
+import re
 from pathlib import Path
 import shutil
 import sys
 
 releases = Path(sys.argv[1])
-entries = [path for path in releases.iterdir() if path.is_dir()]
-for stale in sorted(entries, key=lambda path: path.stat().st_mtime, reverse=True)[3:]:
+active_target = Path(sys.argv[2]).resolve()
+release_name = re.compile(r"^[0-9a-f]{40}$")
+
+entries = [
+    path
+    for path in releases.iterdir()
+    if path.is_dir()
+    and not path.is_symlink()
+    and release_name.fullmatch(path.name)
+    and path.resolve() != active_target
+]
+for stale in sorted(entries, key=lambda path: path.stat().st_mtime, reverse=True)[2:]:
     shutil.rmtree(stale)
 PY
 }
@@ -187,10 +206,14 @@ if ! poll_health "http://127.0.0.1:8080/health" "$active_attempts"; then
   if [[ -n "$previous" ]]; then
     swap_current "$previous"
     "$systemctl_bin" restart authifi-docs
+    echo "active release failed health check; previous release restored" >&2
+  else
+    rm -f "$current"
+    "$systemctl_bin" stop authifi-docs
+    echo "active release failed health check; no previous release to restore" >&2
   fi
-  echo "active release failed health check; previous release restored" >&2
   exit 1
 fi
 
-prune_releases
+prune_releases "$candidate"
 rm -rf "$incoming"
