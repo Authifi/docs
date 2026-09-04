@@ -1,5 +1,18 @@
-authlib>=1.6,<1.7
-httpx>=0.28,<0.29
-itsdangerous>=2.2,<2.3
-starlette>=0.47,<0.49
-uvicorn>=0.35,<0.38
+# Pinned exactly to the versions resolved and verified in the python:3.12-slim
+# runtime image. Ranges here meant two builds of the same commit could ship
+# different security-relevant code.
+
+# Direct runtime dependencies.
+authlib==1.6.12
+httpx==0.28.1
+itsdangerous==2.2.0
+starlette==0.48.0
+uvicorn==0.37.0
+
+# Transitive, but listed deliberately: each sits on a security-critical path,
+# so it is pinned and reviewed here rather than resolved silently.
+certifi==2026.7.22
+cryptography==50.0.1
+h11==0.16.0
+httpcore==1.0.9
+idna==3.19

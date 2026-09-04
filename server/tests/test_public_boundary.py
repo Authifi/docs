@@ -190,6 +190,91 @@ def test_protected_pages_keep_the_search_index(built_site: Path) -> None:
     assert not is_public_path("/search/search_index.json")
 
 
+# --- Navigation override drift ------------------------------------------------
+#
+# `overrides/main.html` re-implements Material's `site_nav` block rather than
+# copying it, because Material's version always emits the primary sidebar and
+# only marks it `hidden`, which still ships every protected title and URL. A
+# byte-for-byte comparison is therefore impossible, so the guard is the other
+# direction: pin the upstream block we wrote the override against.
+
+MATERIAL_SITE_NAV_BLOCK = """{% block site_nav %}
+            {% if nav %}
+              {% if page.meta and page.meta.hide %}
+                {% set hidden = "hidden" if "navigation" in page.meta.hide %}
+              {% endif %}
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" \
+data-md-type="navigation" {{ hidden }}>
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    {% include "partials/nav.html" %}
+                  </div>
+                </div>
+              </div>
+            {% endif %}
+            {% if "toc.integrate" not in features %}
+              {% if page.meta and page.meta.hide %}
+                {% set hidden = "hidden" if "toc" in page.meta.hide %}
+              {% endif %}
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" \
+data-md-type="toc" {{ hidden }}>
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    {% include "partials/toc.html" %}
+                  </div>
+                </div>
+              </div>
+            {% endif %}
+          {% endblock %}"""
+
+
+def extract_jinja_block(template: str, name: str) -> str:
+    start = template.index("{%% block %s %%}" % name)
+    end = template.index("{% endblock %}", start) + len("{% endblock %}")
+    return template[start:end]
+
+
+def collapse_whitespace(markup: str) -> str:
+    return re.sub(r"\s+", " ", markup).strip()
+
+
+def test_material_site_nav_block_is_the_one_the_override_was_written_against() -> None:
+    """Fails on a mkdocs-material upgrade that reshapes navigation rendering.
+
+    The override cannot be re-derived automatically the way the header copy can,
+    so an upgrade has to be reviewed by hand. This is what forces that review.
+    """
+    base_template = (MATERIAL_TEMPLATES / "base.html").read_text(encoding="utf-8")
+
+    installed = extract_jinja_block(base_template, "site_nav")
+
+    assert installed == MATERIAL_SITE_NAV_BLOCK
+
+
+def test_site_nav_override_makes_the_primary_sidebar_conditional() -> None:
+    override = extract_jinja_block(
+        (REPO_ROOT / "overrides" / "main.html").read_text(encoding="utf-8"), "site_nav"
+    )
+
+    assert "{% if nav and not hide_navigation %}" in override
+    # Material's `hidden` attribute on the primary sidebar is the bug, not the fix.
+    assert 'data-md-type="navigation" {{ hidden }}' not in override
+
+
+def test_site_nav_override_keeps_materials_secondary_sidebar() -> None:
+    """The table of contents must render exactly as Material renders it."""
+    override = collapse_whitespace(
+        extract_jinja_block((REPO_ROOT / "overrides" / "main.html").read_text(encoding="utf-8"), "site_nav")
+    )
+
+    for fragment in (
+        '{% if "toc.integrate" not in features %}',
+        'class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc"',
+        '{% include "partials/toc.html" %}',
+    ):
+        assert collapse_whitespace(fragment) in override
+
+
 def test_public_header_is_the_material_header_minus_search() -> None:
     """A mkdocs-material upgrade that touches the header must fail here.
 
@@ -287,6 +372,53 @@ def test_robots_allow_lists_match_the_server_allowlist(built_site: Path) -> None
         if not allowed:
             continue
         assert allowed == expected, f"robots.txt Allow list for {agent} drifted from the server allowlist"
+
+
+def terraform_post_logout_variable() -> str:
+    """Return the `post_logout_path` variable block from infra/variables.tf."""
+    terraform = (REPO_ROOT / "infra" / "variables.tf").read_text(encoding="utf-8")
+    start = terraform.index('variable "post_logout_path"')
+    end = terraform.index('\nvariable "', start + 1) if '\nvariable "' in terraform[start + 1 :] else len(terraform)
+    return terraform[start:end]
+
+
+def test_terraform_post_logout_allowlist_matches_the_server_allowlist() -> None:
+    """Terraform cannot import server/app.py, so the HCL copy is checked instead.
+
+    Without this, a new public page would be accepted by the server and rejected
+    at plan time, or worse, accepted by Terraform and rejected at startup after
+    the image is already rolling out.
+    """
+    block = terraform_post_logout_variable()
+    contains_list = block.split("contains(", 1)[1].split("]", 1)[0]
+
+    declared = set(re.findall(r'"([^"]+)"', contains_list))
+
+    assert declared == PUBLIC_EXACT_PATHS
+
+
+def test_terraform_rejects_post_logout_paths_the_server_would_reject() -> None:
+    """Both format guards must survive, since only one gives a useful message.
+
+    A control character can never appear in the exact allowlist, so validation
+    three already rejects it; validation two exists so the operator is told the
+    value is malformed rather than merely unlisted.
+    """
+    block = terraform_post_logout_variable()
+
+    assert 'startswith(var.post_logout_path, "/")' in block
+    assert '!startswith(var.post_logout_path, "//")' in block
+    assert "[:cntrl:]" in block
+    assert block.count("validation {") == 3
+
+
+def test_terraform_default_post_logout_path_is_a_public_page() -> None:
+    block = terraform_post_logout_variable()
+
+    default = re.search(r'default\s+=\s+"([^"]+)"', block)
+
+    assert default is not None
+    assert default.group(1) in PUBLIC_EXACT_PATHS
 
 
 def test_robots_advertises_the_public_sitemap(built_site: Path) -> None:
