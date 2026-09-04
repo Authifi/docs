@@ -363,7 +363,16 @@ jobs:
         run: |
           set -euo pipefail
 
-          probe_settings="$(python - <<'PY' "$DOCS_PUBLIC_BASE_URL" "$DOCS_ALB_DNS_NAME"
+          # Through a file rather than a command substitution. Bash tracks
+          # quotes while it looks for the closing paren of a `$(...)`, even
+          # across a quoted heredoc, so an apostrophe in a comment inside this
+          # program decided whether the step parsed at all -- it happened to
+          # balance, which is not a property to leave load-bearing. A
+          # redirection has no such rule.
+          probe_settings="$(mktemp)"
+          trap 'rm -f "$probe_settings"' EXIT
+
+          python - "$DOCS_PUBLIC_BASE_URL" "$DOCS_ALB_DNS_NAME" > "$probe_settings" <<'PY'
           import ipaddress
           import re
           import sys
@@ -380,8 +389,23 @@ jobs:
               raise SystemExit("DOCS_PUBLIC_BASE_URL must not include a query or fragment.")
           if parsed.hostname is None:
               raise SystemExit("DOCS_PUBLIC_BASE_URL must include a hostname.")
-          if parsed.port not in (None, 443):
-              raise SystemExit("DOCS_PUBLIC_BASE_URL must use the default HTTPS port.")
+          # Before the port check, because an IPv6 literal's netloc is full of
+          # colons and this is the more useful thing to be told about it.
+          try:
+              ipaddress.ip_address(parsed.hostname)
+          except ValueError:
+              pass
+          else:
+              raise SystemExit("DOCS_PUBLIC_BASE_URL must use a DNS hostname, not an IP literal.")
+          # Any port at all, including `:443` written out. The listener serves
+          # 443 so an explicit one would probe the same endpoint, but this
+          # value is also what Terraform validates and what the server appends
+          # to when it builds the callback URI, and both of those refuse a
+          # netloc carrying a port. Accepting it here is how the workflow ends
+          # up calling an origin fine that the plan rejects and whose callback
+          # does not match the URI registered with the issuer.
+          if ":" in parsed.netloc:
+              raise SystemExit("DOCS_PUBLIC_BASE_URL must not name a port, not even the default 443.")
           # Every route the server declares is mounted at `/` and the listener
           # rules strip no prefix, so stripping a path here and probing
           # underneath it produced a 404 the output did not explain. The server
@@ -389,12 +413,6 @@ jobs:
           # normalising it away.
           if parsed.path not in ("", "/"):
               raise SystemExit("DOCS_PUBLIC_BASE_URL must not carry a path below the root.")
-          try:
-              ipaddress.ip_address(parsed.hostname)
-          except ValueError:
-              pass
-          else:
-              raise SystemExit("DOCS_PUBLIC_BASE_URL must use a DNS hostname, not an IP literal.")
 
           if not re.fullmatch(r"(?!-)[A-Za-z0-9-]{1,63}(?<!-)(?:\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))*", alb_dns_name):
               raise SystemExit("DOCS_ALB_DNS_NAME must be a hostname, not shell syntax.")
@@ -415,7 +433,7 @@ jobs:
           print(f"login_url={login_url}")
           print(f"callback_url={callback_url}")
           PY
-          )"
+
           connect_to=""
           docs_host=""
           public_url=""
@@ -431,9 +449,7 @@ jobs:
               login_url) login_url="$value" ;;
               callback_url) callback_url="$value" ;;
             esac
-          done <<EOF
-          $probe_settings
-          EOF
+          done < "$probe_settings"
 
           : "${connect_to:?probe connect-to was not derived}"
           : "${docs_host:?docs hostname was not derived}"
@@ -446,6 +462,10 @@ jobs:
           # heredoc keeps whatever indentation it is written with, YAML strips
           # only the block's own, and an indented terminator never closes one.
           login_check="$(mktemp)"
+          # The header dumps are removed at the end of every attempt as well;
+          # this is what covers the attempt that breaks out of the loop and the
+          # one that reaches the deadline, having just printed two of them.
+          trap 'rm -f "$probe_settings" "$login_check" "${public_headers:-}" "${protected_headers:-}" "${login_headers:-}"' EXIT
           cat > "$login_check" <<'PY'
           """Judge the authorization redirect `/_auth/login` answered with.
 
@@ -550,7 +570,20 @@ jobs:
               --output /dev/null --dump-header "$login_headers" \
               --write-out '%{http_code}' "$login_url" || true)"
             login_status="${login_status:-000}"
-            login_verdict="$(python "$login_check" "$login_headers" "$docs_host" "$callback_url")"
+            # `|| true`, because everything else in this loop tolerates a
+            # transient fault and retries. Under `set -e` a failed interpreter
+            # -- an OOM kill, a full disk while writing the header dump -- ended
+            # the whole step here, before the deadline branch that prints the
+            # diagnostics, so the one probe with the most to say about a broken
+            # deployment was the one that could abort without saying it.
+            # Its stderr is discarded rather than captured: a traceback is
+            # free to quote the value that raised it, and the value here is
+            # the redirect. The verdict is the only channel out of this
+            # program, and it is written not to carry one.
+            login_verdict="$(python "$login_check" "$login_headers" "$docs_host" "$callback_url" 2>/dev/null || true)"
+            # An empty verdict is still a verdict. Left empty it would read as
+            # "got status 000, and ." in the failure message below.
+            login_verdict="${login_verdict:-the redirect could not be judged, because the check did not run}"
 
             if [[ "$public_status" == "200" \
               && "$public_content_type" == text/html* \
@@ -578,6 +611,13 @@ jobs:
               echo "Expected a redirect to the issuer's authorization endpoint; got status $login_status, and $login_verdict." >&2
               exit 1
             fi
+
+            # Three dumps per attempt, once every ten seconds for five minutes.
+            # Hygiene rather than a leak that matters on an ephemeral runner,
+            # except for the login dump: its `Location` carries this
+            # transaction's state, nonce, and PKCE challenge, and that is worth
+            # removing on purpose rather than leaving for the VM teardown.
+            rm -f "$public_headers" "$protected_headers" "$login_headers"
 
             echo "Attempt $attempt failed; retrying..."
             sleep 10

@@ -13,9 +13,10 @@ import sys
 import pytest
 import yaml
 
-RAW_WORKFLOW = (
-    Path(__file__).resolve().parents[2] / ".github" / "workflows" / "deploy.yml"
-).read_text(encoding="utf-8")
+ROOT = Path(__file__).resolve().parents[2]
+RAW_WORKFLOW = (ROOT / ".github" / "workflows" / "deploy.yml").read_text(
+    encoding="utf-8"
+)
 WORKFLOW = yaml.safe_load(RAW_WORKFLOW)
 DEPLOY_JOB = WORKFLOW["jobs"]["deploy"]
 STEPS = DEPLOY_JOB["steps"]
@@ -740,14 +741,17 @@ def test_route_probes_parse_the_canonical_https_origin_and_connect_directly_to_t
     probe_run = step_run("Verify public and protected routes")
 
     assert ': "${DOCS_ALB_DNS_NAME:?Set repository variable DOCS_ALB_DNS_NAME}"' in verify_run
-    assert 'probe_settings="$(python - <<\'PY\' "$DOCS_PUBLIC_BASE_URL" "$DOCS_ALB_DNS_NAME"' in probe_run
+    assert (
+        'python - "$DOCS_PUBLIC_BASE_URL" "$DOCS_ALB_DNS_NAME" > "$probe_settings" <<\'PY\''
+        in probe_run
+    )
     for fragment in (
         'parsed = urlsplit(public_base_url)',
         'if parsed.scheme != "https":',
         "if parsed.username is not None or parsed.password is not None:",
         "if parsed.query or parsed.fragment:",
         'if parsed.hostname is None:',
-        'if parsed.port not in (None, 443):',
+        'if ":" in parsed.netloc:',
         'if not re.fullmatch(r"(?!-)[A-Za-z0-9-]{1,63}(?<!-)(?:\\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))*", alb_dns_name):',
         'connect_to = f"{parsed.hostname}:443:{alb_dns_name}:443"',
         'print(f"connect_to={connect_to}")',
@@ -795,6 +799,35 @@ def heredoc_bodies(run: str, tag: str = "PY") -> list[str]:
         offset = end.end()
 
     return bodies
+
+
+def test_no_embedded_program_is_wrapped_in_a_command_substitution() -> None:
+    """Bash looks for the closing paren of a `$(...)` while still tracking
+    quotes, and it does that across a quoted heredoc.
+
+    So an apostrophe in a comment inside an embedded Python program opened a
+    string that swallowed the rest of it, and whether the step parsed at all
+    came down to whether the apostrophes happened to pair up. Both of these
+    programs did, until one comment was added to each.
+
+    Every one of them writes to a file and is read back from it. The redirection
+    has no such rule, and `bash -n` over the rendered blocks is what proves the
+    outcome -- this is what stops the construct coming back.
+    """
+    runs = [
+        (str(candidate.get("name")), str(candidate["run"]))
+        for candidate in STEPS
+        if candidate.get("run")
+    ]
+
+    assert len(runs) >= 8, runs
+
+    for step_name, run in runs:
+        for match in re.finditer(r"\$\(", run):
+            tail = run[match.start() :]
+            paren = tail.index(")") if ")" in tail else len(tail)
+
+            assert "<<'" not in tail[:paren], f"{step_name}: {tail[:80]!r}"
 
 
 def probe_programs() -> list[str]:
@@ -878,6 +911,62 @@ def test_the_probe_parser_refuses_origins_it_cannot_probe_faithfully(
 
     assert completed.returncode != 0
     assert "connect_to=" not in completed.stdout
+
+
+@pytest.mark.parametrize(
+    "public_base_url",
+    ["https://docs.authifi.io:443", "https://docs.authifi.io:443/"],
+)
+def test_the_probe_parser_refuses_an_explicitly_written_default_port(
+    public_base_url: str,
+) -> None:
+    """`:443` is the default port, so the parser used to accept it and derive
+    the same probe URLs -- but the value it accepted is one Terraform's
+    `public_base_url` pattern refuses, and the server appends to
+    `PUBLIC_BASE_URL` verbatim when it builds the callback URI.
+
+    So a deployment configured this way would have the workflow declaring the
+    origin fine while the plan refused it and the registered redirect URI did
+    not match the one the server sent. The three readers agree on one shape:
+    scheme, host, and at most the root.
+    """
+    completed = run_probe_settings(public_base_url)
+
+    assert completed.returncode != 0
+    assert "port" in completed.stderr.lower()
+    assert "connect_to=" not in completed.stdout
+
+
+def test_the_probe_parser_and_terraform_agree_on_every_origin_shape() -> None:
+    """Neither is allowed to accept an origin the other refuses.
+
+    The two are written in different languages against different inputs, which
+    is exactly the pair that drifts. `DOCS_PUBLIC_BASE_URL` is a repository
+    variable and `public_base_url` is a Terraform variable, and they name the
+    same origin.
+    """
+    from server.tests.hcl_support import variable_accepts
+
+    variables = (ROOT / "infra" / "variables.tf").read_text(encoding="utf-8")
+    origins = [
+        "https://docs.authifi.io",
+        "https://docs.authifi.io/",
+        "https://docs.authifi.io:443",
+        "https://docs.authifi.io:443/",
+        "https://docs.authifi.io:8443",
+        "https://docs.authifi.io/docs",
+        "https://docs.authifi.io?probe=1",
+        "https://docs.authifi.io#fragment",
+        "https://user:pass@docs.authifi.io",
+        "http://docs.authifi.io",
+        "https://198.51.100.7",
+    ]
+
+    for origin in origins:
+        planned = variable_accepts(variables, "public_base_url", origin)
+        probed = run_probe_settings(origin).returncode == 0
+
+        assert planned == probed, origin
 
 
 def test_the_probe_parser_treats_a_trailing_slash_as_the_root_it_is() -> None:
@@ -1016,9 +1105,11 @@ def test_a_real_authorization_redirect_passes_the_discovery_check(tmp_path: Path
         authorization_redirect(client_id=None),
         authorization_redirect(client_id=""),
         authorization_redirect(redirect_uri=None),
+        authorization_redirect(redirect_uri=""),
         authorization_redirect(state=None),
         authorization_redirect(state=""),
         authorization_redirect(nonce=None),
+        authorization_redirect(nonce=""),
         authorization_redirect(code_challenge=None),
         authorization_redirect(code_challenge=""),
         # The wrong flow, or PKCE downgraded to the mode S256 exists to replace.
@@ -1068,6 +1159,109 @@ def test_the_verdict_never_carries_the_redirect_it_is_judging(
     for secret in (PROBE_STATE, PROBE_NONCE, PROBE_CHALLENGE):
         assert secret not in verdict
     assert location not in verdict
+
+
+def test_the_redaction_assertions_are_not_passing_on_an_empty_verdict() -> None:
+    """A redaction check is vacuous if the thing it inspects is empty, and it
+    would stay green if the verdict were silenced rather than sanitised.
+
+    So the material has to actually be in the input those tests feed, and the
+    verdict has to actually say something. Without this, "the secret is not in
+    the output" is satisfied by no output at all.
+    """
+    location = authorization_redirect(host=DOCS_HOST)
+
+    for secret in (PROBE_STATE, PROBE_NONCE, PROBE_CHALLENGE):
+        assert secret in location
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        # Header dumps curl can legitimately produce, and one it cannot.
+        "",
+        "HTTP/2 302\r\n\r\n",
+        "not a header block at all",
+        "location\r\n\r\n",
+        "\x00\x01\x02 binary",
+    ],
+)
+def test_the_verifier_answers_rather_than_crashing_on_any_header_dump(
+    headers: str, tmp_path: Path
+) -> None:
+    """The verifier's output is captured into a shell variable that decides
+    whether the deployment is ready.
+
+    An unhandled traceback would print nothing to stdout, so the verdict would
+    be the empty string -- which is not `ok`, so the loop would retry, and the
+    failure an operator finally sees would be "and " with the reason on a
+    stream nobody correlated. It has to answer.
+    """
+    path = tmp_path / "login-headers.txt"
+    path.write_text(headers, encoding="utf-8")
+
+    completed = subprocess.run(
+        [sys.executable, "-", str(path), DOCS_HOST, CALLBACK_URL],
+        input=login_redirect_program(),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip(), "the verifier produced no verdict"
+    assert completed.stdout.strip() != "ok"
+
+
+def test_a_verifier_that_cannot_run_fails_the_check_instead_of_the_step() -> None:
+    """`login_verdict="$(python ...)"` under `set -e` ended the step on the
+    spot if the interpreter itself failed -- a missing file, an OOM kill -- so
+    a transient fault during the retry window became an immediate abort while
+    every other probe in the same loop retried.
+
+    Worse, it aborted without the diagnostics: the deadline branch is what
+    prints them, and this exited before reaching it.
+    """
+    probe_run = step_run("Verify public and protected routes")
+    verdict_line = anchored_line(probe_run, r'^login_verdict="\$\(')
+
+    assert "|| true" in verdict_line or "||" in verdict_line, verdict_line
+
+    lines = executable_lines(probe_run)
+
+    # And an empty verdict has to read as a refusal an operator can act on,
+    # not as an empty string interpolated into a sentence.
+    assert any("login_verdict" in line and "verdict" in line.lower()
+               and (":-" in line or "-unavailable" in line) for line in lines), lines
+
+
+def test_every_probe_temp_file_is_cleaned_up_rather_than_leaked() -> None:
+    """Three `mktemp` calls inside a loop that runs every ten seconds for five
+    minutes: up to ninety files on the runner, and the two dumps that carry the
+    login `Location` among them.
+
+    They are small and the runner is ephemeral, so this is hygiene rather than
+    a leak that matters -- but the header dump holding this transaction's state
+    and nonce is one worth removing on purpose rather than leaving for the VM
+    teardown.
+    """
+    probe_run = step_run("Verify public and protected routes")
+    lines = executable_lines(probe_run)
+
+    created = [line for line in lines if "mktemp" in line]
+
+    assert created, "the probe step creates no temp files"
+
+    # Every file made inside the loop is removed on the way round it, and the
+    # removal covers the login header dump by name.
+    assert any(re.search(r"^rm -f .*login_headers", line) for line in lines), lines
+    assert any(re.search(r"^\s*trap .*(cleanup|rm -f)", line) for line in lines) or any(
+        re.search(r"^rm -f ", line) for line in lines
+    ), lines
+
+    # The verifier program itself is written once, outside the loop, so it is
+    # removed once, on the way out of the step.
+    assert any("login_check" in line and line.startswith("trap ") for line in lines), lines
 
 
 def test_the_login_probe_is_credential_free_and_does_not_follow_redirects() -> None:
