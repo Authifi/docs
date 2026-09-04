@@ -19,8 +19,11 @@ from authlib.integrations.starlette_client import integration
 from starlette.testclient import TestClient
 
 from server.app import (
+    MAX_EMAIL_BYTES,
+    MAX_NAME_BYTES,
     MAX_NEXT_PATH_BYTES,
     MAX_PENDING_LOGINS,
+    MAX_SUBJECT_BYTES,
     SESSION_PENDING_LOGINS_KEY,
     SESSION_USER_KEY,
     create_app,
@@ -682,3 +685,105 @@ def test_an_unreachable_issuer_is_still_a_server_fault(
     response = complete_login(failing, state, "code-security")
 
     assert response.status_code == 500
+
+
+# --- The worst cookie this design can produce ---------------------------------
+#
+# The measurement that justifies every cap: the largest session the server will
+# ever sign is one login just completed with all three claims at their ceiling,
+# while the remaining tabs still hold pending logins at the return-path cap and
+# Authlib's own per-state verifier and nonce. If that fits under 4096 bytes with
+# room to spare, no caller can construct a cookie the browser will drop.
+
+
+def maxed_claims() -> dict[str, str]:
+    def sized(prefix: str, size: int) -> str:
+        value = prefix + "a" * (size - len(prefix))
+        assert len(value.encode("utf-8")) == size
+        return value
+
+    return {
+        "sub": sized("sub-", MAX_SUBJECT_BYTES),
+        "email": sized("email-", MAX_EMAIL_BYTES),
+        "name": sized("name-", MAX_NAME_BYTES),
+    }
+
+
+def test_the_worst_case_cookie_is_measured_and_fits_with_maximal_claims(
+    site_dir: Path, token_endpoint: RecordingTokenEndpoint
+) -> None:
+    """Every cap at once, measured on the header the browser actually receives.
+
+    `Set-Cookie` is what has the 4096-byte budget, not the value: the name,
+    `Path`, `SameSite`, `HttpOnly` and `Max-Age` all come out of it. At the
+    time of writing it measures 3282 bytes, so there is a little over 800 to
+    spare.
+    """
+    claims = maxed_claims()
+
+    async def maximal_token(**params):
+        return {"access_token": "opaque", "userinfo": claims}
+
+    app = create_app(build_config(site_dir, public_base_url="http://testserver"))
+
+    async def metadata() -> dict[str, str]:
+        return {
+            "authorization_endpoint": "https://issuer.example.com/oauth2/authorize",
+            "token_endpoint": "https://issuer.example.com/oauth2/token",
+            "jwks_uri": "https://issuer.example.com/.well-known/jwks.json",
+        }
+
+    app.state.auth_client.load_server_metadata = metadata
+    app.state.auth_client.fetch_access_token = maximal_token
+    client = TestClient(app)
+
+    states = []
+    for index in range(MAX_PENDING_LOGINS):
+        at_cap = f"/{index}" + "a" * (MAX_NEXT_PATH_BYTES - len(f"/{index}"))
+        states.append(start_login(client, at_cap))
+
+    response = complete_login(client, states[0], "code-maximal")
+    assert response.status_code == 307
+
+    session = decode_session_cookie(extract_cookie_value(response.headers["set-cookie"]))
+    assert session[SESSION_USER_KEY] == claims
+    assert len(session[SESSION_PENDING_LOGINS_KEY]) == MAX_PENDING_LOGINS - 1
+
+    measured = len(response.headers["set-cookie"])
+    assert measured < BROWSER_COOKIE_LIMIT - 500, measured
+
+
+def test_an_issuer_cannot_inflate_the_cookie_past_the_browser_limit(
+    site_dir: Path,
+) -> None:
+    """The claims are the issuer's to choose, so the ceiling is not negotiable.
+
+    Without the per-claim bounds this cookie was over 20KB, which a browser
+    discards silently: the user would sign in successfully and still be
+    anonymous on the next request.
+    """
+    huge = {"sub": "s" * 9000, "email": "e" * 9000, "name": "n" * 9000}
+
+    async def enormous_token(**params):
+        return {"access_token": "opaque", "userinfo": {**huge, "sub": "user-123"}}
+
+    app = create_app(build_config(site_dir, public_base_url="http://testserver"))
+
+    async def metadata() -> dict[str, str]:
+        return {
+            "authorization_endpoint": "https://issuer.example.com/oauth2/authorize",
+            "token_endpoint": "https://issuer.example.com/oauth2/token",
+            "jwks_uri": "https://issuer.example.com/.well-known/jwks.json",
+        }
+
+    app.state.auth_client.load_server_metadata = metadata
+    app.state.auth_client.fetch_access_token = enormous_token
+    client = TestClient(app)
+
+    state = start_login(client, "/security/")
+    response = complete_login(client, state, "code-enormous")
+
+    assert response.status_code == 307
+    session = decode_session_cookie(extract_cookie_value(response.headers["set-cookie"]))
+    assert session[SESSION_USER_KEY] == {"sub": "user-123"}
+    assert len(response.headers["set-cookie"]) < BROWSER_COOKIE_LIMIT - 500

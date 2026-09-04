@@ -35,6 +35,24 @@ where you find out which one it was.
 
 Authorization in v1 is **authentication only**: any identity that the configured Authifi tenant accepts through the OIDC flow may read every protected page. The server stores the subject, and optionally the email and name, and grants access on that basis alone.
 
+Each of those three claims is bounded in UTF-8 bytes, because the issuer, not
+this server, decides how long they are, and all of them ride in a signed cookie
+the browser silently discards past 4096 bytes:
+
+| Claim | Limit | Over the limit |
+|---|---|---|
+| `sub` | 255 bytes | sign-in fails closed, no session |
+| `email` | 254 bytes (RFC 5321 maximum) | claim dropped, sign-in succeeds |
+| `name` | 128 bytes | claim dropped, sign-in succeeds |
+
+The optional claims are dropped rather than truncated: half an email address is
+a wrong one, and access depends on the subject alone, so losing a display value
+is better than refusing a legitimate login. A missing, malformed, or overlong
+subject is fatal instead, since there is no session without one. The worst
+`Set-Cookie` this design can produce -- all three claims at their ceiling, a
+login just completed, and the other tabs still holding pending logins at the
+return-path cap -- measures 3282 bytes, leaving a little over 800 spare.
+
 There is deliberately **no group, role, or email-domain filtering in v1**. Controlling who can read the docs is therefore controlled entirely by controlling who can sign in to the configured tenant and who is assigned the docs application. If finer-grained access becomes a requirement, it is a follow-up change to the callback handler and the session contents, not a configuration toggle.
 
 The boundary also hides the shape of the protected tree. Authorization runs before trailing-slash canonicalisation for protected routes, so an anonymous request for `/guides/sso-integration-guide` and one for a page that does not exist both answer `307` to `/_auth/login`, with `next` echoing the path exactly as requested. Signed-in callers get the usual `308` to the canonical form, and public pages canonicalise without a login. If you ever see an anonymous `308` for a protected path, the boundary has regressed.

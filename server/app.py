@@ -74,6 +74,20 @@ MAX_PENDING_LOGINS = 4
 SESSION_MAX_AGE_SECONDS = 8 * 60 * 60
 DEFAULT_POST_LOGOUT_PATH = "/privacy-policy/"
 
+# Per-claim ceilings, in UTF-8 bytes. The issuer decides how long these are, and
+# all three ride in the same signed cookie as the pending logins, so each needs
+# a bound of its own rather than a shared hope that they are all short.
+# `MAX_SUBJECT_BYTES` matches the path-segment limit for no deeper reason than
+# that 255 bytes is more identifier than any directory needs; the email ceiling
+# is RFC 5321's maximum forward path, so no deliverable address is refused; and
+# a display name is a display name.
+# `test_the_worst_case_cookie_is_measured_and_fits` holds the arithmetic: all
+# three at their ceiling, alongside the pending logins, stay well under 4096.
+MAX_SUBJECT_BYTES = 255
+MAX_EMAIL_BYTES = 254
+MAX_NAME_BYTES = 128
+OPTIONAL_CLAIM_LIMITS = {"email": MAX_EMAIL_BYTES, "name": MAX_NAME_BYTES}
+
 VISIBILITY_PUBLIC = "public"
 VISIBILITY_PROTECTED = "protected"
 VISIBILITY_STATE_KEY = "cache_visibility"
@@ -803,15 +817,60 @@ def build_public_url(public_base_url: str, path: str) -> str:
     return f"{public_base_url.rstrip('/')}{path}"
 
 
-def extract_minimal_user(userinfo: Mapping[str, Any] | None) -> dict[str, str]:
-    if not userinfo or not userinfo.get("sub"):
-        raise ValueError("OIDC userinfo is missing the required subject claim")
+def claim_text(value: Any, allow_number: bool = False) -> str | None:
+    """A claim as a string this server is willing to carry, or ``None``.
 
-    user = {"sub": str(userinfo["sub"])}
-    for field in ("email", "name"):
-        value = userinfo.get(field)
-        if value:
-            user[field] = str(value)
+    Refuses anything that cannot become a string without inventing something --
+    a list, a mapping -- and refuses control characters, because these values
+    reach log lines.
+
+    `allow_number` is for the subject alone: the spec says it is a string, some
+    issuers send a number anyway, and reading its digits is lossless. It does
+    not extend to the optional claims, where a number is not a name or an
+    address. `bool` is excluded by hand either way, since it would otherwise
+    arrive as an integer and become the subject ``"True"``.
+    """
+    if allow_number and isinstance(value, int) and not isinstance(value, bool):
+        value = str(value)
+    if not isinstance(value, str):
+        return None
+
+    text = value.strip()
+    if not text or any(character in CONTROL_CHARACTERS for character in text):
+        return None
+    return text
+
+
+def claim_fits(value: str, limit: int) -> bool:
+    try:
+        return len(value.encode("utf-8")) <= limit
+    except UnicodeError:
+        # No UTF-8 form, so nothing that could be signed into the cookie.
+        return False
+
+
+def extract_minimal_user(userinfo: Mapping[str, Any] | None) -> dict[str, str]:
+    """The three claims worth keeping, each bounded, or a refusal.
+
+    Everything kept here lands in a signed cookie the browser drops past 4096
+    bytes, and it is the issuer that decides how long a claim is. So the subject
+    fails the sign-in closed if it is missing, malformed, or too long -- there
+    is no session without one -- while the optional claims are dropped when they
+    do not fit. Access depends on the subject alone in v1, so losing a display
+    name is strictly better than refusing a legitimate login or shipping a
+    cookie the browser will discard.
+    """
+    subject = claim_text((userinfo or {}).get("sub"), allow_number=True)
+    if subject is None or not claim_fits(subject, MAX_SUBJECT_BYTES):
+        # The value is issuer-controlled and unbounded, so it is described
+        # rather than quoted: this message reaches a log line and a response.
+        raise ValueError("OIDC userinfo has no usable subject claim")
+
+    user = {"sub": subject}
+    for field, limit in OPTIONAL_CLAIM_LIMITS.items():
+        value = claim_text(userinfo.get(field))
+        if value is not None and claim_fits(value, limit):
+            user[field] = value
     return user
 
 
