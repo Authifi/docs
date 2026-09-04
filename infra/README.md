@@ -108,10 +108,33 @@ a caller's account-specific state location would otherwise leak into the
 repository. The same pattern works for any other backend — substitute
 `backend "azurerm" {}`, `backend "gcs" {}`, or a Terraform Cloud `cloud` block.
 
-Confirm the backend Terraform actually selected before applying:
+Confirm the backend Terraform actually selected before applying. This matters
+precisely because the failure is quiet: if the declaration is missing, `init`
+still succeeds and writes state locally, so the check has to fail loudly rather
+than print nothing.
 
 ```bash
-terraform -chdir=infra init ... && grep '"type"' infra/.terraform/terraform.tfstate
+check_terraform_backend() {
+  local expected="${1:-s3}"
+  local state_file="infra/.terraform/terraform.tfstate"
+
+  if [ ! -f "$state_file" ]; then
+    echo "No $state_file — terraform init has not run here." >&2
+    return 1
+  fi
+
+  local actual
+  actual="$(jq -r '.backend.type // empty' "$state_file")"
+  if [ "$actual" != "$expected" ]; then
+    echo "Terraform initialised the '${actual:-unknown}' backend, not '$expected'." >&2
+    echo "State is not going where you think. Check infra/backend_override.tf." >&2
+    return 1
+  fi
+
+  echo "Terraform is using the '$actual' backend."
+}
+
+check_terraform_backend s3
 ```
 
 ## Plan

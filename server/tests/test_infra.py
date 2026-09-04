@@ -11,6 +11,7 @@ README has to tell callers to declare the backend first.
 from __future__ import annotations
 
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -100,3 +101,80 @@ def test_readme_still_documents_the_no_backend_local_default() -> None:
 
     assert "terraform -chdir=infra init" in text
     assert "local" in text.lower()
+
+
+# --- The backend verification snippet has to actually verify ------------------
+#
+# A bare `grep '"type"' ...` prints nothing and exits 0 when the file is
+# missing, so the one command a caller runs to confirm their state is going to
+# S3 was silent in exactly the case that matters.
+
+BACKEND_CHECK_FUNCTION = "check_terraform_backend"
+
+requires_jq = pytest.mark.skipif(shutil.which("jq") is None, reason="jq is not available")
+
+
+def backend_check_snippet() -> str:
+    blocks = re.findall(r"```bash\n(.*?)```", readme_text(), flags=re.DOTALL)
+    matching = [block for block in blocks if BACKEND_CHECK_FUNCTION in block]
+
+    assert len(matching) == 1, (
+        f"expected exactly one README block defining {BACKEND_CHECK_FUNCTION}, found {len(matching)}"
+    )
+    return matching[0]
+
+
+def run_backend_check(tmp_path: Path, state: str | None) -> subprocess.CompletedProcess[str]:
+    """Run the README's snippet verbatim against a fabricated init result."""
+    if state is not None:
+        state_file = tmp_path / "infra" / ".terraform" / "terraform.tfstate"
+        state_file.parent.mkdir(parents=True, exist_ok=True)
+        state_file.write_text(state, encoding="utf-8")
+
+    script = tmp_path / "check.sh"
+    script.write_text(backend_check_snippet(), encoding="utf-8")
+    return subprocess.run(
+        ["bash", str(script)], cwd=tmp_path, capture_output=True, text=True
+    )
+
+
+@requires_jq
+def test_the_backend_check_passes_on_a_real_s3_init(tmp_path: Path) -> None:
+    result = run_backend_check(tmp_path, '{"version": 3, "backend": {"type": "s3"}}')
+
+    assert result.returncode == 0, result.stderr
+    assert "s3" in result.stdout
+
+
+@requires_jq
+def test_the_backend_check_fails_loudly_when_init_never_ran(tmp_path: Path) -> None:
+    result = run_backend_check(tmp_path, state=None)
+
+    assert result.returncode != 0
+    assert result.stderr.strip()
+
+
+@requires_jq
+@pytest.mark.parametrize("state", ['{"backend": {"type": "local"}}', "{}", '{"backend": {}}'])
+def test_the_backend_check_fails_loudly_on_any_other_backend(
+    tmp_path: Path, state: str
+) -> None:
+    """Including the silent local fallback this whole section exists to catch."""
+    result = run_backend_check(tmp_path, state)
+
+    assert result.returncode != 0
+    assert result.stderr.strip()
+
+
+@requires_jq
+def test_the_backend_check_names_the_backend_it_actually_found(tmp_path: Path) -> None:
+    result = run_backend_check(tmp_path, '{"backend": {"type": "local"}}')
+
+    assert "local" in result.stderr
+
+
+def test_the_backend_check_does_not_rely_on_a_bare_grep() -> None:
+    snippet = backend_check_snippet()
+
+    assert "return 1" in snippet or "exit 1" in snippet
+    assert not re.search(r"^\s*grep\s", snippet, flags=re.MULTILINE)
