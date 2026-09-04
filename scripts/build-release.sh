@@ -25,14 +25,44 @@ mkdir -p "$release/deploy" "$release/server" "$release/wheelhouse" "$output_dir"
 "$python_bin" -m mkdocs build --strict --config-file "$root/mkdocs.yml" --site-dir "$release/site"
 cp "$root/docs/_headers" "$release/site/_headers"
 cp "$root/infra/scripts/deploy-release.sh" "$release/deploy/deploy-release.sh"
-cp "$root/server/app.py" "$root/server/main.py" "$root/server/__init__.py" "$release/server/"
 cp "$root/server/requirements.txt" "$release/requirements.txt"
+
+# The whole package, minus the test suite and build by-products. Naming the
+# modules by hand meant a module added and forgotten shipped nothing and broke
+# nothing here: the archive is produced, its checksum matches, and the offline
+# install succeeds, because no step imports the package. It fails on the host,
+# at the first request that reaches the missing module, after the candidate has
+# already been promoted.
+#
+# The requirements files are excluded because the runtime lock ships at the
+# archive root, which is where the installer and the CI offline check read it.
+"$python_bin" - "$root/server" "$release/server" <<'PY'
+import shutil
+import sys
+from pathlib import Path
+
+source, destination = (Path(argument) for argument in sys.argv[1:3])
+
+shutil.copytree(
+    source,
+    destination,
+    dirs_exist_ok=True,
+    ignore=shutil.ignore_patterns(
+        "tests",
+        "__pycache__",
+        "*.pyc",
+        "requirements*.txt",
+        "requirements*.in",
+    ),
+)
+PY
 
 "$python_bin" -m pip download \
   --requirement "$root/server/requirements.txt" \
   --dest "$release/wheelhouse" \
   --only-binary=:all: \
   --platform manylinux_2_17_x86_64 \
+  --platform manylinux_2_28_x86_64 \
   --implementation cp \
   --python-version 3.12
 

@@ -94,6 +94,80 @@ def test_release_contains_site_server_lock_and_wheelhouse(
     assert any(name.startswith("wheelhouse/") and name.endswith(".whl") for name in names)
 
 
+def runtime_package_files() -> set[str]:
+    """Every file the source `server` package is made of, minus the test suite,
+    build by-products, and the requirements files that ship at the archive root.
+    """
+    package = ROOT / "server"
+
+    return {
+        path.relative_to(package).as_posix()
+        for path in package.rglob("*")
+        if path.is_file()
+        and "tests" not in path.relative_to(package).parts
+        and "__pycache__" not in path.parts
+        and path.suffix != ".pyc"
+        and not path.name.startswith("requirements")
+    }
+
+
+def test_the_release_carries_the_whole_runtime_server_package(
+    extracted_release: Path,
+) -> None:
+    """Compared as sets against the source tree, because the failure mode of a
+    hand-maintained file list is a module added and forgotten.
+
+    Nothing goes wrong at build time in that case: the archive is produced, its
+    checksum matches, and the offline install succeeds, because none of those
+    steps import the package. It fails on the host, at the first request that
+    reaches the missing module, after the candidate has already been promoted.
+    """
+    shipped_root = extracted_release / "server"
+    shipped = {
+        path.relative_to(shipped_root).as_posix()
+        for path in shipped_root.rglob("*")
+        if path.is_file()
+    }
+
+    assert shipped == runtime_package_files()
+
+    # Named, so the comparison above cannot be satisfied by two empty sets.
+    assert {"__init__.py", "app.py", "main.py"} <= shipped
+    assert [name for name in shipped if name.startswith("tests/")] == []
+    assert [name for name in shipped if "__pycache__" in name] == []
+
+
+def test_the_wheelhouse_accepts_both_supported_manylinux_generations() -> None:
+    """`manylinux_2_17` alone is a build that breaks the day a pinned package
+    stops publishing one -- increasingly the case for anything with compiled
+    extensions, which now commonly ship `manylinux_2_28` only. The target host
+    is Ubuntu 24.04, whose glibc satisfies both, so accepting both costs
+    nothing and removes a scheduled failure.
+    """
+    platforms = re.findall(r"--platform (\S+)", BUILDER.read_text(encoding="utf-8"))
+
+    assert platforms == ["manylinux_2_17_x86_64", "manylinux_2_28_x86_64"]
+
+
+def test_every_bundled_wheel_targets_the_hosts_platform(release: tuple[Path, str]) -> None:
+    """The wheelhouse is installed with no index, so a wheel for the wrong
+    platform is not a slow install -- it is a resolution failure on the host,
+    mid-deploy, for a dependency that was present all along."""
+    output, sha = release
+    with tarfile.open(output / f"{sha}.tar.gz") as archive:
+        wheels = [
+            name
+            for name in archive.getnames()
+            if name.startswith("wheelhouse/") and name.endswith(".whl")
+        ]
+
+    assert wheels
+
+    for wheel in wheels:
+        for foreign in ("macosx", "win32", "win_amd64", "aarch64", "arm64", "musllinux", "i686"):
+            assert foreign not in wheel, wheel
+
+
 def test_release_preserves_root_link_header_behavior(extracted_release: Path) -> None:
     app_module = release_app_module(extracted_release)
     app = app_module.create_app(
@@ -136,19 +210,24 @@ def test_the_release_output_directory_is_not_committable() -> None:
 
 
 def archiver_program() -> str:
-    """The Python `build-release.sh` feeds to the interpreter on its heredoc.
+    """The Python `build-release.sh` feeds to the interpreter to write the tar.
 
     Running it against a synthetic tree is what makes the properties below
     testable at all: a full release build downloads wheels from PyPI, so
     comparing two of them byte for byte would be comparing the network as much
     as the archiver.
-    """
-    build = BUILDER.read_text(encoding="utf-8")
-    body = build[build.index("\n", build.index("<<'PY'")) + 1 :]
-    terminator = re.search(r"(?m)^PY$", body)
 
-    assert terminator, "the archiver heredoc is not terminated"
-    return body[: terminator.start()]
+    Selected by what it imports rather than by position, because the script
+    carries more than one of these programs.
+    """
+    programs = [
+        body
+        for body in re.findall(r"(?ms)<<'PY'\n(.*?)^PY$", BUILDER.read_text(encoding="utf-8"))
+        if "import tarfile" in body
+    ]
+
+    assert len(programs) == 1, f"expected one archiver program, found {len(programs)}"
+    return programs[0]
 
 
 def build_archive(source: Path, destination: Path) -> Path:
