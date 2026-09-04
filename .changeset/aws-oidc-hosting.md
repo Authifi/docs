@@ -1,5 +1,5 @@
 ---
-"@authifi/docs": major
+"authifi-docs": major
 ---
 
 Move the documentation site to an OIDC-protected application on a private EC2
