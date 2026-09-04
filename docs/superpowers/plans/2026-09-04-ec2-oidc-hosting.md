@@ -4,14 +4,14 @@
 
 **Goal:** Replace the App Runner/ECR production deployment with an HTTPS ALB forwarding to one private EC2 instance that runs the OIDC-protected MkDocs server under `systemd`, deployed as immutable S3 releases through SSM.
 
-**Architecture:** GitHub-hosted Actions builds the site and an offline Python wheelhouse, stores a checksum-addressed release in private S3, and invokes a release installer on EC2 through SSM. Terraform provisions the ALB, private instance, encrypted EBS, VPC endpoints, IAM, ACM, and release bucket; production uses neither Docker nor a self-hosted runner.
+**Architecture:** GitHub-hosted Actions builds the site and an offline Python wheelhouse, stores a checksum-addressed release in private S3, and invokes a release installer on EC2 through SSM. Terraform places the ALB and private instance in Authifi's existing shared VPC, whose private-application subnet routes outbound traffic through the shared NAT Gateway, and provisions the encrypted EBS, IAM, ACM, and release bucket; production uses neither Docker nor a self-hosted runner.
 
 **Tech Stack:** Python 3.12, Starlette, Authlib, Uvicorn, MkDocs, Bash, `systemd`, Terraform AWS provider, EC2, ALB, S3, SSM, ACM, GitHub Actions OIDC.
 
 ## Global Constraints
 
 - Preserve all existing public/protected path, session, logout, callback, traversal, content-type, and security-header behavior.
-- The production EC2 instance has no public IP, no SSH ingress, and no general internet dependency for application deployment.
+- The production EC2 instance has no public IP or SSH ingress; its existing private-application subnet routes controlled outbound traffic through Authifi's shared NAT Gateway.
 - The application runs as an unprivileged `authifi-docs` service account.
 - Authifi production registration uses authorization code flow, PKCE S256, and `token_endpoint_auth_method=none`.
 - `OIDC_CLIENT_SECRET` remains supported only as an optional compatibility mode.
@@ -31,7 +31,7 @@
 - `infra/scripts/deploy-release.sh` — instance-side locked installer, candidate check, atomic switch, and rollback.
 - `scripts/build-release.sh` — deterministic site, wheelhouse, archive, and checksum builder.
 - `server/tests/hcl_support.py` — small HCL text-parsing helpers shared by infrastructure tests.
-- `server/tests/test_ec2_infra.py` — network, ALB, EC2, endpoint, storage, IAM, and bootstrap assertions.
+- `server/tests/test_ec2_infra.py` — shared-network, ALB, EC2, egress, storage, IAM, and bootstrap assertions.
 - `server/tests/test_release_artifact.py` — release layout, checksum, and offline-install assertions.
 - `server/tests/test_deploy_release.py` — installer success, locking, preservation, rollback, and pruning tests.
 - `server/tests/test_deploy_workflow.py` — production workflow assertions.
@@ -673,7 +673,7 @@ git commit -m "LSA-10037 deploy releases atomically through SSM"
 
 ---
 
-### Task 4: ALB, Private EC2, S3, SSM, and Bootstrap Terraform
+### Task 4: Shared-VPC ALB, Private EC2, S3, SSM, and Bootstrap Terraform
 
 **Files:**
 - Create: `server/tests/hcl_support.py`
@@ -687,7 +687,8 @@ git commit -m "LSA-10037 deploy releases atomically through SSM"
 
 **Interfaces:**
 - Consumes: `infra/scripts/deploy-release.sh`, Authifi issuer/client ID, canonical
-  URL/domain, GitHub repository subject, and network sizing variables.
+  URL/domain, GitHub repository subject, `vpc_id`, two `public_subnet_ids`, and
+  one `private_app_subnet_id` whose existing route table uses the shared NAT.
 - Produces: Terraform outputs `release_bucket_name`, `instance_id`,
   `target_group_arn`, `ssm_document_name`, `alb_dns_name`, `alb_zone_id`,
   `certificate_validation_records`, and `github_deploy_role_arn`.
@@ -771,8 +772,22 @@ def test_app_runner_and_ecr_are_absent() -> None:
 def test_instance_is_private_and_uses_encrypted_ebs() -> None:
     instance = hcl_block(MAIN, 'resource "aws_instance" "docs"')
     assert "associate_public_ip_address = false" in instance
+    assert "subnet_id                   = var.private_app_subnet_id" in instance
     root = hcl_block(instance, "root_block_device")
     assert "encrypted = true" in root
+
+
+def test_terraform_reuses_the_shared_vpc_and_subnets() -> None:
+    for resource in (
+        'resource "aws_vpc"',
+        'resource "aws_subnet"',
+        'resource "aws_internet_gateway"',
+        'resource "aws_nat_gateway"',
+        'resource "aws_route"',
+    ):
+        assert resource not in MAIN
+    alb = hcl_block(MAIN, 'resource "aws_lb" "docs"')
+    assert "subnets            = var.public_subnet_ids" in alb
 
 
 def test_only_the_alb_security_group_can_reach_the_app_port() -> None:
@@ -789,12 +804,16 @@ def test_alb_redirects_http_and_checks_application_health() -> None:
     assert 'path                = "/health"' in hcl_block(target, "health_check")
 
 
-def test_private_endpoints_cover_release_and_ssm_traffic() -> None:
-    assert 'resource "aws_vpc_endpoint" "s3"' in MAIN
-    for name in ("ssm", "ssmmessages", "ec2messages"):
-        endpoint = hcl_block(MAIN, f'resource "aws_vpc_endpoint" "{name}"')
-        assert 'vpc_endpoint_type = "Interface"' in endpoint
-        assert "private_dns_enabled = true" in endpoint
+def test_app_egress_supports_shared_nat_oidc_and_bootstrap() -> None:
+    for name, port in (("app_http", 80), ("app_https", 443)):
+        rule = hcl_block(
+            MAIN,
+            f'resource "aws_vpc_security_group_egress_rule" "{name}"',
+        )
+        assert f"from_port   = {port}" in rule
+        assert f"to_port     = {port}" in rule
+        assert 'cidr_ipv4   = "0.0.0.0/0"' in rule
+    assert 'resource "aws_vpc_endpoint"' not in MAIN
 
 
 def test_ssm_document_stages_both_objects_before_running_the_installer() -> None:
@@ -851,16 +870,21 @@ Rewrite `infra/variables.tf` with validated inputs for:
 ```hcl
 variable "aws_region" { type = string }
 variable "service_name" { type = string; default = "authifi-docs" }
-variable "vpc_cidr" { type = string; default = "10.42.0.0/16" }
-variable "public_subnet_cidrs" {
+variable "vpc_id" {
+  type        = string
+  description = "Existing shared Authifi VPC ID."
+}
+variable "public_subnet_ids" {
   type    = list(string)
-  default = ["10.42.0.0/24", "10.42.1.0/24"]
   validation {
-    condition     = length(var.public_subnet_cidrs) == 2
-    error_message = "Exactly two public subnet CIDRs are required for the ALB."
+    condition     = length(var.public_subnet_ids) == 2 && length(distinct(var.public_subnet_ids)) == 2
+    error_message = "Exactly two distinct existing public subnet IDs are required for the ALB."
   }
 }
-variable "private_subnet_cidr" { type = string; default = "10.42.10.0/24" }
+variable "private_app_subnet_id" {
+  type        = string
+  description = "Existing private application subnet whose route table uses the shared NAT Gateway."
+}
 variable "instance_type" { type = string; default = "t3.micro" }
 variable "root_volume_size_gib" { type = number; default = 20 }
 variable "app_port" { type = number; default = 8080 }
@@ -894,12 +918,11 @@ variable "tags" { type = map(string); default = {} }
 Do not shorten or merge the three existing `post_logout_path` validation
 blocks; `test_public_boundary.py` checks their exact safety coverage.
 
-- [ ] **Step 5: Implement networking, ALB, EC2, endpoints, and storage**
+- [ ] **Step 5: Reuse the shared network and implement ALB and storage**
 
 Rewrite `infra/main.tf` around these exact resource groups:
 
 ```hcl
-data "aws_availability_zones" "available" { state = "available" }
 data "aws_ami" "ubuntu" {
   most_recent = true
   owners      = ["099720109477"]
@@ -913,47 +936,35 @@ data "aws_ami" "ubuntu" {
   }
 }
 
-resource "aws_vpc" "docs" {
-  cidr_block           = var.vpc_cidr
-  enable_dns_support   = true
-  enable_dns_hostnames = true
+data "aws_vpc" "shared" { id = var.vpc_id }
+data "aws_subnet" "public" {
+  for_each = toset(var.public_subnet_ids)
+  id       = each.value
+  lifecycle {
+    postcondition {
+      condition     = self.vpc_id == var.vpc_id
+      error_message = "Every public subnet must belong to vpc_id."
+    }
+  }
 }
-resource "aws_internet_gateway" "docs" { vpc_id = aws_vpc.docs.id }
-resource "aws_subnet" "public" {
-  count                   = 2
-  vpc_id                  = aws_vpc.docs.id
-  cidr_block              = var.public_subnet_cidrs[count.index]
-  availability_zone       = data.aws_availability_zones.available.names[count.index]
-  map_public_ip_on_launch = true
-}
-resource "aws_subnet" "app" {
-  vpc_id                  = aws_vpc.docs.id
-  cidr_block              = var.private_subnet_cidr
-  availability_zone       = data.aws_availability_zones.available.names[0]
-  map_public_ip_on_launch = false
-}
-resource "aws_route_table" "public" { vpc_id = aws_vpc.docs.id }
-resource "aws_route" "public_internet" {
-  route_table_id         = aws_route_table.public.id
-  destination_cidr_block = "0.0.0.0/0"
-  gateway_id             = aws_internet_gateway.docs.id
-}
-resource "aws_route_table_association" "public" {
-  count          = 2
-  subnet_id      = aws_subnet.public[count.index].id
-  route_table_id = aws_route_table.public.id
-}
-resource "aws_route_table" "app" { vpc_id = aws_vpc.docs.id }
-resource "aws_route_table_association" "app" {
-  subnet_id      = aws_subnet.app.id
-  route_table_id = aws_route_table.app.id
+data "aws_subnet" "app" {
+  id = var.private_app_subnet_id
+  lifecycle {
+    postcondition {
+      condition     = self.vpc_id == var.vpc_id
+      error_message = "private_app_subnet_id must belong to vpc_id."
+    }
+  }
 }
 ```
 
-Add separate ALB, app, and endpoint security groups; use
+Add separate ALB and app security groups in `var.vpc_id`; use
 `aws_vpc_security_group_ingress_rule.app_from_alb` with
-`referenced_security_group_id = aws_security_group.alb.id`. Permit endpoint
-port 443 only from the app security group.
+`referenced_security_group_id = aws_security_group.alb.id`. Permit app egress
+through the subnet's existing shared NAT route: TCP 80 for Ubuntu bootstrap,
+TCP 443 for OIDC, SSM, S3, and updates, DNS TCP/UDP 53 to the shared VPC CIDR,
+and UDP 123 to Amazon Time Sync. A security group permits these flows; the
+existing private-subnet route table supplies the NAT route.
 
 Add:
 
@@ -963,13 +974,13 @@ resource "aws_lb" "docs" {
   internal           = false
   load_balancer_type = "application"
   security_groups    = [aws_security_group.alb.id]
-  subnets            = aws_subnet.public[*].id
+  subnets            = var.public_subnet_ids
 }
 resource "aws_lb_target_group" "docs" {
   name     = var.service_name
   port     = var.app_port
   protocol = "HTTP"
-  vpc_id   = aws_vpc.docs.id
+  vpc_id   = var.vpc_id
   health_check {
     enabled             = true
     path                = "/health"
@@ -1035,10 +1046,6 @@ Create the private versioned release bucket with AES256 server-side
 encryption, all four public-access-block flags, and expiration of current and
 noncurrent objects after `var.release_retention_days`.
 
-Create gateway S3 and interface `ssm`, `ssmmessages`, and `ec2messages`
-endpoints. Associate S3 with `aws_route_table.app.id`; associate interface
-endpoints with `aws_subnet.app.id`.
-
 - [ ] **Step 6: Implement IAM and host bootstrap**
 
 Create an EC2 trust role, attach
@@ -1051,6 +1058,10 @@ Create `infra/templates/user-data.sh.tftpl`:
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
+
+export DEBIAN_FRONTEND=noninteractive
+apt-get update
+apt-get install --yes python3-venv
 
 useradd --system --home-dir /opt/authifi-docs --shell /sbin/nologin authifi-docs || true
 install -d -o authifi-docs -g authifi-docs /opt/authifi-docs/releases /opt/authifi-docs/incoming

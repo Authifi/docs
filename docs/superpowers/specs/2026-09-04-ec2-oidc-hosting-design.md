@@ -26,9 +26,10 @@ already implemented on `LSA-10037/aws-oidc`.
 
 ## Architecture
 
-The public ALB spans two public subnets and owns the ACM certificate. Port 80
-redirects to port 443. The HTTPS listener forwards to the application target
-on the EC2 instance. Security groups allow application traffic to EC2 only from
+The public ALB spans two existing public subnets in Authifi's shared VPC and
+owns the ACM certificate. Port 80 redirects to port 443. The HTTPS listener
+forwards to the application target on the EC2 instance in an existing private
+application subnet. Security groups allow application traffic to EC2 only from
 the ALB security group; EC2 has no public IP and accepts no inbound SSH.
 
 The EC2 instance uses an encrypted EBS root volume. The application has no
@@ -43,23 +44,23 @@ from the active release directory. The ALB health check calls `/health`.
 
 ## Private-Network Access
 
-The instance does not need general internet egress for deployment. Terraform
-creates:
+Terraform accepts the shared VPC ID, two existing public subnet IDs, and one
+existing private application subnet ID instead of creating another network.
+The private subnet's existing default route uses Authifi's shared NAT Gateway.
+That controlled egress is required for server-side OIDC discovery, signing-key
+retrieval, authorization-code exchange, SSM, operating-system bootstrap, and
+patching.
 
-- an S3 gateway VPC endpoint for release downloads;
-- interface endpoints for `ssm`, `ssmmessages`, and `ec2messages`;
-- the IAM permissions required by the managed SSM agent.
+The app security group permits outbound DNS plus HTTP and HTTPS while allowing
+inbound application traffic only from the ALB security group. The instance
+retains no public address or inbound administrative port.
 
-The selected AWS-provided Ubuntu 24.04 AMI must already contain Python 3.12 and
-the SSM agent. An SSM Command document downloads the release and checksum from
-S3 using the instance role, so the host does not need the AWS CLI. Runtime
-Python wheels are bundled into each release archive so installation uses no
-package index. This avoids a NAT gateway whose standing cost would be
-disproportionate to a low-volume service.
-
-Operating-system patching is a separate maintenance operation. It can use a
-temporary controlled egress path or instance replacement from a current AMI;
-routine application deployment does not silently depend on internet access.
+The selected AWS-provided Ubuntu 24.04 AMI contains Python 3.12 and the SSM
+agent. Bootstrap installs the distribution's `python3-venv` package through the
+shared NAT. An SSM Command document downloads the release and checksum from S3
+using the instance role, so the host does not need the AWS CLI. Runtime Python
+wheels remain bundled into each release archive, and release installation uses
+no package index.
 
 ## Release Artifact
 
@@ -143,11 +144,10 @@ Actions, S3, or user data.
 
 Terraform replaces the current ECR and App Runner resources with:
 
-- the VPC, two public subnets, and private application subnet;
-- internet gateway and public-subnet routing for the ALB;
+- validated references to the shared VPC, two public subnets, and one private
+  application subnet;
 - ALB, listeners, target group, security groups, and ACM association;
 - one EC2 instance with encrypted EBS and an instance profile;
-- SSM and S3 VPC endpoints;
 - private release bucket and lifecycle policy;
 - GitHub OIDC deployment role and least-privilege policies;
 - outputs needed for DNS validation, repository variables, deployment, and
@@ -185,7 +185,8 @@ New tests verify:
 
 - Terraform contains no App Runner or ECR resources;
 - EC2 has no public IP and receives application traffic only from the ALB;
-- endpoint, bucket, IAM, EBS encryption, and ALB health-check configuration;
+- shared-network inputs, bucket, IAM, EBS encryption, egress, and ALB
+  health-check configuration;
 - user data creates the expected non-root `systemd` service and protected
   session key;
 - the production workflow uses GitHub OIDC, S3, and SSM without Docker or
