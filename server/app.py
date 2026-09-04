@@ -126,9 +126,10 @@ class AppConfig:
             session_secret=env["SESSION_SECRET"],
             public_base_url=env["PUBLIC_BASE_URL"],
             site_dir=site_dir,
-            post_logout_path=normalize_next_path(
-                env.get("POST_LOGOUT_PATH"), default=DEFAULT_POST_LOGOUT_PATH
-            ),
+            # Deliberately unvalidated. Quietly substituting the default here
+            # would let a misconfigured deploy start and only misbehave at the
+            # first logout; create_app rejects a bad value instead.
+            post_logout_path=env.get("POST_LOGOUT_PATH") or DEFAULT_POST_LOGOUT_PATH,
         )
 
 
@@ -151,17 +152,27 @@ class SecurityHeadersMiddleware:
 
         async def send_with_security_headers(message: Message) -> None:
             if message["type"] == "http.response.start":
-                headers = MutableHeaders(scope=message)
-                headers.setdefault("x-content-type-options", "nosniff")
-                headers.setdefault("x-frame-options", "DENY")
-                headers.setdefault("referrer-policy", REFERRER_POLICY)
-                headers.setdefault("vary", "Cookie")
-                headers.setdefault("cache-control", cache_control_for(scope))
-                if self.enable_hsts:
-                    headers.setdefault("strict-transport-security", HSTS_VALUE)
+                apply_security_headers(
+                    MutableHeaders(scope=message),
+                    cache_control=cache_control_for(scope),
+                    enable_hsts=self.enable_hsts,
+                )
             await send(message)
 
         await self.app(scope, receive, send_with_security_headers)
+
+
+def apply_security_headers(
+    headers: MutableHeaders, cache_control: str, enable_hsts: bool
+) -> None:
+    """Set the baseline headers, leaving anything a response already chose."""
+    headers.setdefault("x-content-type-options", "nosniff")
+    headers.setdefault("x-frame-options", "DENY")
+    headers.setdefault("referrer-policy", REFERRER_POLICY)
+    headers.setdefault("vary", "Cookie")
+    headers.setdefault("cache-control", cache_control)
+    if enable_hsts:
+        headers.setdefault("strict-transport-security", HSTS_VALUE)
 
 
 def cache_control_for(scope: Scope) -> str:
@@ -169,11 +180,34 @@ def cache_control_for(scope: Scope) -> str:
     return PUBLIC_CACHE_CONTROL if visibility == VISIBILITY_PUBLIC else PROTECTED_CACHE_CONTROL
 
 
+def build_server_error_handler(enable_hsts: bool):
+    """Return a handler that hardens Starlette's unhandled-exception response.
+
+    Starlette builds that response in ``ServerErrorMiddleware``, which wraps the
+    whole application and therefore sits outside ``SecurityHeadersMiddleware``.
+    An unhandled exception would otherwise answer with no security headers and
+    no cache directive at all, so the headers are applied here instead, through
+    the same helper the middleware uses.
+    """
+
+    async def handle_server_error(request: Request, exc: Exception) -> Response:
+        logger.exception("Unhandled error serving %s", request.scope.get("path", ""))
+        response = PlainTextResponse("Internal Server Error", status_code=500)
+        apply_security_headers(
+            response.headers, cache_control=PROTECTED_CACHE_CONTROL, enable_hsts=enable_hsts
+        )
+        return response
+
+    return handle_server_error
+
+
 def set_cache_visibility(request: Request, visibility: str) -> None:
     setattr(request.state, VISIBILITY_STATE_KEY, visibility)
 
 
 def create_app(config: AppConfig, auth_client: object | None = None) -> Starlette:
+    validate_post_logout_path(config.post_logout_path)
+
     app = Starlette(
         routes=[
             Route("/health", endpoint=health_endpoint),
@@ -181,7 +215,10 @@ def create_app(config: AppConfig, auth_client: object | None = None) -> Starlett
             Route("/_auth/callback", endpoint=callback_endpoint),
             Route("/_auth/logout", endpoint=logout_endpoint),
             Route("/{path:path}", endpoint=site_endpoint),
-        ]
+        ],
+        # Passed to the constructor rather than added afterwards so the handler
+        # is guaranteed to be in place before the middleware stack is built.
+        exception_handlers={Exception: build_server_error_handler(config.cookie_secure)},
     )
     app.state.config = config
     app.state.auth_client = auth_client or create_auth_client(config)
@@ -195,13 +232,29 @@ def create_app(config: AppConfig, auth_client: object | None = None) -> Starlett
         max_age=config.session_max_age_seconds,
     )
     app.add_middleware(SecurityHeadersMiddleware, enable_hsts=config.cookie_secure)
-
-    if not is_public_path(config.post_logout_path):
-        logger.warning(
-            "Configured post-logout path %s is not public; users will be sent back to login",
-            config.post_logout_path,
-        )
     return app
+
+
+def validate_post_logout_path(path: str) -> str:
+    """Reject a post-logout landing page that users could not actually reach.
+
+    Checked against the exact public paths rather than ``is_public_path``: the
+    public *prefixes* cover stylesheets, scripts, and well-known documents, none
+    of which are a page to land on. A protected value would bounce every
+    logged-out user straight back into a login, and an unsafe one would be
+    handed to the issuer as ``post_logout_redirect_uri``, so both fail at
+    startup instead of at the first logout.
+    """
+    if not path or normalize_next_path(path, default="") != path:
+        raise ValueError(
+            f"POST_LOGOUT_PATH must be a safe site-relative path, got {path!r}"
+        )
+    if path not in PUBLIC_EXACT_PATHS:
+        allowed = ", ".join(sorted(PUBLIC_EXACT_PATHS))
+        raise ValueError(
+            f"POST_LOGOUT_PATH must be one of the publicly served pages ({allowed}), got {path!r}"
+        )
+    return path
 
 
 async def health_endpoint(request: Request) -> Response:
@@ -241,17 +294,25 @@ async def callback_endpoint(request: Request) -> Response:
 async def logout_endpoint(request: Request) -> Response:
     set_cache_visibility(request, VISIBILITY_PROTECTED)
     config = request.app.state.config
-    target_path = normalize_next_path(
-        request.query_params.get("next"), default=config.post_logout_path
-    )
 
+    # `next` is deliberately ignored. The post-logout target is registered with
+    # Authifi as an exact URI, so anything else would be rejected by the issuer,
+    # and the local fallback matches it so both flows land in the same place.
+    was_signed_in = bool(request.session.get(SESSION_USER_KEY))
     request.session.clear()
+
+    if not was_signed_in:
+        # Nothing to end at the issuer, and an anonymous caller must not be able
+        # to drive outbound metadata requests by hitting this route in a loop.
+        return RedirectResponse(url=config.post_logout_path)
 
     end_session_endpoint = await discover_end_session_endpoint(request.app.state.auth_client)
     if end_session_endpoint is None:
-        return RedirectResponse(url=target_path)
+        return RedirectResponse(url=config.post_logout_path)
 
-    return RedirectResponse(url=build_end_session_url(end_session_endpoint, config, target_path))
+    return RedirectResponse(
+        url=build_end_session_url(end_session_endpoint, config, config.post_logout_path)
+    )
 
 
 async def site_endpoint(request: Request) -> Response:
@@ -288,6 +349,10 @@ async def site_endpoint(request: Request) -> Response:
 
     resolved_file = resolve_site_file(config.site_dir, canonical_path)
     if resolved_file is None:
+        # A public prefix makes the *content* cacheable, not its absence. A
+        # shared cache holding a 404 for /assets/app.<hash>.css would outlive
+        # the deploy that adds the file.
+        set_cache_visibility(request, VISIBILITY_PROTECTED)
         return PlainTextResponse("Not Found", status_code=404)
 
     response = FileResponse(

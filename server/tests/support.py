@@ -141,9 +141,13 @@ def build_client(
     site_dir: Path,
     public_base_url: str = DEFAULT_PUBLIC_BASE_URL,
     auth_client: DummyAuthClient | None = None,
+    raise_server_exceptions: bool = True,
     **overrides: Any,
 ) -> TestClient:
-    return TestClient(build_app(site_dir, public_base_url, auth_client, **overrides))
+    return TestClient(
+        build_app(site_dir, public_base_url, auth_client, **overrides),
+        raise_server_exceptions=raise_server_exceptions,
+    )
 
 
 def authenticated_client(
