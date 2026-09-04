@@ -260,8 +260,8 @@ Terraform passes only non-secret values into user data:
 
 They travel as one JSON document (`local.host_config`, rendered with `jsonencode`) and land in `/etc/authifi-docs/config.json` at `0600 root`. Neither of the two things that read it evaluates anything:
 
-- `deploy-release.sh` parses the JSON and hands the values to the candidate server through `env`, one word at a time.
-- The bootstrap renders `/etc/authifi-docs/environment` from the same JSON, double-quoting and backslash-escaping each value, for systemd's `EnvironmentFile=`. `session.env` is generated on the host in the same format and is parsed rather than sourced too.
+- `deploy-release.sh` parses the JSON and hands the values to the candidate server through `env`, one word at a time. It requires exactly those five keys and refuses anything else, including a `PATH` or `LD_PRELOAD` that would otherwise decide what root executes and what it loads before `setpriv` drops privileges. The binaries it execs are absolute paths for the same reason.
+- The bootstrap renders `/etc/authifi-docs/environment` from the same JSON, double-quoting and backslash-escaping each value, for systemd's `EnvironmentFile=`. `session.env` is generated on the host in the same format, holds only `SESSION_SECRET`, and is parsed rather than sourced too.
 
 This replaced interpolating the five values into a file that the installer loaded with `source` as root. That made each of them root shell on the deployment path: an accepted absolute `site_dir` containing a space split into an assignment plus a command and aborted every deployment, and a command substitution or a semicolon in any value ran. Refusing punctuation was not an option — these are URLs and filesystem paths — and a shell metacharacter blacklist is never complete, so the format changed instead.
 
@@ -270,6 +270,22 @@ Control characters are the one thing refused rather than encoded, at plan time a
 `post_logout_path` defaults to `/privacy-policy/` and is validated at plan time: it must be site-relative, free of backslashes and control characters, and one of the paths the server actually serves publicly.
 
 There is intentionally **no** `OIDC_CLIENT_SECRET` anywhere in production. This Authlib application is server-side and still needs outbound NAT egress, but the Authifi registration is a public client that uses PKCE instead of a secret. The session key is generated on the host at first boot and is never written into Terraform state.
+
+### Migrating an existing instance to `config.json`
+
+Configuration used to be interpolated into `/etc/authifi-docs/environment` directly. Applying the change to `config.json` **replaces the instance**, because the file is written by user data and `user_data_replace_on_change = true` makes user data part of the instance's identity. There is no in-place upgrade path, and none is wanted: an instance still running the old bootstrap has the old `environment` file, which the current installer does not read.
+
+Plan for a short outage and run it deliberately:
+
+1. `terraform -chdir=infra plan` and confirm the plan replaces `aws_instance.docs` and nothing else unexpected. Note the current instance ID from `terraform -chdir=infra output -raw instance_id`.
+2. Apply. The old instance is terminated and a new one boots with an empty `/opt/authifi-docs/releases`, so **the site is down from this point until a release is installed**. `current` does not exist, the service is enabled but not started, and the target group reports the target unhealthy.
+3. Re-read the instance ID: `terraform -chdir=infra output -raw instance_id`. It has changed. Update the `DOCS_INSTANCE_ID` repository variable before deploying, or the deploy workflow will send its SSM command to an instance that no longer exists.
+4. Redeploy. Run the deploy workflow with `workflow_dispatch` against the SHA that is supposed to be live, or push to `main`. This is what installs a release onto the new host and brings the site back.
+
+Two things to avoid:
+
+- **Do not start a deploy while the replacement is in progress.** The workflow reads `DOCS_INSTANCE_ID` as it runs. Started before the apply finishes, it installs a release onto the instance Terraform is about to terminate — the deployment reports success and the site stays down — or it fails against a terminated instance ID part-way through. Let the apply finish, update the variable, then deploy.
+- **Expect every session to be logged out.** `SESSION_SECRET` is generated on the host at first boot and deliberately never stored in Terraform state, so the new instance generates a different one. Every cookie signed by the old instance is invalidated and readers log in again. This is the intended trade for keeping the secret out of state, and it applies to any instance replacement, not just this one.
 
 ## DNS
 

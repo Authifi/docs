@@ -6,12 +6,14 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import socket
 import stat
 import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterator
@@ -20,6 +22,17 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 DEPLOYER = ROOT / "infra" / "scripts" / "deploy-release.sh"
+
+# Exactly what `local.host_config` puts in `/etc/authifi-docs/config.json`.
+# The installer requires this key set and no other, so this is not just a
+# fixture -- it is the contract, and the tests below vary it one key at a time.
+HOST_CONFIGURATION = {
+    "OIDC_ISSUER": "https://issuer.authifi.io/tenants/authifi",
+    "OIDC_CLIENT_ID": "authifi-docs",
+    "PUBLIC_BASE_URL": "https://docs.authifi.io",
+    "SITE_DIR": "/opt/authifi-docs/current/site",
+    "POST_LOGOUT_PATH": "/privacy-policy/",
+}
 
 
 @dataclass
@@ -36,6 +49,7 @@ class DeployHarness:
     setpriv_args_file: Path = field(init=False)
     candidate_pid_file: Path = field(init=False)
     uvicorn_env_file: Path = field(init=False)
+    env_args_file: Path = field(init=False)
     service_state_file: Path = field(init=False)
     lock_path: Path = field(init=False)
     fail_candidate_health_file: Path = field(init=False)
@@ -55,6 +69,7 @@ class DeployHarness:
         self.setpriv_args_file = self.tmp_path / "setpriv-args.jsonl"
         self.candidate_pid_file = self.tmp_path / "candidate.pid"
         self.uvicorn_env_file = self.tmp_path / "candidate-env.json"
+        self.env_args_file = self.tmp_path / "env-args.jsonl"
         self.service_state_file = self.tmp_path / "service-running"
         self.lock_path = self.root / "deploy.lock"
         self.fail_candidate_health_file = self.tmp_path / "fail-candidate-health"
@@ -65,8 +80,10 @@ class DeployHarness:
         self.incoming_root.mkdir(parents=True)
         self.etc.mkdir(parents=True)
         self.fake_bin.mkdir(parents=True)
-        self.write_configuration({"AUTHIFI_ENV": "test"})
-        (self.etc / "session.env").write_text("SESSION_NAME=test\n", encoding="utf-8")
+        self.write_configuration(HOST_CONFIGURATION)
+        (self.etc / "session.env").write_text(
+            "SESSION_SECRET=0123456789abcdef\n", encoding="utf-8"
+        )
         self._write_fake_commands()
 
         env = os.environ.copy()
@@ -81,6 +98,7 @@ class DeployHarness:
             "AUTHIFI_DOCS_SYSTEMCTL_BIN": str(self.fake_bin / "systemctl"),
             "AUTHIFI_DOCS_TIMEOUT_BIN": str(self.fake_bin / "timeout"),
             "AUTHIFI_DOCS_SETPRIV_BIN": str(self.fake_bin / "setpriv"),
+            "AUTHIFI_DOCS_ENV_BIN": str(self.fake_bin / "env"),
             "AUTHIFI_DOCS_CANDIDATE_HEALTH_ATTEMPTS": "2",
             "AUTHIFI_DOCS_ACTIVE_HEALTH_ATTEMPTS": "1",
             "AUTHIFI_DOCS_HEALTH_SLEEP_SECONDS": "0",
@@ -92,6 +110,7 @@ class DeployHarness:
             "CANDIDATE_PORT": "18080",
             "CANDIDATE_PID_FILE": str(self.candidate_pid_file),
             "UVICORN_ENV_FILE": str(self.uvicorn_env_file),
+            "ENV_ARGS_FILE": str(self.env_args_file),
             "SERVICE_STATE_FILE": str(self.service_state_file),
             "FAIL_CANDIDATE_HEALTH_FILE": str(self.fail_candidate_health_file),
             "FAIL_ACTIVE_HEALTH_FILE": str(self.fail_active_health_file),
@@ -111,6 +130,16 @@ class DeployHarness:
         if not self.uvicorn_env_file.exists():
             return {}
         return json.loads(self.uvicorn_env_file.read_text(encoding="utf-8"))
+
+    @property
+    def candidate_environment_order(self) -> list[str]:
+        """The names root passed to `env`, in the order it passed them."""
+        if not self.env_args_file.exists():
+            return []
+        last = json.loads(
+            self.env_args_file.read_text(encoding="utf-8").splitlines()[-1]
+        )
+        return [assignment.partition("=")[0] for assignment in last]
 
     @property
     def events(self) -> list[str]:
@@ -266,7 +295,38 @@ if len(sys.argv) < 3:
     print("usage: timeout SECONDS COMMAND...", file=sys.stderr)
     sys.exit(2)
 
-os.execvp(sys.argv[2], sys.argv[2:])
+os.execv(sys.argv[2], sys.argv[2:])
+""",
+        )
+        # Records the assignments in the order root passed them, then behaves
+        # like `env`. The order is only observable here: once `env` has applied
+        # them the child sees a dictionary, and the argument list is what an
+        # operator reads in an SSM log.
+        self._write_executable(
+            self.fake_bin / "env",
+            """#!/usr/bin/env python3
+import json
+import os
+import sys
+from pathlib import Path
+
+arguments = sys.argv[1:]
+assignments = []
+while arguments and "=" in arguments[0]:
+    assignments.append(arguments.pop(0))
+
+with Path(os.environ["ENV_ARGS_FILE"]).open("a", encoding="utf-8") as stream:
+    stream.write(json.dumps(assignments) + "\\n")
+
+if not arguments:
+    print("env: no command given", file=sys.stderr)
+    sys.exit(2)
+
+for assignment in assignments:
+    name, _, value = assignment.partition("=")
+    os.environ[name] = value
+
+os.execv(arguments[0], arguments)
 """,
         )
         # Records the privilege drop and then execs, the way real setpriv does.
@@ -930,6 +990,141 @@ def test_repeated_failures_never_become_releases_a_prune_would_keep(
     assert deploy_harness.current.resolve().name == successor
 
 
+@pytest.mark.parametrize("signal_name", ["SIGHUP", "SIGINT", "SIGTERM"])
+def test_a_signalled_deployment_cleans_up_and_reports_the_signal(
+    deploy_harness: DeployHarness, signal_name: str
+) -> None:
+    """Systems Manager cancels a command by signalling the installer, and a
+    workflow run cancelled mid-deploy is the normal way that happens.
+
+    `trap ... EXIT` alone does not cover it: bash runs the EXIT trap when the
+    shell exits, but a default-disposition SIGTERM kills it without one, so a
+    cancelled deploy left both the staged archive and a half-built release
+    tree behind -- the same accumulation the prune bug fed on.
+
+    The status has to survive too. A handler that returns zero would turn a
+    killed deployment into a successful one as far as Systems Manager and the
+    workflow are concerned.
+    """
+    import signal as signal_module
+
+    number = getattr(signal_module, signal_name)
+    sha = "a" * 37 + "bcd"
+    deploy_harness.publish_archive(sha, requirements="# slow\n")
+    deploy_harness.seed_active_release()
+
+    process = subprocess.Popen(
+        [str(DEPLOYER), sha],
+        cwd=ROOT,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=deploy_harness.env,
+    )
+    candidate = deploy_harness.releases / sha
+    deadline = time.monotonic() + 30
+    while not candidate.exists() and time.monotonic() < deadline:
+        if process.poll() is not None:
+            break
+        time.sleep(0.02)
+
+    assert candidate.exists(), "the candidate tree was never created to clean up"
+
+    process.send_signal(number)
+    _, stderr = process.communicate(timeout=60)
+
+    assert process.returncode != 0, stderr
+    # 128 + signal is what a shell killed by one reports, and it is what
+    # Systems Manager needs to see rather than a plain 1 or a 0.
+    assert process.returncode in (128 + number, -number), process.returncode
+    assert not candidate.exists(), "a cancelled deployment left its release tree"
+    assert not (deploy_harness.incoming_root / sha).exists()
+    assert deploy_harness.current.resolve().name == "0" * 40
+    # Once. The EXIT trap fires on the way out of the signal handler too, and
+    # a handler that ran twice would decide twice -- the second time after the
+    # first had already changed what it was looking at.
+    assert stderr.count("deployment interrupted by SIG") == 1, stderr
+
+
+def test_the_cleanup_handler_runs_once_even_when_a_signal_precedes_the_exit(
+    deploy_harness: DeployHarness,
+) -> None:
+    """One handler on four traps is one handler that can run four times.
+
+    The removals are idempotent, but the second pass runs after `current` may
+    already have been restored, and a handler that re-entered while the first
+    was still deciding is a handler whose decision depends on timing. So it
+    disarms itself, and this is the test that says so.
+    """
+    installer = DEPLOYER.read_text(encoding="utf-8")
+
+    assert re.search(r"^trap on_exit EXIT$", installer, re.MULTILINE)
+    for name in ("HUP", "INT", "TERM"):
+        assert re.search(rf"^trap 'on_signal {name}' {name}$", installer, re.MULTILINE)
+
+    # Disarmed by both entry points, before either does any work, and the work
+    # itself is behind a latch as well.
+    assert len(re.findall(r"trap - EXIT HUP INT TERM", installer)) == 2
+    assert "cleanup_done=0" in installer
+    assert re.search(r"if \(\( cleanup_done == 1 \)\); then\s+return 0", installer)
+
+
+def test_a_relative_current_symlink_is_never_mistaken_for_a_stale_candidate(
+    deploy_harness: DeployHarness,
+) -> None:
+    """`readlink` returns the link's target as written.
+
+    `swap_current` writes an absolute one, but `current` is a file on a host
+    that outlives any one version of this script -- an older deploy, a manual
+    repair, or a restore could leave `current -> releases/<sha>`. Compared as
+    text against an absolute candidate path that never matches, so the cleanup
+    would have deleted the tree the host was serving on the next failed
+    redeploy of that very SHA.
+    """
+    sha = "b" * 37 + "cde"
+    live = deploy_harness.make_release(sha)
+    deploy_harness.current.unlink(missing_ok=True)
+    # Relative, and pointing at the same directory.
+    deploy_harness.current.symlink_to(Path("releases") / sha)
+
+    assert deploy_harness.current.resolve() == live.resolve()
+    assert not os.path.isabs(os.readlink(deploy_harness.current))
+
+    # A redeploy of the live SHA that fails after the tree exists. The early
+    # "already active" exit must recognise it, and if anything downstream ever
+    # stops recognising it, the cleanup must still refuse to delete it.
+    deploy_harness.publish_archive(sha)
+    result = deploy_harness.run(sha)
+
+    assert result.returncode == 0
+    assert "already active" in result.stderr
+    assert (live / "site" / "index.html").is_file()
+    assert deploy_harness.current.resolve() == live.resolve()
+
+
+def test_a_relative_current_symlink_survives_a_failing_deployment(
+    deploy_harness: DeployHarness,
+) -> None:
+    """The same relative link, and a different SHA whose deployment fails.
+
+    The rolled-back link has to still resolve, and the release it names has to
+    still be there for the next deploy to fall back to.
+    """
+    live_sha = "c" * 37 + "def"
+    live = deploy_harness.make_release(live_sha)
+    (live / "MARKER").write_text("live\n", encoding="utf-8")
+    deploy_harness.current.unlink(missing_ok=True)
+    deploy_harness.current.symlink_to(Path("releases") / live_sha)
+
+    failing = "d" * 37 + "def"
+    deploy_harness.publish_unextractable_archive(failing)
+
+    assert deploy_harness.run(failing).returncode != 0
+    assert (live / "MARKER").is_file()
+    assert deploy_harness.current.resolve() == live.resolve()
+    assert not (deploy_harness.releases / failing).exists()
+
+
 def test_redeploying_the_active_release_keeps_the_tree_it_is_serving(
     deploy_harness: DeployHarness,
 ) -> None:
@@ -1014,14 +1209,6 @@ HOSTILE_CONFIGURATION_VALUES = (
 def test_the_configured_environment_reaches_the_candidate_server(
     deploy_harness: DeployHarness,
 ) -> None:
-    deploy_harness.write_configuration(
-        {
-            "OIDC_ISSUER": "https://issuer.authifi.io/tenants/authifi",
-            "OIDC_CLIENT_ID": "authifi-docs",
-            "PUBLIC_BASE_URL": "https://docs.authifi.io",
-            "POST_LOGOUT_PATH": "/privacy-policy/",
-        }
-    )
     sha = "a" * 38 + "de"
     deploy_harness.publish_archive(sha)
 
@@ -1029,12 +1216,11 @@ def test_the_configured_environment_reaches_the_candidate_server(
 
     environment = deploy_harness.candidate_environment
 
-    assert environment["OIDC_ISSUER"] == "https://issuer.authifi.io/tenants/authifi"
-    assert environment["OIDC_CLIENT_ID"] == "authifi-docs"
-    assert environment["PUBLIC_BASE_URL"] == "https://docs.authifi.io"
-    assert environment["POST_LOGOUT_PATH"] == "/privacy-policy/"
+    for name, value in HOST_CONFIGURATION.items():
+        if name != "SITE_DIR":
+            assert environment[name] == value
     # From `session.env`, which is generated on the host and never in Terraform.
-    assert environment["SESSION_NAME"] == "test"
+    assert environment["SESSION_SECRET"] == "0123456789abcdef"
     # And the probe still overrides the site the candidate serves, because it
     # has to serve the candidate's own tree rather than the active one's.
     assert environment["SITE_DIR"] == str(deploy_harness.releases / sha / "site")
@@ -1056,7 +1242,7 @@ def test_a_shell_significant_configured_value_is_loaded_and_never_run(
     canary = deploy_harness.tmp_path / "CANARY"
     expected = value.replace("CANARY", str(canary))
     deploy_harness.write_configuration(
-        {"OIDC_ISSUER": expected, "POST_LOGOUT_PATH": expected}
+        {**HOST_CONFIGURATION, "OIDC_ISSUER": expected, "POST_LOGOUT_PATH": expected}
     )
     sha = "b" * 38 + "de"
     deploy_harness.publish_archive(sha)
@@ -1069,24 +1255,67 @@ def test_a_shell_significant_configured_value_is_loaded_and_never_run(
     assert not canary.exists()
 
 
+def malformed_configurations() -> list[tuple[str, str]]:
+    """Every configuration document the installer must refuse, as raw text.
+
+    Raw rather than built from a dict, because two of these -- a duplicated key
+    and a key that is not a string -- cannot be expressed as one.
+    """
+    good = dict(HOST_CONFIGURATION)
+    cases = [
+        ("not-json", "not json at all"),
+        ("json-array", '["a list", "not an object"]'),
+        ("json-string", '"a bare string"'),
+        ("empty-object", "{}"),
+    ]
+
+    # A missing key would start the service with the previous release's value
+    # for it, or with none at all, rather than with what Terraform set.
+    for name in good:
+        cases.append(
+            (f"missing-{name}", json.dumps({k: v for k, v in good.items() if k != name}))
+        )
+
+    # An extra key is the injection channel. `PATH` and `LD_PRELOAD` are the
+    # two that decide what root runs and what it loads before dropping
+    # privileges, and they are refused by the same rule that refuses a typo.
+    for extra in ("PATH", "LD_PRELOAD", "LD_LIBRARY_PATH", "BASH_ENV", "PYTHONPATH",
+                  "OIDC_CLIENT_SECRET", "SESSION_SECRET", "OIDC_ISSUE"):
+        cases.append((f"extra-{extra}", json.dumps({**good, extra: "/attacker"})))
+
+    # JSON permits a repeated name and Python keeps the last silently, so a
+    # document whose first `SITE_DIR` an operator reads is not the one that
+    # would take effect.
+    body = ", ".join(f'"{name}": "{value}"' for name, value in good.items())
+    cases.append(("duplicate-key", "{" + body + ', "SITE_DIR": "/attacker"}'))
+
+    for name, bad in (
+        ("lowercase-key", '{"site_dir": "/x"}'),
+        ("spaced-key", '{"SITE DIR": "/x"}'),
+        ("non-string-value", '{"SITE_DIR": 8080}'),
+        ("null-value", '{"SITE_DIR": null}'),
+        ("list-value", '{"SITE_DIR": ["/x"]}'),
+        ("newline-value", '{"SITE_DIR": "carries\\na newline"}'),
+        ("nul-value", '{"SITE_DIR": "carries\\u0000a nul"}'),
+    ):
+        document = json.loads(bad)
+        cases.append((name, bad[:-1] + ", " + ", ".join(
+            f'"{k}": "{v}"' for k, v in good.items() if k not in document
+        ) + "}"))
+
+    return cases
+
+
 @pytest.mark.parametrize(
     "configuration",
-    [
-        "not json at all",
-        '["a list", "not an object"]',
-        '{"lowercase": "value"}',
-        '{"HAS SPACE": "value"}',
-        '{"OIDC_ISSUER": 8080}',
-        '{"OIDC_ISSUER": null}',
-        '{"OIDC_ISSUER": "carries\\na newline"}',
-        '{"OIDC_ISSUER": "carries\\u0000a nul"}',
-    ],
+    [pytest.param(body, id=name) for name, body in malformed_configurations()],
 )
 def test_configuration_the_installer_cannot_trust_stops_the_deployment(
     deploy_harness: DeployHarness, configuration: str
 ) -> None:
-    """A parser that skipped what it did not understand would be a parser that
-    starts the service with a silently different environment."""
+    """A parser that skipped what it did not understand, or accepted more than
+    it needed, would be a parser that starts the service with a silently
+    different environment -- or one an extra key can steer."""
     old = deploy_harness.seed_active_release()
     (deploy_harness.etc / "config.json").write_text(configuration, encoding="utf-8")
     sha = "c" * 37 + "ade"
@@ -1097,6 +1326,110 @@ def test_configuration_the_installer_cannot_trust_stops_the_deployment(
     assert result.returncode != 0
     assert deploy_harness.current.resolve() == old
     assert deploy_harness.candidate_environment == {}
+    assert not (deploy_harness.releases / sha).exists()
+
+
+@pytest.mark.parametrize("name", ["PATH", "LD_PRELOAD", "BASH_ENV"])
+def test_a_configuration_key_cannot_steer_what_root_runs(
+    deploy_harness: DeployHarness, name: str
+) -> None:
+    """`env NAME=VALUE cmd` resolves `cmd` under the environment it just set,
+    so a `PATH` in the configuration would choose which `timeout` root
+    executes, and an `LD_PRELOAD` would choose what it loads -- both before
+    `setpriv` drops to the service account.
+
+    Two things have to be true for that to be closed, and this asserts both:
+    the key set refuses the name, and the binaries root execs are absolute
+    paths that no environment variable can redirect.
+    """
+    canary = deploy_harness.tmp_path / "CANARY"
+    hostile = deploy_harness.tmp_path / "hostile-bin"
+    hostile.mkdir()
+    for command in ("timeout", "setpriv", "env", "python3"):
+        shim = hostile / command
+        shim.write_text(
+            f"#!/bin/sh\ntouch {canary}\nexit 1\n",
+            encoding="utf-8",
+        )
+        shim.chmod(0o755)
+
+    deploy_harness.write_configuration({**HOST_CONFIGURATION, name: str(hostile)})
+    sha = "d" * 37 + "ade"
+    deploy_harness.publish_archive(sha)
+
+    result = deploy_harness.run(sha)
+
+    assert result.returncode != 0
+    assert not canary.exists(), f"{name} in the configuration reached a root exec"
+
+
+def test_the_installer_execs_binaries_no_environment_variable_can_redirect() -> None:
+    """The defaults are absolute paths, so `env` is handed a command it cannot
+    resolve differently no matter what it was told to set.
+
+    Overridable, because the tests point them at fakes, but the value a
+    production host uses is the one written here.
+    """
+    installer = DEPLOYER.read_text(encoding="utf-8")
+    defaults = dict(
+        re.findall(r'^(\w+)="\$\{AUTHIFI_DOCS_\w+:-([^}]*)\}"', installer, re.MULTILINE)
+    )
+
+    for name in ("python_bin", "curl_bin", "systemctl_bin", "timeout_bin",
+                 "setpriv_bin", "env_bin"):
+        assert defaults.get(name, "").startswith("/"), f"{name} default is not absolute"
+
+    # And the `env` that applies them is the resolved one, not a bare word.
+    assert re.search(r'^\s*"\$env_bin" \$\{service_environment', installer, re.MULTILINE)
+
+
+def test_the_installer_requires_the_session_secret_and_nothing_else(
+    deploy_harness: DeployHarness,
+) -> None:
+    """`session.env` is generated on the host, but it is read with the same
+    suspicion: it is a file on the deployment path, and the bootstrap writes
+    exactly one assignment into it."""
+    (deploy_harness.etc / "session.env").write_text(
+        "SESSION_SECRET=abc\nPATH=/attacker\n", encoding="utf-8"
+    )
+    sha = "e" * 37 + "ade"
+    deploy_harness.publish_archive(sha)
+
+    result = deploy_harness.run(sha)
+
+    assert result.returncode != 0
+    assert deploy_harness.candidate_environment == {}
+
+
+def test_the_installer_hands_over_the_configuration_in_one_fixed_order(
+    deploy_harness: DeployHarness,
+) -> None:
+    """Two runs of the same configuration produce the same command line.
+
+    Not cosmetic: the assignments are the argument list of a root `env`, and an
+    order that depended on JSON member order or on dict iteration would make
+    the one thing an operator can read in an SSM log differ between runs of the
+    same release for no reason.
+    """
+    shuffled = dict(reversed(list(HOST_CONFIGURATION.items())))
+
+    assert list(shuffled) != list(HOST_CONFIGURATION)
+
+    orders = []
+    for index, configuration in enumerate((HOST_CONFIGURATION, shuffled)):
+        deploy_harness.write_configuration(configuration)
+        sha = f"{index}" * 37 + "ade"
+        deploy_harness.publish_archive(sha)
+
+        assert deploy_harness.run(sha).returncode == 0
+
+        orders.append(deploy_harness.candidate_environment_order)
+
+    assert orders[0] == orders[1]
+    # `SITE_DIR` last on purpose, so the candidate serves its own tree; `env`
+    # applies the later assignment.
+    assert orders[0][-1] == "SITE_DIR"
+    assert orders[0][:-1] == sorted(orders[0][:-1])
 
 
 def test_the_candidate_server_is_probed_as_the_service_account(

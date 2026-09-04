@@ -10,15 +10,22 @@ fi
 root="${AUTHIFI_DOCS_ROOT:-/opt/authifi-docs}"
 etc_dir="${AUTHIFI_DOCS_ETC:-/etc/authifi-docs}"
 lock="${AUTHIFI_DOCS_LOCK:-/run/lock/authifi-docs-deploy.lock}"
-python_bin="${AUTHIFI_DOCS_PYTHON_BIN:-python3}"
+# Absolute, because `env` applies the assignments it is given before resolving
+# the command that follows them: a bare `timeout` would be looked up under a
+# `PATH` this script did not choose. The configuration parser refuses a `PATH`
+# key outright, and these are what make that refusal unnecessary rather than
+# load-bearing -- two independent reasons the host configuration cannot decide
+# what root executes.
+python_bin="${AUTHIFI_DOCS_PYTHON_BIN:-/usr/bin/python3}"
 uvicorn_bin="${AUTHIFI_DOCS_UVICORN_BIN:-}"
-curl_bin="${AUTHIFI_DOCS_CURL_BIN:-curl}"
-systemctl_bin="${AUTHIFI_DOCS_SYSTEMCTL_BIN:-systemctl}"
-timeout_bin="${AUTHIFI_DOCS_TIMEOUT_BIN:-timeout}"
+curl_bin="${AUTHIFI_DOCS_CURL_BIN:-/usr/bin/curl}"
+systemctl_bin="${AUTHIFI_DOCS_SYSTEMCTL_BIN:-/usr/bin/systemctl}"
+timeout_bin="${AUTHIFI_DOCS_TIMEOUT_BIN:-/usr/bin/timeout}"
 # setpriv rather than runuser or su: it execs the command instead of forking a
 # supervised child, so the candidate server stays a direct child of `timeout`
 # and the kill that stops it still reaches uvicorn.
-setpriv_bin="${AUTHIFI_DOCS_SETPRIV_BIN:-setpriv}"
+setpriv_bin="${AUTHIFI_DOCS_SETPRIV_BIN:-/usr/bin/setpriv}"
+env_bin="${AUTHIFI_DOCS_ENV_BIN:-/usr/bin/env}"
 service_user="${AUTHIFI_DOCS_SERVICE_USER:-authifi-docs}"
 candidate_port="${AUTHIFI_DOCS_CANDIDATE_PORT:-18080}"
 candidate_attempts="${AUTHIFI_DOCS_CANDIDATE_HEALTH_ATTEMPTS:-30}"
@@ -48,10 +55,15 @@ chmod 0755 "$releases"
 chmod 0700 "$incoming_root" "$incoming"
 
 if [[ "${AUTHIFI_DOCS_LOCK_HELD:-0}" != "1" ]]; then
-  status=0
-  "$python_bin" - "$lock" "$BASH" "$0" "$sha" <<'PY' || status=$?
+  # `exec`, so the process Systems Manager started *is* the lock holder rather
+  # than a shell waiting on one. Bash defers a signal until the foreground
+  # child it is waiting on finishes, so an intervening shell here meant a
+  # cancelled command killed the wrapper and left the deployment running to
+  # completion, cleaning up nothing.
+  exec "$python_bin" - "$lock" "$BASH" "$0" "$sha" <<'PY'
 import fcntl
 import os
+import signal
 import subprocess
 import sys
 
@@ -63,19 +75,24 @@ with open(lock_path, "w", encoding="utf-8") as lock_file:
     try:
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
+        print("deployment already running", file=sys.stderr)
         sys.exit(75)
 
-    completed = subprocess.run(command, env=env)
-    sys.exit(completed.returncode)
-PY
+    child = subprocess.Popen(command, env=env)
 
-  if [[ "$status" -ne 0 ]]; then
-    if [[ "$status" -eq 75 ]]; then
-      echo "deployment already running" >&2
-    fi
-    exit "$status"
-  fi
-  exit 0
+    # Forwarded rather than handled: the shell doing the work is the one with
+    # the cleanup handler, and it is the one that has to decide what a
+    # cancelled deployment leaves behind.
+    for number in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
+        signal.signal(number, lambda received, _frame: child.send_signal(received))
+
+    status = child.wait()
+
+    # A shell killed by a signal reports 128 + the number, and that is what
+    # Systems Manager and the workflow have to see: a plain 1 reads as a
+    # deployment that failed on its own, and a 0 reads as one that worked.
+    sys.exit(128 - status if status < 0 else status)
+PY
 fi
 
 candidate_pid=""
@@ -108,39 +125,86 @@ stop_candidate_server() {
 discard_candidate() {
   local active=""
 
-  if [[ -L "$current" ]]; then
-    active="$(readlink "$current")"
+  # `readlink -f`, not `readlink`. `swap_current` writes an absolute target,
+  # but `current` is a file on a host that outlives any one version of this
+  # script -- an older deploy, a manual repair, or a restore can leave
+  # `current -> releases/<sha>`. Compared as written, a relative target never
+  # equals the absolute candidate path, so this guard would have deleted the
+  # very tree the host was serving.
+  if [[ -e "$current" ]]; then
+    active="$(readlink -f "$current" 2>/dev/null || true)"
   fi
-  if [[ "$active" == "$candidate" ]]; then
+  if [[ -n "$active" && "$active" == "$(readlink -f "$candidate" 2>/dev/null || echo "$candidate")" ]]; then
     return 0
   fi
 
   rm -rf "$candidate"
 }
 
-# One exit handler for the whole run, installed before anything is staged or
-# started, and only inside the branch that holds the lock: the outer invocation
-# must not clear staging for a deployment it just refused to interleave with.
-#
+cleanup_done=0
+
 # `incoming/<sha>` is this deployment's staging directory and nothing else's,
 # so clearing it on every path — a rejected checksum, an unhealthy candidate, a
-# SHA that was already active, a signal — never touches another deployment's
-# data. Only the success path used to clear it, which left a failed deploy's
-# archive on the root volume until somebody noticed, and there is nothing in
-# there worth keeping: the same bytes are in S3 under the same SHA.
-on_exit() {
-  local status=$?
+# SHA that was already active, a cancelled command — never touches another
+# deployment's data. Only the success path used to clear it, which left a
+# failed deploy's archive on the root volume until somebody noticed, and there
+# is nothing in there worth keeping: the same bytes are in S3 under the same
+# SHA.
+#
+# Guarded, because four traps share one handler and a signal that arrives
+# during an exit would otherwise run it twice -- the second pass after
+# `abandon_activation` may already have restored `current`, so its decision
+# would depend on which pass got there first.
+run_cleanup() {
+  local failed="$1"
+
+  if (( cleanup_done == 1 )); then
+    return 0
+  fi
+  cleanup_done=1
 
   stop_candidate_server
   rm -rf "$incoming"
-  if (( status != 0 )) && (( candidate_activated == 0 )); then
+  if (( failed != 0 )) && (( candidate_activated == 0 )); then
     discard_candidate
   fi
+}
+
+# Installed before anything is staged or started, and only inside the branch
+# that holds the lock: the outer invocation must not clear staging for a
+# deployment it just refused to interleave with.
+on_exit() {
+  local status=$?
+
+  trap - EXIT HUP INT TERM
+  run_cleanup "$status"
 
   return "$status"
 }
 
+# Systems Manager cancels a command by signalling the installer, and a
+# cancelled workflow run is the ordinary way that happens. `trap ... EXIT`
+# alone does not cover it: bash runs the EXIT trap when the shell exits, and a
+# default-disposition SIGTERM kills it without one, so a cancelled deploy left
+# both the staged archive and a half-built release tree behind.
+#
+# The signal is re-raised rather than turned into `exit 1`, so the status stays
+# what a process killed by it reports. Turning it into an ordinary failure
+# would tell Systems Manager the deployment failed on its own, which is a
+# different thing for an operator to read.
+on_signal() {
+  local name="$1"
+
+  trap - EXIT HUP INT TERM
+  run_cleanup 1
+  echo "deployment interrupted by SIG$name" >&2
+  kill -s "$name" $$
+}
+
 trap on_exit EXIT
+trap 'on_signal HUP' HUP
+trap 'on_signal INT' INT
+trap 'on_signal TERM' TERM
 
 if [[ ! -s "$archive" || ! -s "$checksum_file" ]]; then
   echo "SSM did not stage the release archive and checksum" >&2
@@ -227,12 +291,17 @@ for stale in sorted(entries, key=lambda path: path.stat().st_mtime, reverse=True
 PY
 }
 
+# The rollback target, as an absolute path. Resolved rather than read verbatim
+# for the same reason `discard_candidate` resolves: a relative `current` from
+# an older deploy or a manual repair never compares equal to the absolute
+# candidate path, so a redeploy of the release already running would have
+# missed the early exit below and gone on to `rm -rf` the live tree.
 previous=""
-if [[ -L "$current" ]]; then
-  previous="$(readlink "$current")"
+if [[ -e "$current" ]]; then
+  previous="$(readlink -f "$current" 2>/dev/null || true)"
 fi
 
-if [[ "$previous" == "$candidate" ]]; then
+if [[ -n "$previous" && "$previous" == "$candidate" ]]; then
   echo "release $sha is already active" >&2
   exit 0
 fi
@@ -265,13 +334,39 @@ chmod -R go-w "$candidate"
 # One line per assignment is unambiguous only because the parser refuses a
 # value carrying a control character, which it does for systemd's sake as well:
 # an `EnvironmentFile` assignment cannot represent a newline either.
-if ! assignments="$("$python_bin" - "$etc_dir/config.json" "$etc_dir/session.env" <<'PY'
+#
+# Through a file rather than a command substitution. Bash tracks quotes while
+# it looks for the closing paren of a `$(...)`, even across a quoted heredoc,
+# so an apostrophe in a comment inside the program used to decide whether this
+# script parsed at all -- and it happened to balance. A redirection has no such
+# rule, and `set -e` fails the deployment on a parser that refused the file
+# rather than leaving an empty result to be noticed later.
+#
+# `umask 077` scoped to this line: the file holds the session secret for as
+# long as it takes to read it back.
+environment_dump="$incoming/service-environment"
+(umask 077; : > "$environment_dump")
+"$python_bin" - "$etc_dir/config.json" "$etc_dir/session.env" > "$environment_dump" <<'PY'
 import json
 import re
 import sys
 from pathlib import Path
 
-NAME = re.compile(r"[A-Z][A-Z0-9_]*")
+# Exactly what `local.host_config` declares, and exactly what the service
+# needs. An allowlist rather than a name pattern, because the pattern accepted
+# anything shaped like an environment variable -- including `PATH`, which
+# decides what root's `env` resolves the following command to, and
+# `LD_PRELOAD`, which decides what that command loads. Both apply before
+# `setpriv` drops privileges.
+#
+# Written down here as well as in `main.tf` on purpose: this is the end that
+# has to hold if the file is ever written by something other than the
+# bootstrap this repository ships.
+EXPECTED_CONFIG = frozenset(
+    ("OIDC_ISSUER", "OIDC_CLIENT_ID", "PUBLIC_BASE_URL", "SITE_DIR", "POST_LOGOUT_PATH")
+)
+# Generated on the host, and the only thing that file is for.
+EXPECTED_SESSION = frozenset(("SESSION_SECRET",))
 
 
 def reject(message):
@@ -279,13 +374,36 @@ def reject(message):
 
 
 def accept(resolved, name, value, origin):
-    if not NAME.fullmatch(name):
-        reject(f"{origin}: {name!r} is not an environment variable name")
     if not isinstance(value, str):
         reject(f"{origin}: {name} must be a string")
     if any(character < " " or character == "\x7f" for character in value):
         reject(f"{origin}: {name} carries a control character")
     resolved[name] = value
+
+
+def require_exactly(present, expected, origin):
+    unexpected = sorted(set(present) - expected)
+    missing = sorted(expected - set(present))
+
+    if unexpected:
+        reject(f"{origin}: unexpected {', '.join(unexpected)}")
+    if missing:
+        reject(f"{origin}: missing {', '.join(missing)}")
+
+
+def one_of_each(pairs, origin):
+    """The pairs as a mapping, refusing a name that appears twice.
+
+    JSON permits a repeated member name and every parser silently keeps one of
+    them, so the `SITE_DIR` an operator reads in the file need not be the one
+    that takes effect.
+    """
+    seen = {}
+    for name, value in pairs:
+        if name in seen:
+            reject(f"{origin}: {name} is assigned more than once")
+        seen[name] = value
+    return seen
 
 
 config_path, session_path = (Path(argument) for argument in sys.argv[1:3])
@@ -294,13 +412,17 @@ resolved = {}
 # Terraform's channel onto this host: strict JSON, so a value means exactly
 # what it says and nothing about it is a token.
 try:
-    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config = json.loads(
+        config_path.read_text(encoding="utf-8"),
+        object_pairs_hook=lambda pairs: one_of_each(pairs, config_path),
+    )
 except (OSError, ValueError) as error:
     reject(f"{config_path}: {error}")
 
 if not isinstance(config, dict):
     reject(f"{config_path}: expected a JSON object")
 
+require_exactly(config, EXPECTED_CONFIG, config_path)
 for name, value in config.items():
     accept(resolved, name, value, config_path)
 
@@ -312,32 +434,48 @@ try:
 except OSError as error:
     reject(f"{session_path}: {error}")
 
+session = {}
 for number, line in enumerate(lines, 1):
     if not line.strip() or line.lstrip().startswith(("#", ";")):
         continue
     name, separator, value = line.partition("=")
     if not separator:
         reject(f"{session_path}:{number}: not an assignment")
+    name = name.strip()
+    if name in session:
+        reject(f"{session_path}:{number}: {name} is assigned more than once")
     if value.startswith('"'):
         if len(value) < 2 or not value.endswith('"'):
             reject(f"{session_path}:{number}: unterminated quote")
         value = re.sub(r"\\(.)", r"\1", value[1:-1])
-    accept(resolved, name.strip(), value, session_path)
+    session[name] = value
 
+require_exactly(session, EXPECTED_SESSION, session_path)
+for name, value in session.items():
+    accept(resolved, name, value, session_path)
+
+# Sorted, so the argument list root hands to `env` is the same for the same
+# configuration however the file happened to be ordered. It is the one thing
+# about this step an operator can read back out of an SSM invocation log.
 for name, value in sorted(resolved.items()):
     print(f"{name}={value}")
 PY
-)"; then
-  echo "host configuration under $etc_dir is not usable" >&2
-  exit 1
-fi
 
 service_environment=()
 while IFS= read -r assignment; do
   if [[ -n "$assignment" ]]; then
     service_environment+=("$assignment")
   fi
-done <<< "$assignments"
+done < "$environment_dump"
+# Read once and gone. It holds the session secret, and while it lives in a
+# directory only root can enter and the cleanup handler clears, the shorter it
+# exists the less there is to reason about.
+rm -f "$environment_dump"
+
+if (( ${#service_environment[@]} == 0 )); then
+  echo "host configuration under $etc_dir produced no environment" >&2
+  exit 1
+fi
 
 if [[ -z "$uvicorn_bin" ]]; then
   uvicorn_bin="$candidate/.venv/bin/uvicorn"
@@ -368,7 +506,7 @@ PY
 # is supposed to catch before the swap rather than after it.
 # `SITE_DIR` last, so the candidate serves its own tree rather than whatever
 # the active release is configured to serve.
-env ${service_environment[@]+"${service_environment[@]}"} \
+"$env_bin" ${service_environment[@]+"${service_environment[@]}"} \
   SITE_DIR="$candidate/site" \
   "$timeout_bin" 30 \
   "$setpriv_bin" \
