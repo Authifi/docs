@@ -53,6 +53,152 @@ def callback_session(site_dir: Path, userinfo: dict) -> dict:
     return decode_session_cookie(extract_cookie_value(response.headers["set-cookie"]))
 
 
+# --- The userinfo has to be a mapping at all -----------------------------------
+#
+# `extract_minimal_user` reached straight for `.get`, so a userinfo response
+# that was a JSON string, array, or number raised `AttributeError` rather than
+# the `ValueError` the callback catches. That is not an authentication outcome
+# on the way out: it is an unhandled exception, a `500` built by a different
+# code path, and it happens on input the issuer chose. The shape of somebody
+# else's response is not a reason for this server to break.
+
+NOT_MAPPINGS = {
+    "a-string": "user-123",
+    "an-empty-string": "",
+    "a-list": ["user-123"],
+    "a-list-of-pairs": [["sub", "user-123"]],
+    "a-tuple": ("sub", "user-123"),
+    "a-number": 42,
+    "a-float": 1.5,
+    "a-bool": True,
+    "a-set": {"user-123"},
+    "bytes": b'{"sub": "user-123"}',
+}
+
+
+@pytest.mark.parametrize("userinfo", NOT_MAPPINGS.values(), ids=NOT_MAPPINGS)
+def test_a_userinfo_that_is_not_a_mapping_is_refused_as_a_value_error(
+    userinfo: object,
+) -> None:
+    """One controlled failure type, so the callback's `except` still covers it."""
+    with pytest.raises(ValueError, match="subject"):
+        extract_minimal_user(userinfo)  # type: ignore[arg-type]
+
+
+def test_a_missing_userinfo_is_still_refused_the_same_way() -> None:
+    with pytest.raises(ValueError, match="subject"):
+        extract_minimal_user(None)
+
+
+def test_a_mapping_that_is_not_a_dict_is_still_accepted() -> None:
+    """The contract is `Mapping`, not `dict`. Authlib hands back its own
+    mapping types, so narrowing this to `dict` would refuse real sign-ins."""
+    from collections import UserDict
+
+    userinfo = UserDict({"sub": "user-123", "email": "user@example.com"})
+
+    assert extract_minimal_user(userinfo) == {
+        "sub": "user-123",
+        "email": "user@example.com",
+    }
+
+
+def test_a_mappingproxy_userinfo_is_accepted() -> None:
+    from types import MappingProxyType
+
+    assert extract_minimal_user(MappingProxyType({"sub": "user-123"})) == {"sub": "user-123"}
+
+
+@pytest.mark.parametrize("userinfo", NOT_MAPPINGS.values(), ids=NOT_MAPPINGS)
+def test_the_callback_answers_the_fixed_failure_for_a_non_mapping(
+    site_dir: Path, userinfo: object
+) -> None:
+    """Through the real callback: the same answer a missing subject gets, and
+    nothing about the exception on the way out."""
+    auth_client = DummyAuthClient(token={"userinfo": userinfo})
+    client = authenticated_client(
+        site_dir,
+        auth_client=auth_client,
+        session={"pending_logins": {"st": "/"}},
+        raise_server_exceptions=False,
+    )
+
+    response = client.get("/_auth/callback?code=c&state=st", follow_redirects=False)
+
+    assert response.status_code == 500
+    assert response.text == (
+        "Authentication failed: the identity provider did not return a subject claim."
+    )
+
+
+@pytest.mark.parametrize("userinfo", NOT_MAPPINGS.values(), ids=NOT_MAPPINGS)
+def test_the_refusal_leaks_neither_the_value_nor_the_machinery(
+    site_dir: Path, userinfo: object
+) -> None:
+    auth_client = DummyAuthClient(token={"userinfo": userinfo})
+    client = authenticated_client(
+        site_dir,
+        auth_client=auth_client,
+        session={"pending_logins": {"st": "/"}},
+        raise_server_exceptions=False,
+    )
+
+    response = client.get("/_auth/callback?code=c&state=st", follow_redirects=False)
+
+    for leak in ("AttributeError", "Traceback", "server/app.py", "user-123", "'get'"):
+        assert leak not in response.text
+
+
+def test_a_non_mapping_userinfo_leaves_nobody_signed_in(site_dir: Path) -> None:
+    """Fail closed: the refusal must not be a way in."""
+    auth_client = DummyAuthClient(token={"userinfo": ["user-123"]})
+    client = authenticated_client(
+        site_dir,
+        auth_client=auth_client,
+        session={"pending_logins": {"st": "/"}},
+        raise_server_exceptions=False,
+    )
+
+    response = client.get("/_auth/callback?code=c&state=st", follow_redirects=False)
+
+    assert replay_client(site_dir, response).get("/", follow_redirects=False).status_code == 307
+
+
+def test_a_non_mapping_userinfo_is_logged_without_its_contents(
+    site_dir: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    auth_client = DummyAuthClient(token={"userinfo": ["secret-subject-value"]})
+    client = authenticated_client(
+        site_dir,
+        auth_client=auth_client,
+        session={"pending_logins": {"st": "/"}},
+        raise_server_exceptions=False,
+    )
+
+    with caplog.at_level("ERROR"):
+        client.get("/_auth/callback?code=c&state=st", follow_redirects=False)
+
+    assert "secret-subject-value" not in caplog.text
+    assert "AttributeError" not in caplog.text
+
+
+def test_a_token_that_is_not_a_mapping_is_refused_too(site_dir: Path) -> None:
+    """The same reach-for-`.get` one level up: the token itself is the issuer's."""
+    auth_client = DummyAuthClient(token="not-a-mapping")  # type: ignore[arg-type]
+    client = authenticated_client(
+        site_dir,
+        auth_client=auth_client,
+        session={"pending_logins": {"st": "/"}},
+        raise_server_exceptions=False,
+    )
+
+    response = client.get("/_auth/callback?code=c&state=st", follow_redirects=False)
+
+    assert response.status_code == 500
+    assert "AttributeError" not in response.text
+    assert "Traceback" not in response.text
+
+
 # --- The subject is required, and bounded -------------------------------------
 
 

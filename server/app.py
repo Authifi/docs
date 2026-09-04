@@ -659,7 +659,10 @@ async def callback_endpoint(request: Request) -> Response:
         return refused_login_response(request.session, state, error)
 
     try:
-        user = extract_minimal_user((token or {}).get("userinfo"))
+        # The token is the issuer's too, so it gets the same treatment as the
+        # userinfo inside it: anything that is not a mapping has no `userinfo`
+        # to read, and reaching for one would raise past the handler below.
+        user = extract_minimal_user(token.get("userinfo") if isinstance(token, Mapping) else None)
     except ValueError as error:
         # Fail closed. The message is deliberately claim-shaped only: it must
         # never carry ID or access token material into logs or the response.
@@ -1052,7 +1055,17 @@ def extract_minimal_user(userinfo: Mapping[str, Any] | None) -> dict[str, str]:
     name is strictly better than refusing a legitimate login or shipping a
     cookie the browser will discard.
     """
-    subject = claim_text((userinfo or {}).get("sub"), allow_number=True)
+    if not isinstance(userinfo, Mapping):
+        # Not merely absent: the wrong *kind* of thing. A userinfo response that
+        # is a JSON string, array, or number would otherwise reach `.get` and
+        # raise `AttributeError`, which the callback does not catch -- an
+        # unhandled exception rather than a refused sign-in, on a value the
+        # issuer chose. Folded into the same `ValueError` so there is one
+        # controlled way for this to fail. The type is not named in the message
+        # for the same reason the value is not.
+        raise ValueError("OIDC userinfo has no usable subject claim")
+
+    subject = claim_text(userinfo.get("sub"), allow_number=True)
     if subject is None or not claim_fits(subject, MAX_SUBJECT_BYTES):
         # The value is issuer-controlled and unbounded, so it is described
         # rather than quoted: this message reaches a log line and a response.
