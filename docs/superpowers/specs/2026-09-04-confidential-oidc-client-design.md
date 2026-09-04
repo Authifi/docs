@@ -46,6 +46,19 @@ unreadable, or empty. A failed candidate startup is handled by the existing
 deployment rollback path. The workflow must not print the secret or place it in
 command arguments that AWS records.
 
+## Logged-off landing page
+
+The exact post-logout redirect is `https://docs.authifi.io/logged-off`. Authifi's
+provider normalizes trailing slashes during registered-URI validation, but the
+docs server serves this spelling directly so logout does not add another
+redirect.
+
+`docs/logged-off.md` is an anonymously accessible MkDocs page containing a
+single heading, a short confirmation, and a normal link to `/_auth/login`.
+Protected navigation, protected search, and the signed-in logout control remain
+absent from this public page. The generated `/logged-off/` page remains
+reachable, while `/logged-off` is the configured and documented logout target.
+
 ## Focused verification
 
 The change adds only tests that protect the new boundary:
@@ -55,7 +68,10 @@ The change adds only tests that protect the new boundary:
    persisting its value;
 3. Terraform grants exact-parameter permissions and stores only its name; and
 4. the deployment workflow requires and synchronizes the GitHub Environment
-   secret before invoking SSM.
+   secret before invoking SSM;
+5. `/logged-off` is public, served without a redirect, and links to
+   `/_auth/login`; and
+6. Python, Terraform, and Authifi logout instructions use `/logged-off`.
 
 Existing OIDC, infrastructure, deployment, and release tests remain the
 regression suite. No additional review cycle is planned beyond one focused

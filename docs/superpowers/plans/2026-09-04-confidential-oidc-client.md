@@ -264,7 +264,94 @@ git commit -m "LSA-10037 deliver OIDC client secret through SSM"
 
 ---
 
-### Task 3: Update the operator contract and complete PR 53
+### Task 3: Add the logged-off landing page
+
+**Files:**
+- Create: `docs/logged-off.md`
+- Modify: `docs/hooks/agent_assets.py`
+- Modify: `server/app.py`
+- Modify: `infra/variables.tf`
+- Test: `server/tests/test_app.py`
+- Test: `server/tests/test_public_boundary.py`
+- Test: `server/tests/test_ec2_infra.py`
+
+**Interfaces:**
+- Consumes: `/_auth/login` and the existing public-page chrome suppression.
+- Produces: public `https://docs.authifi.io/logged-off` and default
+  `POST_LOGOUT_PATH=/logged-off`.
+
+- [ ] **Step 1: Write failing page and redirect tests**
+
+Add `/logged-off` to the exact public path contract and assert that an anonymous
+request returns `200`, contains the logged-off heading, and links to
+`/_auth/login` without first returning `308`. Add the generated
+`logged-off/index.html` page to `PUBLIC_PAGE_URLS` so existing tests verify that
+it leaks no protected navigation or search. Change default post-logout
+assertions from `/privacy-policy/` to `/logged-off`.
+
+- [ ] **Step 2: Run focused tests and verify RED**
+
+Run:
+
+```bash
+.venv/bin/python -m pytest \
+  server/tests/test_app.py \
+  server/tests/test_public_boundary.py \
+  server/tests/test_ec2_infra.py \
+  -q
+```
+
+Expected: FAIL because the page, public route, direct extensionless mapping, and
+new defaults do not exist.
+
+- [ ] **Step 3: Add the public page and exact path mapping**
+
+Create:
+
+```markdown
+---
+title: Logged off
+---
+
+# You’ve been logged off
+
+Your Authifi documentation session has ended.
+
+[Sign in to Authifi docs](/_auth/login)
+```
+
+Add `logged-off.md` to `PUBLIC_PAGE_SOURCES`. Add both `/logged-off` and
+`/logged-off/` to `PUBLIC_EXACT_PATHS`, set
+`DEFAULT_POST_LOGOUT_PATH = "/logged-off"`, and map the extensionless path to
+`logged-off/index.html` before directory canonicalization. Change Terraform's
+`post_logout_path` default and accepted public-page list to `/logged-off`.
+
+- [ ] **Step 4: Verify the page boundary**
+
+Run:
+
+```bash
+.venv/bin/python -m pytest \
+  server/tests/test_app.py \
+  server/tests/test_public_boundary.py \
+  server/tests/test_ec2_infra.py \
+  -q
+```
+
+Expected: PASS.
+
+- [ ] **Step 5: Commit the landing page**
+
+```bash
+git add docs/logged-off.md docs/hooks/agent_assets.py server/app.py \
+  infra/variables.tf server/tests/test_app.py \
+  server/tests/test_public_boundary.py server/tests/test_ec2_infra.py
+git commit -m "LSA-10037 add logged-off landing page"
+```
+
+---
+
+### Task 4: Update the operator contract and complete PR 53
 
 **Files:**
 - Modify: `README.md`
@@ -306,7 +393,8 @@ Document:
 
 - confidential Authifi registration with Authorization Code, PKCE S256, and
   `client_secret_post`;
-- exact redirect and post-logout URIs already used by the deployment;
+- callback `https://docs.authifi.io/_auth/callback` and post-logout redirect
+  `https://docs.authifi.io/logged-off`;
 - creation of the GitHub `production` Environment secret
   `OIDC_CLIENT_SECRET`;
 - automatic workflow synchronization to Parameter Store;
