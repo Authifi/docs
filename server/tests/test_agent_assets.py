@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import gzip
 import importlib.util
+import json
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from types import SimpleNamespace
@@ -111,3 +112,39 @@ def test_protected_pages_keep_their_navigation_and_search(src_uri: str) -> None:
 
 def test_public_page_sources_are_a_subset_of_the_public_sitemap() -> None:
     assert set(agent_assets.PUBLIC_PAGE_SOURCES) <= set(agent_assets.PUBLIC_SITEMAP_PATHS)
+
+
+# --- Committed skills index must match the committed skills -------------------
+
+
+SKILLS_DIR = REPO_ROOT / "docs" / ".well-known" / "agent-skills"
+
+
+def committed_index() -> dict:
+    return json.loads((SKILLS_DIR / "index.json").read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize("definition", agent_assets.SKILL_DEFINITIONS, ids=lambda d: d["name"])
+def test_committed_index_digest_matches_the_committed_skill(definition: dict) -> None:
+    """The digest is what an agent uses to trust the file it fetched.
+
+    `on_post_build` rewrites `docs/.well-known/agent-skills/index.json` in
+    place, so editing a SKILL.md without rebuilding publishes a digest for the
+    previous text.
+    """
+    entry = next(item for item in committed_index()["skills"] if item["name"] == definition["name"])
+
+    assert entry["digest"] == agent_assets._sha256_digest(REPO_ROOT / "docs" / definition["path"])
+
+
+@pytest.mark.parametrize("definition", agent_assets.SKILL_DEFINITIONS, ids=lambda d: d["name"])
+def test_committed_index_description_matches_the_hook(definition: dict) -> None:
+    entry = next(item for item in committed_index()["skills"] if item["name"] == definition["name"])
+
+    assert entry["description"] == definition["description"]
+
+
+def test_committed_index_covers_every_defined_skill() -> None:
+    names = {entry["name"] for entry in committed_index()["skills"]}
+
+    assert names == {definition["name"] for definition in agent_assets.SKILL_DEFINITIONS}

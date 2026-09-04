@@ -13,7 +13,7 @@
       "type": "skill-md",
       "description": "Understand Authifi OAuth 2.0 and OIDC concepts as documented, without calling live product APIs.",
       "url": "https://docs.authifi.io/.well-known/agent-skills/authifi-oauth-concepts/SKILL.md",
-      "digest": "sha256:249d40a7000230b758d75e06c293a8af3b6b9ee47df15928acea1d0b5f406de6"
+      "digest": "sha256:8308b54c64f4c51736c994afa733bf0e7eb580bbdad173346826b4852e9e675e"
     }
   ]
 }

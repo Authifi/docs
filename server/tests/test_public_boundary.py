@@ -443,3 +443,71 @@ def test_public_prefixes_are_not_required_to_appear_in_the_sitemap(built_site: P
 
     assert not any(path.startswith(PUBLIC_PREFIXES) for path in sitemap_paths)
     assert (built_site / "assets").is_dir()
+
+
+# --- Public agent skill must describe the real access model -------------------
+#
+# This SKILL.md is itself served publicly, under `/.well-known/`, and is written
+# to be read by agents deciding what they can fetch. Telling them the whole site
+# is public sends them at gated pages and makes the 307 to `/_auth/login` look
+# like a bug rather than the boundary working.
+
+OAUTH_SKILL = (
+    REPO_ROOT / "docs" / ".well-known" / "agent-skills" / "authifi-oauth-concepts" / "SKILL.md"
+)
+GATED_SKILL_LINKS = (
+    "/authorization/authorization/",
+    "/guides/sso-integration-guide/",
+    "/authorization/admin-roles/",
+    "/guides/nhe-delegated-tokens/",
+)
+
+
+def skill_section(markdown: str, heading: str) -> str:
+    body = markdown.split(heading, 1)[1]
+    return body.split("\n## ", 1)[0]
+
+
+def test_the_oauth_skill_never_calls_the_whole_site_public() -> None:
+    text = OAUTH_SKILL.read_text(encoding="utf-8")
+
+    assert "is public and unauthenticated" not in text
+    assert "mixed access" in text.lower()
+
+
+def test_the_oauth_skill_lists_exactly_the_server_public_allowlist() -> None:
+    section = skill_section(OAUTH_SKILL.read_text(encoding="utf-8"), "## Access model")
+    listed = set(re.findall(r"^- `([^`]+)`$", section, flags=re.MULTILINE))
+
+    assert listed == PUBLIC_EXACT_PATHS | set(PUBLIC_PREFIXES)
+    for path in listed:
+        assert is_public_path(path), path
+
+
+@pytest.mark.parametrize("path", GATED_SKILL_LINKS)
+def test_the_documentation_the_skill_links_to_is_actually_gated(path: str) -> None:
+    """If one of these ever becomes public, the caveat below needs revisiting."""
+    assert not is_public_path(path)
+    assert path in OAUTH_SKILL.read_text(encoding="utf-8")
+
+
+def test_the_oauth_skill_warns_that_its_links_need_an_interactive_login() -> None:
+    text = OAUTH_SKILL.read_text(encoding="utf-8").lower()
+
+    assert "interactive" in text
+    assert "sign in" in text or "sign-in" in text or "login" in text
+
+
+def test_the_oauth_skill_rules_out_an_api_token_bypass() -> None:
+    """v1 issues no agent credential, and an agent should not go looking."""
+    text = OAUTH_SKILL.read_text(encoding="utf-8").lower()
+
+    assert "api token" in text or "api-token" in text
+    assert "v1" in text
+
+
+def test_the_oauth_skill_denies_an_oauth_server_on_the_docs_domain() -> None:
+    text = OAUTH_SKILL.read_text(encoding="utf-8").lower()
+
+    assert "not an oauth authorization server" in text
+    assert "token endpoint" in text
