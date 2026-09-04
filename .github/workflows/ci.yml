@@ -130,6 +130,13 @@ jobs:
           fi
 
           curl --fail --silent --show-error "${base_url}/health" | grep -q '"status":"ok"'
+
+          # Both lists are read out of the module here, before the loop starts.
+          # A heredoc written inside the loop body would carry the loop's
+          # indentation, and an indented terminator never closes a quoted
+          # heredoc: the shell swallows the rest of the step and dies at
+          # `unexpected end of file`. YAML strips the block's own indentation
+          # and nothing else, so a heredoc only works at this level.
           mapfile -t bypass_probes < <(python - <<'PY'
           from server.local_smoke import BYPASS_PROBE_PATHS
 
@@ -137,6 +144,19 @@ jobs:
               print(path)
           PY
           )
+          mapfile -t protected_markers < <(python - <<'PY'
+          from server.local_smoke import PROTECTED_CONTENT_MARKERS
+
+          for marker in PROTECTED_CONTENT_MARKERS:
+              print(marker)
+          PY
+          )
+
+          # An empty list would make every check below vacuous.
+          if (( ${#bypass_probes[@]} == 0 || ${#protected_markers[@]} == 0 )); then
+            echo "Expected non-empty traversal probe paths and protected content markers" >&2
+            exit 1
+          fi
 
           for probe in "${bypass_probes[@]}"; do
             body_file="$(mktemp)"
@@ -150,25 +170,14 @@ jobs:
               exit 1
             fi
 
-            if ! python - "$probe" "$body_file" <<'PY'
-            from pathlib import Path
-            import sys
-
-            from server.local_smoke import PROTECTED_CONTENT_MARKERS
-
-            path = sys.argv[1]
-            body = Path(sys.argv[2]).read_text(encoding="utf-8", errors="replace")
-            for marker in PROTECTED_CONTENT_MARKERS:
-                if marker in body:
-                    raise SystemExit(
-                        f"bypass probe {path!r} leaked protected content marker {marker!r}"
-                    )
-            PY
-            then
-              cat "$body_file" >&2
-              rm -f "$body_file"
-              exit 1
-            fi
+            for marker in "${protected_markers[@]}"; do
+              if grep --fixed-strings --quiet -- "$marker" "$body_file"; then
+                echo "Encoded traversal probe $probe leaked protected content marker $marker" >&2
+                cat "$body_file" >&2
+                rm -f "$body_file"
+                exit 1
+              fi
+            done
 
             rm -f "$body_file"
           done
