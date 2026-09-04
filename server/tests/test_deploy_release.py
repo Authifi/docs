@@ -289,6 +289,8 @@ if event == "restart":
             stream.write("systemctl:restart-failed\\n")
         sys.exit(1)
     service_state.write_text("running\\n", encoding="utf-8")
+elif event == "start":
+    service_state.write_text("running\\n", encoding="utf-8")
 elif event == "stop":
     service_state.unlink(missing_ok=True)
 sys.exit(0)
@@ -1289,19 +1291,48 @@ def test_a_relative_current_symlink_survives_a_failing_deployment(
 def test_redeploying_the_active_release_keeps_the_tree_it_is_serving(
     deploy_harness: DeployHarness,
 ) -> None:
-    """The early exit that reports "already active" returns zero, and the
-    directory it declines to reinstall is the one systemd is running from."""
+    """A same-SHA deployment reloads runtime configuration without replacing
+    the directory systemd is already serving."""
     sha = "7" * 38 + "de"
     deploy_harness.publish_archive(sha)
     assert deploy_harness.run(sha).returncode == 0
+    deploy_harness.events_file.unlink()
 
     deploy_harness.publish_archive(sha)
     result = deploy_harness.run(sha)
 
     assert result.returncode == 0
     assert "already active" in result.stderr
+    assert deploy_harness.events.count("systemctl:restart") == 1
+    assert "active-health" in deploy_harness.events
+    assert deploy_harness.events.index("candidate-health") < deploy_harness.events.index(
+        "systemctl:restart"
+    )
     assert (deploy_harness.releases / sha / "site" / "index.html").is_file()
     assert deploy_harness.current.resolve().name == sha
+
+
+def test_same_sha_restart_failure_recovers_the_active_service(
+    deploy_harness: DeployHarness,
+) -> None:
+    sha = "7" * 38 + "df"
+    deploy_harness.publish_archive(sha)
+    assert deploy_harness.run(sha).returncode == 0
+    deploy_harness.events_file.unlink()
+    deploy_harness.fail_first_restart = True
+
+    deploy_harness.publish_archive(sha)
+    result = deploy_harness.run(sha)
+
+    assert result.returncode == 0
+    assert deploy_harness.events == [
+        "candidate-health",
+        "systemctl:restart",
+        "systemctl:restart-failed",
+        "systemctl:start",
+        "active-health",
+    ]
+    assert deploy_harness.service_running
 
 
 def test_a_successful_deployment_keeps_the_tree_it_just_activated(

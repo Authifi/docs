@@ -1340,6 +1340,26 @@ def test_teardown_docs_apply_both_deletion_flags_before_destroy() -> None:
     assert apply_pos < destroy_pos
 
 
+def test_teardown_deletes_the_secret_from_the_terraform_region() -> None:
+    region_capture = 'aws_region="$(terraform -chdir=infra output -raw aws_region)"'
+    parameter_delete = "aws ssm delete-parameter"
+    region_position = INFRA_README.index(region_capture)
+    teardown_block = INFRA_README[
+        INFRA_README.rindex("```bash", 0, region_position) :
+        INFRA_README.index("```", INFRA_README.index(parameter_delete))
+    ]
+
+    assert region_capture in INFRA_README
+    assert '--region "$aws_region"' in INFRA_README
+    assert "--region us-east-1" not in INFRA_README
+    assert teardown_block.splitlines()[1] == "set -euo pipefail"
+    assert (
+        INFRA_README.index(region_capture)
+        < INFRA_README.index("terraform -chdir=infra destroy")
+        < INFRA_README.index(parameter_delete)
+    )
+
+
 # --- The public edge, continued -----------------------------------------------
 
 
@@ -1451,9 +1471,10 @@ def test_send_command_names_the_one_document_and_the_one_instance() -> None:
 def test_the_deploy_role_trusts_exactly_the_subject_the_workflow_presents() -> None:
     """The job declares `environment: production`, and that changes the token.
 
-    GitHub's default subject names the environment when a job references one,
-    so the subject this workflow actually presents is
-    `repo:<owner>/<name>:environment:<environment>` -- not the `:ref:` form.
+    GitHub's immutable subject names the owner and repository IDs plus the
+    environment when a job references one, so the subject this workflow
+    actually presents is
+    `repo:<owner>@<owner-id>/<name>@<repo-id>:environment:<environment>`.
     A trust policy pinned to the ref form does not fail a plan, a validate, or
     any assertion about IAM shape: it fails the first real deployment with
     `Not authorized to perform sts:AssumeRoleWithWebIdentity`, after the
@@ -1467,13 +1488,34 @@ def test_the_deploy_role_trusts_exactly_the_subject_the_workflow_presents() -> N
 
     assert environment == variable_default("deploy_environment")
 
-    subject = f"repo:{variable_default('github_repository')}:environment:{environment}"
+    subject = variable_default("github_repository_subject")
     assert conditions["sub"] == ("StringEquals", [subject])
 
-    # The obsolete form, named explicitly: it is what this repository had, and
-    # it is the plausible thing for someone to restore while "simplifying".
+    assert subject == "repo:Authifi@37509689/docs@993416679:environment:production"
     assert ":ref:" not in subject
-    assert resolve(attribute(LOCALS, "github_repository_subject") or "") == subject
+
+
+def test_the_immutable_subject_must_match_its_companion_trust_inputs() -> None:
+    role = hcl_block(MAIN, 'resource "aws_iam_role" "github_deploy"')
+    lifecycle = hcl_block(role, "lifecycle")
+    precondition = hcl_block(lifecycle, "precondition")
+    condition = attribute(precondition, "condition")
+
+    assert variable_default("github_repository_owner_id") == "37509689"
+    assert condition == (
+        'var.github_repository_subject == '
+        '"repo:${split("/", var.github_repository)[0]}'
+        '@${var.github_repository_owner_id}/'
+        '${split("/", var.github_repository)[1]}'
+        '@${var.github_repository_id}:environment:${var.deploy_environment}"'
+    )
+
+
+def test_immutable_subject_accepts_a_supported_environment_name_with_spaces() -> None:
+    subject = "repo:Authifi@37509689/docs@993416679:environment:production west"
+
+    assert variable_accepts(VARIABLES, "deploy_environment", "production west")
+    assert variable_accepts(VARIABLES, "github_repository_subject", subject)
 
 
 def test_the_deploy_role_binds_the_branch_and_the_repository_identity_too() -> None:

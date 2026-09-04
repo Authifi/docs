@@ -69,10 +69,12 @@ existing_github_oidc_provider_arn = null
 # (`gh api repos/Authifi/docs --jq .id`). Numeric IDs are never reused, so this
 # is the part of the identity that a repository recreated under the same name
 # cannot inherit.
-github_repository    = "Authifi/docs"
-github_repository_id = "993416679"
-deploy_branch        = "main"
-deploy_environment   = "production"
+github_repository         = "Authifi/docs"
+github_repository_subject = "repo:Authifi@37509689/docs@993416679:environment:production"
+github_repository_owner_id = "37509689"
+github_repository_id      = "993416679"
+deploy_branch             = "main"
+deploy_environment        = "production"
 
 tags = {
   Environment = "prod"

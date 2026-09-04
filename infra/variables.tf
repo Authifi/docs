@@ -285,6 +285,28 @@ variable "github_repository" {
   }
 }
 
+variable "github_repository_subject" {
+  description = "Exact OIDC subject GitHub issues to the production deployment job, as observed in AWS CloudTrail."
+  type        = string
+  default     = "repo:Authifi@37509689/docs@993416679:environment:production"
+
+  validation {
+    condition     = can(regex("^repo:[A-Za-z0-9._-]+@[0-9]+/[A-Za-z0-9._-]+@[0-9]+:environment:[A-Za-z0-9._ -]+$", var.github_repository_subject))
+    error_message = "github_repository_subject must be the exact immutable GitHub OIDC subject for an environment deployment."
+  }
+}
+
+variable "github_repository_owner_id" {
+  description = "Numeric GitHub owner ID encoded in github_repository_subject."
+  type        = string
+  default     = "37509689"
+
+  validation {
+    condition     = can(regex("^[0-9]+$", var.github_repository_owner_id))
+    error_message = "github_repository_owner_id must be the numeric organization or user ID returned by the GitHub API."
+  }
+}
+
 variable "github_repository_id" {
   description = "Numeric GitHub repository ID of github_repository, bound as the OIDC repository_id claim. Numeric IDs are never reused, so this is what a repository deleted and recreated under the same name cannot inherit."
   type        = string

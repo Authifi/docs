@@ -319,24 +319,26 @@ if [[ -e "$current" ]]; then
   previous="$(readlink -f "$current" 2>/dev/null || true)"
 fi
 
+already_active=0
 if [[ -n "$previous" && "$previous" == "$candidate" ]]; then
-  echo "release $sha is already active" >&2
-  exit 0
+  already_active=1
 fi
 
-rm -rf "$candidate"
-mkdir -p "$candidate"
-chmod 0755 "$candidate"
-tar -xzf "$archive" -C "$candidate"
+if (( already_active == 0 )); then
+  rm -rf "$candidate"
+  mkdir -p "$candidate"
+  chmod 0755 "$candidate"
+  tar -xzf "$archive" -C "$candidate"
 
-"$python_bin" -m venv "$candidate/.venv"
-"$candidate/.venv/bin/pip" install --no-index \
-  --find-links "$candidate/wheelhouse" \
-  -r "$candidate/requirements.txt"
-# `python -m venv` copies its activation templates with their packaged modes,
-# so a writable template bypasses this script's umask. Normalise the whole
-# candidate only after every writer that populates it has finished.
-chmod -R go-w "$candidate"
+  "$python_bin" -m venv "$candidate/.venv"
+  "$candidate/.venv/bin/pip" install --no-index \
+    --find-links "$candidate/wheelhouse" \
+    -r "$candidate/requirements.txt"
+  # `python -m venv` copies its activation templates with their packaged modes,
+  # so a writable template bypasses this script's umask. Normalise the whole
+  # candidate only after every writer that populates it has finished.
+  chmod -R go-w "$candidate"
+fi
 
 # The candidate server's environment, parsed rather than sourced.
 #
@@ -555,6 +557,22 @@ if ! poll_health "http://127.0.0.1:$candidate_port/health" "$candidate_attempts"
 fi
 
 stop_candidate_server
+
+if (( already_active == 1 )); then
+  echo "release $sha is already active; reloading runtime configuration" >&2
+  if ! "$systemctl_bin" restart authifi-docs; then
+    echo "active release failed to restart; attempting recovery start" >&2
+    if ! "$systemctl_bin" start authifi-docs; then
+      echo "active release failed recovery start" >&2
+      exit 1
+    fi
+  fi
+  if ! poll_health "http://127.0.0.1:8080/health" "$active_attempts"; then
+    echo "active release failed health check after configuration reload" >&2
+    exit 1
+  fi
+  exit 0
+fi
 
 # Everything past the swap fails the same way and has to be undone the same
 # way. `systemctl restart` returning non-zero used to end the installer on the

@@ -206,23 +206,23 @@ That keeps the first apply unblocked on external DNS and makes the cutover a sec
 
 `enable_alb_deletion_protection` defaults to `true`. The load balancer owns the name users reach the docs through and serves the certificate that name is covered by, so deleting it is a DNS-visible outage that one misdirected `terraform destroy` or stray `-target` can cause — and it is not recoverable in place, because the replacement has a different DNS name and the external record has to be moved again.
 
-The release bucket is versioned and holds every release archive. `release_bucket_force_destroy` defaults to `false`, so Terraform refuses to delete it while any object remains. Ordinary applies are unaffected; teardown is one apply longer and names both opt-ins:
+The release bucket is versioned and holds every release archive. `release_bucket_force_destroy` defaults to `false`, so Terraform refuses to delete it while any object remains. Ordinary applies are unaffected; teardown is one apply longer and names both opt-ins.
+
+The client-secret parameter is workflow-managed so its value never enters
+Terraform state. Capture its region before destroying that state, then delete
+the final runtime setting after Terraform finishes:
 
 ```bash
+set -euo pipefail
+aws_region="$(terraform -chdir=infra output -raw aws_region)"
 terraform -chdir=infra apply -var-file=terraform.tfvars \
   -var='enable_alb_deletion_protection=false' \
   -var='release_bucket_force_destroy=true'
 terraform -chdir=infra destroy -var-file=terraform.tfvars \
   -var='enable_alb_deletion_protection=false' \
   -var='release_bucket_force_destroy=true'
-```
-
-The client-secret parameter is workflow-managed so its value never enters
-Terraform state. Delete that final runtime setting explicitly during teardown:
-
-```bash
 aws ssm delete-parameter \
-  --region us-east-1 \
+  --region "$aws_region" \
   --name /authifi-docs/oidc-client-secret
 ```
 
@@ -235,16 +235,16 @@ The deploy role trusts **only** the deployment job in `Authifi/docs`, on `main`,
 | Claim | Value | Terraform input |
 |---|---|---|
 | `aud` | `sts.amazonaws.com` | fixed |
-| `sub` | `repo:Authifi/docs:environment:production` | `github_repository`, `deploy_environment` |
+| `sub` | `repo:Authifi@37509689/docs@993416679:environment:production` | `github_repository_subject` |
 | `environment` | `production` | `deploy_environment` |
 | `ref` | `refs/heads/main` | `deploy_branch` |
 | `repository_id` | `993416679` | `github_repository_id` |
 
-The subject is **not** `repo:Authifi/docs:ref:refs/heads/main`. The deployment job declares `environment: production`, and GitHub's default subject names the environment rather than the ref whenever a job references one, so the ref-form subject is a value this workflow can never present. Nothing in `terraform plan`, `terraform validate`, or the repository's tests would catch the mismatch on its own — the symptom is `Not authorized to perform sts:AssumeRoleWithWebIdentity` on the first real deployment, after the release archive has already been uploaded. `server/tests/test_ec2_infra.py` derives the expected subject from the workflow's own `environment:` value so the two cannot drift.
+The subject is **not** `repo:Authifi/docs:ref:refs/heads/main`. The deployment job declares `environment: production`, and GitHub names that environment in the immutable subject. A different subject fails role assumption with `Not authorized to perform sts:AssumeRoleWithWebIdentity`; `server/tests/test_ec2_infra.py` pins the value observed in CloudTrail and separately verifies the workflow environment.
 
-The branch is bound separately, through the token's own `ref` claim, because an environment-scoped subject says nothing about which branch the run started from. `repository_id` pins the numeric repository ID, which GitHub never reuses, so a repository deleted and recreated at `Authifi/docs` — or renamed into that path — does not inherit the trust. Read it with `gh api repos/Authifi/docs --jq .id`.
+The branch is bound separately, through the token's own `ref` claim, because an environment-scoped subject says nothing about which branch the run started from. The immutable subject and separate `repository_id` condition pin numeric owner and repository IDs, which GitHub never reuses, so a repository deleted and recreated at `Authifi/docs` — or renamed into that path — does not inherit the trust. Read the IDs with `gh api orgs/Authifi --jq .id` and `gh api repos/Authifi/docs --jq .id`.
 
-One caveat worth knowing before changing org policy: this is the **legacy, mutable** subject format, which is what this repository's OIDC customisation currently returns (`use_default` true, `use_immutable_subject` false — check with `gh api repos/Authifi/docs/actions/oidc/customization/sub`). Enabling immutable subjects rewrites the claim to `repo:Authifi@37509689/docs@993416679:environment:production`, and `local.github_repository_subject` in `main.tf` has to change in the same commit.
+The effective subject was verified from the failed assumption event in AWS CloudTrail. Use that runtime evidence when GitHub's repository customization endpoint reports settings that disagree with tokens actually issued to workflows.
 
 If the AWS account already has a shared GitHub OIDC provider, set `existing_github_oidc_provider_arn`. Otherwise this module creates the account-level provider for `https://token.actions.githubusercontent.com`.
 
