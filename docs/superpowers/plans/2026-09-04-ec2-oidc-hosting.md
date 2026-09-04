@@ -219,7 +219,7 @@ Run:
   server/tests/test_app.py \
   server/tests/test_concurrent_logins.py \
   server/tests/test_compose.py -q
-docker compose -f compose.yaml -f compose.real.yaml config --quiet
+docker compose --env-file .env.example -f compose.yaml -f compose.real.yaml config --quiet
 ```
 
 Expected: all selected tests pass and Compose exits 0.
