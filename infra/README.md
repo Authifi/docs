@@ -203,6 +203,22 @@ terraform -chdir=infra output -raw apprunner_service_arn
 terraform -chdir=infra output -raw ecr_repository_url
 ```
 
+One optional variable, `APP_RUNNER_SERVICE_URL`, controls where the deploy
+workflow's post-deploy check points. After waiting for the App Runner operation,
+the workflow requests `/privacy-policy/` from the live origin and requires HTTP
+200 with a `text/html` content type, so a container that starts but cannot serve
+fails the deploy rather than the next visitor.
+
+Leave the variable unset and the check uses the App Runner hostname from
+`describe-service`, which always exists and needs no configuration. Set it once
+DNS is cut over to verify the origin real users reach:
+
+```bash
+terraform -chdir=infra output -raw apprunner_service_https_url  # App Runner hostname
+# or, after cutover, the custom domain:
+terraform -chdir=infra output -raw custom_domain_cname_record
+```
+
 ## Runtime Configuration
 
 Plain App Runner environment variables, all set from Terraform variables of the

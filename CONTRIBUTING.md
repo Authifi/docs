@@ -57,6 +57,17 @@ Bring the local stack down with:
 make local-down
 ```
 
+The mock issuer URL has to resolve to the same place on your machine and inside the docs container, so `MOCK_OIDC_HOST` defaults to `oidc-mock.127.0.0.1.nip.io`, a public wildcard resolver that maps any `*.127.0.0.1.nip.io` name to `127.0.0.1`. That means the default needs working public DNS, and it fails in two ways that look like a broken mock rather than a broken lookup: offline or egress-filtered machines cannot resolve it at all, and DNS rebinding protection on many routers, corporate resolvers, and systemd-resolved setups deliberately drops answers pointing at loopback.
+
+If discovery times out or the smoke cannot reach the issuer, use a locally resolved name instead:
+
+```bash
+echo "127.0.0.1 oidc-mock.local.test" | sudo tee -a /etc/hosts
+echo "MOCK_OIDC_HOST=oidc-mock.local.test" >> .env
+```
+
+`compose.mock.yaml` maps whatever `MOCK_OIDC_HOST` you set onto the Docker host gateway, so the container follows automatically. CI does exactly this, which is why the workflow has no `nip.io` dependency. Note the separate rootless-Docker caveat about `host-gateway` in [`docs/operations/aws-oidc-hosting.md`](docs/operations/aws-oidc-hosting.md).
+
 ## Writing And Navigation
 
 - Write documentation in Markdown unless a page intentionally needs raw HTML, such as `docs/sms-opt-in.html`.

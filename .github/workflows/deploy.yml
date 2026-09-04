@@ -18,6 +18,15 @@ env:
   AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
   APP_RUNNER_SERVICE_ARN: ${{ vars.APP_RUNNER_SERVICE_ARN }}
   ECR_REPOSITORY_URL: ${{ vars.ECR_REPOSITORY_URL }}
+  # Optional. Set it to the public origin (terraform output public_base_url, or
+  # the custom domain) to verify the deploy through the URL real users hit.
+  # Unset, the post-deploy check falls back to the App Runner service hostname
+  # reported by describe-service, which always exists.
+  APP_RUNNER_SERVICE_URL: ${{ vars.APP_RUNNER_SERVICE_URL }}
+  # A page the server returns to anonymous callers, so the check needs no
+  # credentials and no OIDC round trip.
+  POST_DEPLOY_PROBE_PATH: /privacy-policy/
+  BUILDX_BUILDER_NAME: authifi-docs-builder
 
 jobs:
   deploy:
@@ -57,14 +66,28 @@ jobs:
           # The ECR repository is immutable, so a rerun of this workflow cannot
           # push the same SHA tag again. Detect the existing image and skip
           # straight to the App Runner update instead of failing the rerun.
+          #
+          # Only a genuine "not found" means there is nothing to skip. Treating
+          # AccessDenied or throttling as "not found" would push a rebuilt image
+          # over a tag that may already exist, or bury a broken IAM policy under
+          # a confusing push failure, so every other error stops the deploy with
+          # the API's own message.
+          describe_stderr="$(mktemp)"
           if aws ecr describe-images \
             --repository-name "$repository_name" \
             --image-ids "imageTag=${IMAGE_TAG}" \
-            --output json > /dev/null 2>&1; then
+            --output json > /dev/null 2> "$describe_stderr"; then
             echo "Image $image_uri already exists in ECR; skipping build and push."
             already_pushed=true
-          else
+          elif grep -q 'ImageNotFoundException' "$describe_stderr"; then
+            echo "Image $image_uri is not in ECR yet; it will be built and pushed."
             already_pushed=false
+          else
+            echo "Could not determine whether $image_uri exists in ECR." >&2
+            echo "aws ecr describe-images failed with:" >&2
+            cat "$describe_stderr" >&2
+            echo "Repository: $repository_name, region: ${AWS_REGION}, role: ${AWS_DEPLOY_ROLE_ARN}" >&2
+            exit 1
           fi
 
           {
@@ -83,7 +106,18 @@ jobs:
           # App Runner only runs linux/amd64. Build through a docker-container
           # buildx builder so the platform is explicit and independent of the
           # runner's own architecture.
-          docker buildx create --name authifi-docs-builder --driver docker-container --use
+          #
+          # Reuse the builder if one is already present. `buildx create` fails
+          # on an existing name, which would break any rerun on a self-hosted or
+          # otherwise non-ephemeral runner.
+          if docker buildx inspect "$BUILDX_BUILDER_NAME" > /dev/null 2>&1; then
+            echo "Reusing existing buildx builder $BUILDX_BUILDER_NAME."
+          else
+            docker buildx create --name "$BUILDX_BUILDER_NAME" --driver docker-container
+          fi
+          docker buildx use "$BUILDX_BUILDER_NAME"
+          docker buildx inspect --bootstrap "$BUILDX_BUILDER_NAME"
+
           docker buildx build \
             --platform linux/amd64 \
             --provenance false \
@@ -95,7 +129,7 @@ jobs:
         if: always()
         run: |
           set -euo pipefail
-          docker buildx rm authifi-docs-builder || true
+          docker buildx rm "$BUILDX_BUILDER_NAME" || true
 
       - name: Update App Runner source image
         id: deploy
@@ -206,3 +240,64 @@ jobs:
             aws apprunner describe-service --service-arn "$APP_RUNNER_SERVICE_ARN" --output json
             exit 1
           fi
+
+      - name: Verify the deployed site answers publicly
+        run: |
+          set -euo pipefail
+
+          # RUNNING with the right image only says the container started. This
+          # asks the live origin for a page an anonymous visitor gets, so a
+          # broken build, a bad SITE_DIR, or a config that fails startup
+          # validation shows up here rather than in a user's browser.
+          base_url="${APP_RUNNER_SERVICE_URL:-}"
+          if [[ -z "$base_url" ]]; then
+            service_host="$(aws apprunner describe-service \
+              --service-arn "$APP_RUNNER_SERVICE_ARN" \
+              --query 'Service.ServiceUrl' \
+              --output text)"
+
+            if [[ -z "$service_host" || "$service_host" == "None" ]]; then
+              echo "App Runner did not report a service URL, and APP_RUNNER_SERVICE_URL is unset." >&2
+              exit 1
+            fi
+            base_url="https://${service_host}"
+          fi
+
+          base_url="${base_url%/}"
+          if [[ "$base_url" != https://* ]]; then
+            base_url="https://${base_url#http://}"
+          fi
+          probe_url="${base_url}${POST_DEPLOY_PROBE_PATH}"
+          echo "Probing $probe_url"
+
+          # App Runner can report RUNNING a moment before the new revision is
+          # actually taking traffic, so allow a short window rather than
+          # failing the deploy on a single early request.
+          deadline=$((SECONDS + 300))
+          attempt=0
+          while true; do
+            attempt=$((attempt + 1))
+            response_headers="$(mktemp)"
+            # curl writes 000 itself when it never got a response, so keep its
+            # output rather than appending a second placeholder.
+            status="$(curl --silent --show-error --location --max-time 30 \
+              --output /dev/null --dump-header "$response_headers" \
+              --write-out '%{http_code}' "$probe_url" || true)"
+            status="${status:-000}"
+            content_type="$(grep -i '^content-type:' "$response_headers" | tail -n 1 | cut -d: -f2- | tr -d '\r' | xargs || true)"
+
+            if [[ "$status" == "200" && "$content_type" == text/html* ]]; then
+              echo "Post-deploy check passed on attempt $attempt: $status, $content_type"
+              break
+            fi
+
+            if (( SECONDS >= deadline )); then
+              echo "Post-deploy check failed for $probe_url" >&2
+              echo "Expected HTTP 200 with Content-Type text/html, got status $status and content type '${content_type}'" >&2
+              cat "$response_headers" >&2
+              exit 1
+            fi
+
+            echo "Attempt $attempt: status $status, content type '${content_type}'; retrying..."
+            sleep 10
+          done
