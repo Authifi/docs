@@ -14,6 +14,8 @@ is a map of pages you probably cannot fetch.
 
 These paths are fetchable without credentials:
 
+- `/logged-off`
+- `/logged-off/`
 - `/privacy-policy/`
 - `/terms-of-service/`
 - `/sms-opt-in.html`

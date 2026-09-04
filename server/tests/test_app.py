@@ -49,6 +49,8 @@ def test_redirects_unauthenticated_root_to_login_with_safe_next(site_dir: Path) 
 @pytest.mark.parametrize(
     "path",
     [
+        "/logged-off",
+        "/logged-off/",
         "/privacy-policy/",
         "/terms-of-service/",
         "/sms-opt-in.html",
@@ -69,6 +71,16 @@ def test_allows_public_paths_without_session(site_dir: Path, path: str) -> None:
     response = client.get(path, follow_redirects=False)
 
     assert response.status_code == 200
+
+
+def test_logged_off_page_is_public_without_a_trailing_slash(site_dir: Path) -> None:
+    client = build_client(site_dir)
+
+    response = client.get("/logged-off", follow_redirects=False)
+
+    assert response.status_code == 200
+    assert "You’ve been logged off" in response.text
+    assert 'href="/_auth/login"' in response.text
 
 
 def test_redirects_private_search_index_without_session(site_dir: Path) -> None:
@@ -121,6 +133,7 @@ def test_serves_authenticated_root_with_link_headers(site_dir: Path) -> None:
         ),
         ("/.well-known/agent-skills/index.json", "application/json"),
         ("/auth.md", "text/markdown; charset=utf-8"),
+        ("/logged-off", "text/html; charset=utf-8"),
         ("/privacy-policy/", "text/html; charset=utf-8"),
         ("/terms-of-service/", "text/html; charset=utf-8"),
         ("/sms-opt-in.html", "text/html; charset=utf-8"),

@@ -1211,6 +1211,16 @@ def test_oidc_secret_parameter_name_and_role_permissions_are_fixed() -> None:
     assert "kms:" not in deploy_policy
 
 
+def test_post_logout_path_defaults_to_the_logged_off_page() -> None:
+    post_logout = hcl_block(VARIABLES, 'variable "post_logout_path"')
+
+    assert attribute(post_logout, "default") == '"/logged-off"'
+    assert variable_accepts(VARIABLES, "post_logout_path", "/logged-off")
+    assert not variable_accepts(
+        VARIABLES, "post_logout_path", "/guides/sso-integration-guide/"
+    )
+
+
 def test_the_private_subnet_is_checked_for_a_route_to_the_shared_nat() -> None:
     """`map_public_ip_on_launch == false` proves the subnet is not public. It
     does not prove there is a way out, and a subnet with no default route at all
@@ -1766,7 +1776,7 @@ BOOTSTRAP_VALUES = {
     "oidc_client_secret_parameter_name": "/authifi-docs/oidc-client-secret",
     "public_base_url": "https://docs.authifi.io",
     "site_dir": "/opt/authifi-docs/current/site",
-    "post_logout_path": "/privacy-policy/",
+    "post_logout_path": "/logged-off",
     "app_port": "8080",
 }
 

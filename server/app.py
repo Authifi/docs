@@ -32,6 +32,8 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 logger = logging.getLogger("authifi.docs")
 
 PUBLIC_EXACT_PATHS = {
+    "/logged-off",
+    "/logged-off/",
     "/privacy-policy/",
     "/terms-of-service/",
     "/sms-opt-in.html",
@@ -41,6 +43,7 @@ PUBLIC_EXACT_PATHS = {
 }
 PUBLIC_AUTH_PATHS = {"/_auth/login", "/_auth/callback", "/_auth/logout"}
 PUBLIC_PREFIXES = ("/.well-known/", "/assets/", "/javascripts/", "/stylesheets/")
+EXTENSIONLESS_PAGE_FILES = {"/logged-off": "logged-off/index.html"}
 # POSIX `NAME_MAX`, in bytes. A longer path component cannot name anything on
 # the filesystems this is deployed on, so it is refused before it is probed.
 MAX_PATH_SEGMENT_BYTES = 255
@@ -83,7 +86,7 @@ SESSION_MAX_AGE_SECONDS = 8 * 60 * 60
 # A separate setting from the one above because it answers a separate question:
 # without it, a tab left open and occasionally clicked never expires at all.
 ABSOLUTE_SESSION_LIFETIME_SECONDS = 8 * 60 * 60
-DEFAULT_POST_LOGOUT_PATH = "/privacy-policy/"
+DEFAULT_POST_LOGOUT_PATH = "/logged-off"
 
 # `303 See Other` is the status that ends a POST: it tells the browser the
 # submission is finished and the thing to fetch next is a `GET`. Starlette's
@@ -976,6 +979,10 @@ def normalize_next_path(candidate: str | None, default: str = "/") -> str:
 
 
 def site_relative_path(canonical_path: str) -> str:
+    extensionless_page = EXTENSIONLESS_PAGE_FILES.get(canonical_path)
+    if extensionless_page is not None:
+        return extensionless_page
+
     relative_path = canonical_path.lstrip("/")
     if canonical_path.endswith("/") or not relative_path:
         relative_path = f"{relative_path}index.html"
@@ -1025,7 +1032,7 @@ def resolve_site_file(site_dir: Path, canonical_path: str) -> Path | None:
 
 def directory_redirect_target(site_dir: Path, canonical_path: str) -> str | None:
     """Return the trailing-slash form for an existing directory page."""
-    if canonical_path.endswith("/"):
+    if canonical_path.endswith("/") or canonical_path in EXTENSIONLESS_PAGE_FILES:
         return None
 
     candidate = resolve_within_site(site_dir, canonical_path.lstrip("/"))

@@ -39,6 +39,10 @@ HEADERS_FILE = (
 
 SITE_FILES: Mapping[str, str] = {
     "index.html": "<h1>Private home</h1>",
+    "logged-off/index.html": (
+        "<h1>You’ve been logged off</h1>"
+        '<a href="/_auth/login">Sign in to Authifi docs</a>'
+    ),
     "privacy-policy/index.html": "<h1>Privacy</h1>",
     "terms-of-service/index.html": "<h1>Terms</h1>",
     "sms-opt-in.html": "<h1>SMS</h1>",

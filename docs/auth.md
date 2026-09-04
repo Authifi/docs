@@ -12,6 +12,8 @@ This site uses a mixed access model.
 
 The following paths are intentionally public:
 
+- `/logged-off`
+- `/logged-off/`
 - `/privacy-policy/`
 - `/terms-of-service/`
 - `/sms-opt-in.html`

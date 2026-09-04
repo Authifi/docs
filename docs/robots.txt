@@ -2,6 +2,8 @@
 
 User-agent: *
 Disallow: /
+Allow: /logged-off
+Allow: /logged-off/
 Allow: /privacy-policy/
 Allow: /terms-of-service/
 Allow: /sms-opt-in.html
@@ -16,6 +18,8 @@ Content-Signal: ai-train=no, search=yes, ai-input=yes
 
 User-agent: GPTBot
 Disallow: /
+Allow: /logged-off
+Allow: /logged-off/
 Allow: /privacy-policy/
 Allow: /terms-of-service/
 Allow: /sms-opt-in.html
@@ -30,6 +34,8 @@ Content-Signal: ai-train=no, search=yes, ai-input=yes
 
 User-agent: OAI-SearchBot
 Disallow: /
+Allow: /logged-off
+Allow: /logged-off/
 Allow: /privacy-policy/
 Allow: /terms-of-service/
 Allow: /sms-opt-in.html
@@ -44,6 +50,8 @@ Content-Signal: ai-train=no, search=yes, ai-input=yes
 
 User-agent: Claude-Web
 Disallow: /
+Allow: /logged-off
+Allow: /logged-off/
 Allow: /privacy-policy/
 Allow: /terms-of-service/
 Allow: /sms-opt-in.html
@@ -58,6 +66,8 @@ Content-Signal: ai-train=no, search=yes, ai-input=yes
 
 User-agent: Google-Extended
 Disallow: /
+Allow: /logged-off
+Allow: /logged-off/
 Allow: /privacy-policy/
 Allow: /terms-of-service/
 Allow: /sms-opt-in.html
@@ -72,6 +82,8 @@ Content-Signal: ai-train=no, search=yes, ai-input=yes
 
 User-agent: Amazonbot
 Disallow: /
+Allow: /logged-off
+Allow: /logged-off/
 Allow: /privacy-policy/
 Allow: /terms-of-service/
 Allow: /sms-opt-in.html
@@ -86,6 +98,8 @@ Content-Signal: ai-train=no, search=yes, ai-input=yes
 
 User-agent: anthropic-ai
 Disallow: /
+Allow: /logged-off
+Allow: /logged-off/
 Allow: /privacy-policy/
 Allow: /terms-of-service/
 Allow: /sms-opt-in.html
@@ -106,6 +120,8 @@ Disallow: /
 
 User-agent: Applebot-Extended
 Disallow: /
+Allow: /logged-off
+Allow: /logged-off/
 Allow: /privacy-policy/
 Allow: /terms-of-service/
 Allow: /sms-opt-in.html
