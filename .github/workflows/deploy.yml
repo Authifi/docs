@@ -26,6 +26,7 @@ env:
   DOCS_INSTANCE_ID: ${{ vars.DOCS_INSTANCE_ID }}
   DOCS_SSM_DOCUMENT_NAME: ${{ vars.DOCS_SSM_DOCUMENT_NAME }}
   DOCS_TARGET_GROUP_ARN: ${{ vars.DOCS_TARGET_GROUP_ARN }}
+  DOCS_ALB_DNS_NAME: ${{ vars.DOCS_ALB_DNS_NAME }}
   DOCS_PUBLIC_BASE_URL: ${{ vars.DOCS_PUBLIC_BASE_URL }}
 
 jobs:
@@ -61,6 +62,7 @@ jobs:
           : "${DOCS_INSTANCE_ID:?Set repository variable DOCS_INSTANCE_ID}"
           : "${DOCS_SSM_DOCUMENT_NAME:?Set repository variable DOCS_SSM_DOCUMENT_NAME}"
           : "${DOCS_TARGET_GROUP_ARN:?Set repository variable DOCS_TARGET_GROUP_ARN}"
+          : "${DOCS_ALB_DNS_NAME:?Set repository variable DOCS_ALB_DNS_NAME}"
           : "${DOCS_PUBLIC_BASE_URL:?Set repository variable DOCS_PUBLIC_BASE_URL}"
 
       - name: Configure AWS credentials
@@ -224,12 +226,66 @@ jobs:
         run: |
           set -euo pipefail
 
-          base_url="${DOCS_PUBLIC_BASE_URL%/}"
-          if [[ "$base_url" != https://* ]]; then
-            base_url="https://${base_url#http://}"
-          fi
-          public_url="${base_url}/privacy-policy/"
-          protected_url="${base_url}/guides/sso-integration-guide/"
+          probe_settings="$(python - <<'PY' "$DOCS_PUBLIC_BASE_URL" "$DOCS_ALB_DNS_NAME"
+          import ipaddress
+          import re
+          import sys
+          from urllib.parse import urlsplit, urlunsplit
+
+          public_base_url, alb_dns_name = sys.argv[1:3]
+          parsed = urlsplit(public_base_url)
+
+          if parsed.scheme != "https":
+              raise SystemExit("DOCS_PUBLIC_BASE_URL must be a canonical https URL.")
+          if parsed.username is not None or parsed.password is not None:
+              raise SystemExit("DOCS_PUBLIC_BASE_URL must not include credentials.")
+          if parsed.query or parsed.fragment:
+              raise SystemExit("DOCS_PUBLIC_BASE_URL must not include a query or fragment.")
+          if parsed.hostname is None:
+              raise SystemExit("DOCS_PUBLIC_BASE_URL must include a hostname.")
+          if parsed.port not in (None, 443):
+              raise SystemExit("DOCS_PUBLIC_BASE_URL must use the default HTTPS port.")
+          try:
+              ipaddress.ip_address(parsed.hostname)
+          except ValueError:
+              pass
+          else:
+              raise SystemExit("DOCS_PUBLIC_BASE_URL must use a DNS hostname, not an IP literal.")
+
+          if not re.fullmatch(r"(?!-)[A-Za-z0-9-]{1,63}(?<!-)(?:\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))*", alb_dns_name):
+              raise SystemExit("DOCS_ALB_DNS_NAME must be a hostname, not shell syntax.")
+
+          base_path = parsed.path.rstrip("/")
+
+          def join_url(suffix: str) -> str:
+              path = f"{base_path}{suffix}" if base_path else suffix
+              return urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
+
+          connect_to = f"{parsed.hostname}:443:{alb_dns_name}:443"
+          public_url = join_url("/privacy-policy/")
+          protected_url = join_url("/guides/sso-integration-guide/")
+
+          print(f"connect_to={connect_to}")
+          print(f"public_url={public_url}")
+          print(f"protected_url={protected_url}")
+          PY
+          )"
+          connect_to=""
+          public_url=""
+          protected_url=""
+          while IFS='=' read -r key value; do
+            case "$key" in
+              connect_to) connect_to="$value" ;;
+              public_url) public_url="$value" ;;
+              protected_url) protected_url="$value" ;;
+            esac
+          done <<EOF
+          $probe_settings
+          EOF
+
+          : "${connect_to:?probe connect-to was not derived}"
+          : "${public_url:?public probe URL was not derived}"
+          : "${protected_url:?protected probe URL was not derived}"
           deadline=$((SECONDS + 300))
           attempt=0
 
@@ -238,7 +294,7 @@ jobs:
             public_headers="$(mktemp)"
             protected_headers="$(mktemp)"
 
-            public_result="$(curl --silent --show-error --max-time 30 --max-redirs 0 \
+            public_result="$(curl --silent --show-error --max-time 30 --max-redirs 0 --connect-to "$connect_to" \
               --output /dev/null --dump-header "$public_headers" \
               --write-out '%{http_code} %{url_effective}' "$public_url" || true)"
             public_status="${public_result%% *}"
@@ -246,7 +302,7 @@ jobs:
             public_final_url="${public_result#* }"
             public_content_type="$(grep -i '^content-type:' "$public_headers" | tail -n 1 | cut -d: -f2- | tr -d '\r' | xargs || true)"
 
-            protected_status="$(curl --silent --show-error --max-time 30 --max-redirs 0 \
+            protected_status="$(curl --silent --show-error --max-time 30 --max-redirs 0 --connect-to "$connect_to" \
               --output /dev/null --dump-header "$protected_headers" \
               --write-out '%{http_code}' "$protected_url" || true)"
             protected_status="${protected_status:-000}"

@@ -30,6 +30,9 @@ VARIABLES = (ROOT / "infra" / "variables.tf").read_text(encoding="utf-8")
 OUTPUTS = (ROOT / "infra" / "outputs.tf").read_text(encoding="utf-8")
 USER_DATA = (ROOT / "infra" / "templates" / "user-data.sh.tftpl").read_text(encoding="utf-8")
 TFVARS_EXAMPLE = (ROOT / "infra" / "terraform.tfvars.example").read_text(encoding="utf-8")
+README = (ROOT / "README.md").read_text(encoding="utf-8")
+INFRA_README = (ROOT / "infra" / "README.md").read_text(encoding="utf-8")
+OPERATIONS_DOC = (ROOT / "docs" / "operations" / "aws-oidc-hosting.md").read_text(encoding="utf-8")
 
 
 def attribute(body: str, name: str) -> str | None:
@@ -77,6 +80,39 @@ def ssm_install_script() -> str:
     """
     document = hcl_block(MAIN, 'resource "aws_ssm_document" "deploy"')
     return "\n".join(hcl_list(document, "runCommand"))
+
+
+def strip_historical_migration_sections(markdown: str) -> str:
+    """Drop explicitly historical migration sections from Markdown.
+
+    The operator docs may keep a narrowly scoped historical section for
+    Cloudflare cutover or rollback context. That section must not excuse stale
+    production claims elsewhere in the current runbook.
+    """
+    kept: list[str] = []
+    skipping_level: int | None = None
+
+    for line in markdown.splitlines():
+        heading = re.match(r"^(#{2,6})\s+(.*)$", line)
+        if heading:
+            level = len(heading[1])
+            title = heading[2].strip().lower()
+            if skipping_level is not None and level <= skipping_level:
+                skipping_level = None
+            if skipping_level is None and ("historical" in title or "migration" in title):
+                skipping_level = level
+                continue
+        if skipping_level is None:
+            kept.append(line)
+
+    return "\n".join(kept)
+
+
+def operator_docs_text() -> str:
+    return "\n".join(
+        strip_historical_migration_sections(text).lower()
+        for text in (README, INFRA_README, OPERATIONS_DOC)
+    )
 
 
 # --- The App Runner architecture is gone, not merely unused ------------------
@@ -792,23 +828,33 @@ def test_the_example_variables_carry_no_secret_material() -> None:
 
 
 def test_operator_docs_name_the_native_ec2_architecture_only() -> None:
-    paths = [
-        ROOT / "README.md",
-        ROOT / "infra" / "README.md",
-        ROOT / "docs" / "operations" / "aws-oidc-hosting.md",
-        ROOT / ".changeset" / "aws-oidc-hosting.md",
-    ]
-    text = "\n".join(path.read_text(encoding="utf-8") for path in paths).lower()
+    text = operator_docs_text()
 
     assert "application load balancer" in text
     assert "private ec2" in text
     assert "systemd" in text
-    assert "aws app runner" not in text
-    assert "amazon ecr" not in text
+    assert "release archive" in text
+    assert "journalctl -u authifi-docs" in text
+    for forbidden in ("app runner", "awsapprunner", "ghcr", "self-hosted"):
+        assert not re.search(rf"\b{re.escape(forbidden)}\b", text), forbidden
+    assert not re.search(r"\becr\b", text), "operator docs still name production ECR"
+
+
+def test_operator_docs_do_not_send_first_rollout_probes_to_the_old_origin() -> None:
+    text = operator_docs_text()
+
+    assert "certificate_validation_records" in text
+    assert "wait for the certificate to become `issued`" in text
+    assert "docs_alb_dns_name" in text
+    assert "without moving `docs.authifi.io` yet" in text
+    assert "workflow_dispatch" in text
+    assert "connect directly to the alb" in text
+    assert "cut dns from cloudflare" in text
+    assert "rerun canonical verification" in text
 
 
 def test_docs_describe_public_pkce_registration_without_a_secret() -> None:
-    text = (ROOT / "docs" / "operations" / "aws-oidc-hosting.md").read_text(encoding="utf-8")
+    text = OPERATIONS_DOC
 
     assert "public client" in text
     assert "PKCE S256" in text

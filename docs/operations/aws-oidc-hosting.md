@@ -190,7 +190,7 @@ value is attacker-chosen and unbounded, so putting it in the log would be
 somebody else writing to your logs, and the response does not echo it either.
 
 `PUBLIC_BASE_URL` is therefore validated at startup, not at the first logout. A
-value that is not an absolute `http` or `https` URL fails the container
+value that is not an absolute `http` or `https` URL fails the process
 immediately instead of letting it serve traffic and refuse every sign-out.
 
 #### Write PUBLIC_BASE_URL The Way A Browser Would
@@ -214,13 +214,12 @@ in `Origin`, which is the form in the address bar:
   forgiven. Everything else — a different subdomain, a different port, `http`
   where users get `https` — is a different origin.
 
-The practical trap is a custom domain. If `PUBLIC_BASE_URL` names the custom
-domain but the service is also reachable at its App Runner
-`*.awsapprunner.com` address, sign-out works on the first and answers `403` on
-the second, because the browser reports the origin it actually loaded. Point
-users at the canonical domain, and set `PUBLIC_BASE_URL` to that same canonical
-form. `server/tests/test_logout_csrf.py` holds each of these cases, so this note
-cannot quietly stop being true.
+The practical trap is an alternate host. If `PUBLIC_BASE_URL` names the
+canonical domain but a browser reaches the site on some other host, sign-out
+works on the first and answers `403` on the second, because the browser reports
+the origin it actually loaded. Point users at the canonical domain, and set
+`PUBLIC_BASE_URL` to that same canonical form. `server/tests/test_logout_csrf.py`
+holds each of these cases, so this note cannot quietly stop being true.
 
 ### Signing Out Clears Everything, Not Just This Tab
 
@@ -407,12 +406,17 @@ For local real-OIDC work, also register `http://localhost:8000/_auth/callback` a
    - `DOCS_INSTANCE_ID` from `terraform -chdir=infra output -raw instance_id`
    - `DOCS_SSM_DOCUMENT_NAME` from `terraform -chdir=infra output -raw ssm_document_name`
    - `DOCS_TARGET_GROUP_ARN` from `terraform -chdir=infra output -raw target_group_arn`
+   - `DOCS_ALB_DNS_NAME` from `terraform -chdir=infra output -raw alb_dns_name`
    - `DOCS_PUBLIC_BASE_URL` from the same HTTPS origin configured as `public_base_url`
-4. Merge to `main` and monitor `.github/workflows/deploy.yml`, or use `workflow_dispatch` with a 40-character `release_sha` to redeploy an existing release artifact.
-5. Wait for the workflow to finish all three runtime checks: SSM command success, ALB target health, and public/protected route probes.
-6. Point `docs.authifi.io` at the ALB and verify both public and protected route behavior before announcing success.
+4. Leave `docs.authifi.io` on Cloudflare Pages while ACM is validating and while you are preparing the first deployment; publish only the certificate-validation records at this stage.
+5. Prefer a protected `production` environment so the first post-merge run on `main` waits for approval. The workflow becomes manually dispatchable only once it exists on `main`, so the safest first rollout is: configure the variables first, merge, then approve the pending run or cancel it and use `workflow_dispatch` on `main`.
+6. Wait for the workflow to finish all three runtime checks: SSM command success, ALB target health, and public/protected route probes. Those probes connect directly to the ALB while preserving the canonical `DOCS_PUBLIC_BASE_URL` hostname for TLS, redirects, and `Origin` semantics.
+7. Cut DNS from Cloudflare to the ALB only after the direct ALB probes pass.
+8. Rerun the public and protected verification targets against `https://docs.authifi.io/` before announcing success.
 
-The deploy workflow uses GitHub-hosted runners plus AWS OIDC only. Production does not require Docker, GHCR, ECR image pushes, or a self-hosted runner.
+If you merge the workflow before setting the required production variables or before protecting the `production` environment, the first push-triggered run may fail fast in `Verify required repository variables`. That failure is avoidable and not the preferred rollout path.
+
+The deploy workflow uses GitHub-hosted runners plus AWS OIDC only.
 
 ## Verification Targets
 
@@ -429,8 +433,8 @@ After a deploy or cutover, verify:
 - `curl --path-as-is -sI 'https://docs.authifi.io/assets/%2e%2e/index.html'` returns `404`, not protected content
 - protected responses carry `Cache-Control: private, no-store` and `Vary: Cookie`
 - `https://docs.authifi.io/health` returns `200` with `{"status": "ok"}`; a
-  `503` means the deployment is serving an incomplete site and the container log
-  names the artifact
+  `503` means the deployment is serving an incomplete site and
+  `journalctl -u authifi-docs` or the SSM command output names the artifact
 
 When the deploy workflow fails, use the stage name as the first diagnostic:
 
@@ -444,11 +448,13 @@ When the deploy workflow fails, use the stage name as the first diagnostic:
 The site previously served from Cloudflare Pages at `authifi.pages.dev`. The cutover is not finished until the old delivery path can no longer publish:
 
 1. Lower the `docs.authifi.io` DNS TTL before the change window.
-2. Complete the ACM two-stage process: first apply with `enable_https_listener=false`, publish the certificate-validation records, wait for ACM to issue the certificate, then apply with `enable_https_listener=true`.
-3. Point `docs.authifi.io` at the ALB DNS name and run the verification targets above.
-4. **Disconnect the Cloudflare Pages Git integration** for the docs project (Pages project → Settings → Builds & deployments → disconnect the GitHub repository), or disable automatic production and preview deployments. Leaving it connected means a later push to `main` silently republishes an ungated copy of the docs.
-5. Remove the `docs.authifi.io` custom domain from the Cloudflare Pages project so it cannot reclaim the hostname.
-6. Keep the Pages project itself until the rollback window closes.
+2. Complete the ACM two-stage process: first apply with `enable_https_listener=false`, publish the certificate-validation records without moving `docs.authifi.io` yet, wait for ACM to issue the certificate, then apply with `enable_https_listener=true`.
+3. Configure `DOCS_ALB_DNS_NAME` and the rest of the production workflow variables, then deploy through GitHub Actions and let the workflow connect directly to the ALB.
+4. Cut DNS from Cloudflare to the ALB DNS name only after the direct ALB probes pass.
+5. Rerun canonical verification against `https://docs.authifi.io/`.
+6. **Disconnect the Cloudflare Pages Git integration** for the docs project (Pages project → Settings → Builds & deployments → disconnect the GitHub repository), or disable automatic production and preview deployments. Leaving it connected means a later push to `main` silently republishes an ungated copy of the docs.
+7. Remove the `docs.authifi.io` custom domain from the Cloudflare Pages project so it cannot reclaim the hostname.
+8. Keep the Pages project itself until the rollback window closes.
 
 ## Rollback Options
 

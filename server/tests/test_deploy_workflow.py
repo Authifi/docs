@@ -154,6 +154,7 @@ def test_required_repository_variables_are_validated_before_aws_mutation() -> No
         "DOCS_INSTANCE_ID",
         "DOCS_SSM_DOCUMENT_NAME",
         "DOCS_TARGET_GROUP_ARN",
+        "DOCS_ALB_DNS_NAME",
         "DOCS_PUBLIC_BASE_URL",
     ):
         assert f': "${{{variable}:?Set repository variable {variable}}}"' in run
@@ -288,10 +289,49 @@ def test_waiters_and_probes_use_only_the_release_sha_and_structured_checks() -> 
     assert sum("--max-redirs 0" in line for line in probe_lines) == 2
     assert any("%{http_code}" in line for line in probe_lines)
     assert any("/_auth/login" in line for line in probe_lines)
+    assert sum('--connect-to "$connect_to"' in line for line in probe_lines) == 2
 
     for forbidden in ("OIDC_CLIENT_SECRET", "SESSION_SECRET", "client_secret", "session_secret"):
         assert forbidden not in send_run
         assert forbidden not in wait_run
+
+
+def test_route_probes_parse_the_canonical_https_origin_and_connect_directly_to_the_alb() -> None:
+    verify_run = step_run("Verify required repository variables")
+    probe_run = step_run("Verify public and protected routes")
+
+    assert ': "${DOCS_ALB_DNS_NAME:?Set repository variable DOCS_ALB_DNS_NAME}"' in verify_run
+    assert 'probe_settings="$(python - <<\'PY\' "$DOCS_PUBLIC_BASE_URL" "$DOCS_ALB_DNS_NAME"' in probe_run
+    for fragment in (
+        'parsed = urlsplit(public_base_url)',
+        'if parsed.scheme != "https":',
+        "if parsed.username is not None or parsed.password is not None:",
+        "if parsed.query or parsed.fragment:",
+        'if parsed.hostname is None:',
+        'if parsed.port not in (None, 443):',
+        'if not re.fullmatch(r"(?!-)[A-Za-z0-9-]{1,63}(?<!-)(?:\\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))*", alb_dns_name):',
+        'connect_to = f"{parsed.hostname}:443:{alb_dns_name}:443"',
+        'print(f"connect_to={connect_to}")',
+        'print(f"public_url={public_url}")',
+        'print(f"protected_url={protected_url}")',
+    ):
+        assert fragment in probe_run
+
+    public_probe = anchored_line(
+        probe_run,
+        r'^public_result="\$\(curl --silent --show-error --max-time 30 --max-redirs 0 --connect-to "\$connect_to" .* "\$public_url" \|\| true\)"$',
+    )
+    protected_probe = anchored_line(
+        probe_run,
+        r'^protected_status="\$\(curl --silent --show-error --max-time 30 --max-redirs 0 --connect-to "\$connect_to" .* "\$protected_url" \|\| true\)"$',
+    )
+
+    assert '--dump-header "$public_headers"' in public_probe
+    assert '--write-out \'%{http_code} %{url_effective}\'' in public_probe
+    assert '--dump-header "$protected_headers"' in protected_probe
+    assert '--write-out \'%{http_code}\'' in protected_probe
+    assert 'public_url="${base_url}/privacy-policy/"' not in probe_run
+    assert 'protected_url="${base_url}/guides/sso-integration-guide/"' not in probe_run
 
 
 def test_structural_parsing_ignores_comments_and_dead_strings() -> None:

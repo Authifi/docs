@@ -161,11 +161,11 @@ Logout is RP-initiated: the server clears the local session and, when the tenant
 
 The post-logout target is always the configured `POST_LOGOUT_PATH`. A `?next=` on the logout URL is ignored: the issuer only accepts the `post_logout_redirect_uri` registered with it, and letting a caller influence that value would break every logout while handing them a say in a URI the issuer is asked to trust. The local fallback uses the same path so both flows land in the same place. Logging out with no session skips discovery entirely and redirects locally, so an anonymous caller cannot drive outbound requests to the issuer.
 
-`POST_LOGOUT_PATH` must be one of the **exact** public pages the server serves, and the server validates it at startup rather than at the first logout, so a bad value fails the container immediately in local Compose and in App Runner alike. Set it in `.env` for the local stacks, or through the `post_logout_path` Terraform variable for production, which App Runner passes through as the same environment variable and which rejects the same values at plan time.
+`POST_LOGOUT_PATH` must be one of the **exact** public pages the server serves, and the server validates it at startup rather than at the first logout, so a bad value fails the process immediately in local Compose and in production alike. Set it in `.env` for the local stacks, or through the `post_logout_path` Terraform variable for production, which the EC2 bootstrap writes as the same environment variable and which rejects the same values at plan time.
 
 If you run the docs server on a different base URL or port, update `PUBLIC_BASE_URL` and register the matching callback and post-logout destinations in Authifi.
 
-Because sign-out compares the browser's `Origin` against `PUBLIC_BASE_URL` and only forgives host case, that variable must name the host exactly as a browser would send it: no trailing dot, punycode rather than Unicode for an internationalised domain, and the canonical domain users actually browse. A service reachable both at a custom domain and at its App Runner `*.awsapprunner.com` address will refuse sign-out on whichever one `PUBLIC_BASE_URL` does not name. See [`docs/operations/aws-oidc-hosting.md`](docs/operations/aws-oidc-hosting.md) for the details.
+Because sign-out compares the browser's `Origin` against `PUBLIC_BASE_URL` and only forgives host case, that variable must name the host exactly as a browser would send it: no trailing dot, punycode rather than Unicode for an internationalised domain, and the canonical domain users actually browse. During cutover and diagnostics, do not browse the ALB hostname directly unless `PUBLIC_BASE_URL` names it; a browser origin on the ALB hostname is a different origin and logout will be refused there. See [`docs/operations/aws-oidc-hosting.md`](docs/operations/aws-oidc-hosting.md) for the details.
 
 ## AWS Bootstrap And Deploy
 
@@ -181,10 +181,15 @@ Use [`infra/README.md`](infra/README.md) for the full Terraform and EC2/ALB boot
    - `DOCS_INSTANCE_ID`
    - `DOCS_SSM_DOCUMENT_NAME`
    - `DOCS_TARGET_GROUP_ARN`
+   - `DOCS_ALB_DNS_NAME`
    - `DOCS_PUBLIC_BASE_URL`
-5. Merge to `main` to let the deploy workflow build a release archive, upload it to S3, install it through SSM, wait for ALB target health, and verify public and protected routes.
+5. Prefer a protected `production` environment so the first post-merge run on `main` waits for approval. The workflow becomes manually dispatchable only once it exists on `main`, so the safest first rollout is: configure the variables first, merge, then approve the pending run or cancel it and use `workflow_dispatch` on `main`.
+6. Use the deploy workflow to build a release archive, upload it to S3, install it through SSM, wait for ALB target health, and probe the new ALB directly while preserving the canonical `DOCS_PUBLIC_BASE_URL` hostname in TLS and HTTP.
+7. Cut `docs.authifi.io` over from Cloudflare only after those direct-ALB probes pass, then rerun the canonical verification against `https://docs.authifi.io/`.
 
-After the deploy succeeds, the workflow requests `/privacy-policy/` from the live origin and a protected guide URL, requiring the expected public `200` and protected login redirect. A release that starts but cannot serve therefore fails the deploy instead of the next visitor.
+If you merge the workflow before setting the required production variables or before protecting the `production` environment, the first push-triggered run may fail fast in `Verify required repository variables`. That failure is operationally honest, but it is avoidable.
+
+After the deploy succeeds, the workflow requests `/privacy-policy/` and a protected guide URL through `curl --connect-to`, so it connects directly to `DOCS_ALB_DNS_NAME` while still presenting the canonical `DOCS_PUBLIC_BASE_URL` hostname for TLS SNI, certificate validation, redirects, and `Origin` semantics. A release that starts but cannot serve therefore fails before DNS cutover.
 
 Rerunning the deploy workflow for a SHA that is already in S3 reuses the existing release artifact and continues to the SSM install, so reruns are safe. For rollback, dispatch the workflow with an earlier 40-character `release_sha`; see [`infra/README.md`](infra/README.md) for the exact procedure and the installer's on-host rollback behavior.
 
@@ -192,14 +197,17 @@ Rerunning the deploy workflow for a SHA that is already in S3 reuses the existin
 
 ## DNS Cutover And Rollback
 
-Create the `docs.authifi.io` record pointing at the ALB and the ACM validation records described in [`infra/README.md`](infra/README.md).
+Create the ACM validation records first and leave `docs.authifi.io` on Cloudflare Pages until the new ALB has passed deployment probes.
 
 For cutover:
 
 - lower DNS TTLs before the change window if your provider allows it
-- create the new records
+- create only the ACM validation records first, without moving `docs.authifi.io` yet
 - wait for certificate validation and the second Terraform apply to settle
-- verify the public and protected paths listed below before announcing completion
+- configure `DOCS_ALB_DNS_NAME` and the rest of the production workflow variables
+- run the deploy workflow and let it connect directly to the ALB before cutover
+- cut DNS from Cloudflare to the ALB only after those direct probes pass
+- rerun the public and protected verification targets against `https://docs.authifi.io/` before announcing completion
 - **disconnect the Cloudflare Pages Git integration** for the docs project, or disable its production and preview deployments, so a later push to `main` cannot silently republish an ungated copy of the site
 - remove `docs.authifi.io` as a custom domain from the Cloudflare Pages project so it cannot reclaim the hostname
 - keep the Pages project itself until the rollback window closes

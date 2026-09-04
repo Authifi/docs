@@ -171,14 +171,15 @@ Repository variables for `.github/workflows/deploy.yml` map to those values exac
 - `DOCS_INSTANCE_ID` from `instance_id`
 - `DOCS_SSM_DOCUMENT_NAME` from `ssm_document_name`
 - `DOCS_TARGET_GROUP_ARN` from `target_group_arn`
+- `DOCS_ALB_DNS_NAME` from `alb_dns_name`
 - `DOCS_PUBLIC_BASE_URL` from the same HTTPS origin you set in `public_base_url`
 
 ### Stage 2: publish DNS validation records, then enable HTTPS
 
-Create the ACM validation records in your external DNS provider from `certificate_validation_records`, then point `docs.authifi.io` at the ALB:
+Create the ACM validation records in your external DNS provider from `certificate_validation_records`, but do **not** move `docs.authifi.io` yet:
 
-- if your provider supports ALIAS or ANAME records, use `alb_dns_name` plus `alb_zone_id`
-- in Cloudflare, create the `docs.authifi.io` DNS record pointing at `alb_dns_name`
+- if your provider supports ALIAS or ANAME records, keep `alb_dns_name` plus `alb_zone_id` ready for the later cutover
+- in Cloudflare, publish only the certificate-validation records at this stage
 
 Wait for ACM to report the certificate as `ISSUED`, then run the second apply:
 
@@ -206,6 +207,19 @@ The deploy role trusts **only** the `Authifi/docs` `main` branch:
 If the AWS account already has a shared GitHub OIDC provider, set `existing_github_oidc_provider_arn`. Otherwise this module creates the account-level provider for `https://token.actions.githubusercontent.com`.
 
 The deploy workflow does not build or push a container image. It either builds a release archive from the current `main` commit or reuses an existing one, uploads the archive and checksum to S3, sends the release SHA to SSM, waits for the command to finish, waits for the target to report healthy, and then probes one public and one protected URL on `DOCS_PUBLIC_BASE_URL`.
+
+For the first rollout, prefer a protected `production` environment so the first
+post-merge run waits for approval. The workflow becomes manually dispatchable
+only once this file exists on `main`, so the safest sequence is:
+
+1. bootstrap infra and finish the ACM two-stage apply
+2. configure the repository variables, including `DOCS_ALB_DNS_NAME`
+3. merge the workflow to `main`
+4. approve the pending run, or cancel it and use `workflow_dispatch` on `main`
+
+If you merge before the variables exist or before the environment is protected,
+the first push-triggered run may fail fast in `Verify required repository
+variables`. That is honest but avoidable.
 
 ## Runtime Configuration
 
@@ -249,6 +263,11 @@ Application deployments happen through `.github/workflows/deploy.yml`:
 
 - `push` to `main`: build a release archive for `GITHUB_SHA`, upload it to S3 if missing, deploy it through SSM, wait for ALB target health, then probe public and protected routes
 - `workflow_dispatch` with `release_sha`: require an existing 40-character lowercase SHA, verify both S3 objects already exist, then redeploy that exact release without rebuilding
+
+Those probes connect directly to `DOCS_ALB_DNS_NAME` with `curl --connect-to`
+while still using the canonical `DOCS_PUBLIC_BASE_URL` hostname for TLS SNI,
+certificate validation, redirects, and `Origin` semantics. The first workflow
+therefore validates the new ALB without probing the old Cloudflare origin.
 
 The installer at `infra/scripts/deploy-release.sh` is intentionally atomic:
 
