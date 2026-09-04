@@ -16,6 +16,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 REQUIREMENTS = REPO_ROOT / "server" / "requirements.txt"
+DOCKERFILE = REPO_ROOT / "Dockerfile"
 
 PIN_PATTERN = re.compile(r"^(?P<name>[A-Za-z0-9._-]+)==(?P<version>[A-Za-z0-9._+!-]+)$")
 
@@ -80,3 +81,46 @@ def test_the_test_environment_runs_the_pinned_versions(package: str) -> None:
         f"{package} is pinned to {pinned} but the environment has {installed}; "
         "run `pip install -r server/requirements.txt -r server/requirements-dev.txt`"
     )
+
+
+# --- Dockerfile build determinism ---------------------------------------------
+
+
+def dockerfile_pip_commands() -> list[str]:
+    """Every `python -m pip` invocation in the Dockerfile, joined per command."""
+    text = DOCKERFILE.read_text(encoding="utf-8")
+    # RUN lines continue with a trailing backslash, so rejoin before splitting
+    # on `&&`; otherwise a flag on the second line looks like its own command.
+    joined = re.sub(r"\\\s*\n\s*", " ", text)
+    return [
+        part.strip()
+        for line in joined.splitlines()
+        if line.startswith("RUN ")
+        for part in line.removeprefix("RUN ").split("&&")
+        if "pip" in part
+    ]
+
+
+def test_the_dockerfile_installs_with_pip_in_both_stages() -> None:
+    """Guard the guard: the checks below are vacuous if this stops matching."""
+    assert len(dockerfile_pip_commands()) == 2
+
+
+def test_no_stage_upgrades_pip_before_installing() -> None:
+    """A floating pip makes the digest-pinned base image only half a pin.
+
+    `pip install --upgrade pip` resolves whatever is newest on PyPI at build
+    time, so two builds of the same commit can install with different resolver
+    behaviour. The pip bundled in the pinned base image is already fixed.
+    """
+    for command in dockerfile_pip_commands():
+        assert "--upgrade pip" not in command, f"Dockerfile upgrades pip: {command!r}"
+        assert not re.search(r"\bpip\s+install\b[^&]*\bpip\b", command), (
+            f"Dockerfile installs pip itself: {command!r}"
+        )
+
+
+def test_both_stages_install_from_a_pinned_requirements_file() -> None:
+    for command in dockerfile_pip_commands():
+        assert "--no-cache-dir" in command
+        assert "-r " in command, f"pip install is not requirements-driven: {command!r}"

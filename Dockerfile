@@ -9,8 +9,9 @@ WORKDIR /app
 
 COPY requirements.txt ./
 
-RUN python -m pip install --no-cache-dir --upgrade pip \
-    && python -m pip install --no-cache-dir -r requirements.txt
+# Deliberately no `--upgrade pip`: that resolves whatever is newest on PyPI at
+# build time, which would leave the digest-pinned base image only half a pin.
+RUN python -m pip install --no-cache-dir -r requirements.txt
 
 COPY docs ./docs
 COPY overrides ./overrides
@@ -34,8 +35,8 @@ WORKDIR /app
 
 COPY server/requirements.txt ./server-requirements.txt
 
-RUN python -m pip install --no-cache-dir --upgrade pip \
-    && python -m pip install --no-cache-dir -r server-requirements.txt
+# Same reasoning as the site-builder stage: use the pip the pinned base ships.
+RUN python -m pip install --no-cache-dir -r server-requirements.txt
 
 RUN groupadd --gid "${APP_GID}" "${APP_USER}" \
     && useradd --uid "${APP_UID}" --gid "${APP_GID}" \
