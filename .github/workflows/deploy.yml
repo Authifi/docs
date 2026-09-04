@@ -97,6 +97,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Build and push image
+        id: build
         if: steps.image.outputs.already_pushed != 'true'
         env:
           IMAGE_URI: ${{ steps.image.outputs.image_uri }}
@@ -109,11 +110,16 @@ jobs:
           #
           # Reuse the builder if one is already present. `buildx create` fails
           # on an existing name, which would break any rerun on a self-hosted or
-          # otherwise non-ephemeral runner.
+          # otherwise non-ephemeral runner. Record which case this was so
+          # teardown only removes a builder this run actually created; tearing
+          # down a reused one would delete state the runner owns and lose its
+          # warm cache.
           if docker buildx inspect "$BUILDX_BUILDER_NAME" > /dev/null 2>&1; then
             echo "Reusing existing buildx builder $BUILDX_BUILDER_NAME."
+            echo "builder_created=false" >> "$GITHUB_OUTPUT"
           else
             docker buildx create --name "$BUILDX_BUILDER_NAME" --driver docker-container
+            echo "builder_created=true" >> "$GITHUB_OUTPUT"
           fi
           docker buildx use "$BUILDX_BUILDER_NAME"
           docker buildx inspect --bootstrap "$BUILDX_BUILDER_NAME"
@@ -125,8 +131,10 @@ jobs:
             --push \
             .
 
+      # Skipped when the build step was skipped or reused an existing builder,
+      # since the output is only ever set to true by the branch that created one.
       - name: Remove buildx builder
-        if: always()
+        if: always() && steps.build.outputs.builder_created == 'true'
         run: |
           set -euo pipefail
           docker buildx rm "$BUILDX_BUILDER_NAME" || true
@@ -278,26 +286,37 @@ jobs:
           while true; do
             attempt=$((attempt + 1))
             response_headers="$(mktemp)"
+            # Deliberately no --location. The probe has to see what an
+            # anonymous visitor sees at this exact URL, and a public page that
+            # starts redirecting is itself the regression worth catching: a
+            # boundary bug that sends /privacy-policy/ into the login flow
+            # would otherwise pass, because the login page is also a 200 of
+            # text/html. --max-redirs 0 and the url_effective check keep that
+            # true even if someone adds --location later.
+            #
             # curl writes 000 itself when it never got a response, so keep its
             # output rather than appending a second placeholder.
-            status="$(curl --silent --show-error --location --max-time 30 \
+            probe_result="$(curl --silent --show-error --max-time 30 --max-redirs 0 \
               --output /dev/null --dump-header "$response_headers" \
-              --write-out '%{http_code}' "$probe_url" || true)"
+              --write-out '%{http_code} %{url_effective}' "$probe_url" || true)"
+            status="${probe_result%% *}"
             status="${status:-000}"
+            final_url="${probe_result#* }"
             content_type="$(grep -i '^content-type:' "$response_headers" | tail -n 1 | cut -d: -f2- | tr -d '\r' | xargs || true)"
 
-            if [[ "$status" == "200" && "$content_type" == text/html* ]]; then
+            if [[ "$status" == "200" && "$content_type" == text/html* && "$final_url" == "$probe_url" ]]; then
               echo "Post-deploy check passed on attempt $attempt: $status, $content_type"
               break
             fi
 
             if (( SECONDS >= deadline )); then
               echo "Post-deploy check failed for $probe_url" >&2
-              echo "Expected HTTP 200 with Content-Type text/html, got status $status and content type '${content_type}'" >&2
+              echo "Expected HTTP 200 with Content-Type text/html served from the probe URL itself." >&2
+              echo "Got status $status, content type '${content_type}', final URL '${final_url}'" >&2
               cat "$response_headers" >&2
               exit 1
             fi
 
-            echo "Attempt $attempt: status $status, content type '${content_type}'; retrying..."
+            echo "Attempt $attempt: status $status, content type '${content_type}', final URL '${final_url}'; retrying..."
             sleep 10
           done

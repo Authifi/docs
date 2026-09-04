@@ -31,6 +31,8 @@ REQUIRED_PACKAGES = frozenset(
         "certifi",  # TLS trust store
         "cryptography",  # JWS/JWT verification behind Authlib
         "h11",  # HTTP/1.1 parsing, shared by uvicorn and httpx
+        "httpcore",  # connection pooling and TLS handshake under httpx
+        "idna",  # hostname parsing for issuer and redirect URLs
     }
 )
 
