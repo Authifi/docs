@@ -37,6 +37,7 @@ class DeployHarness:
     lock_path: Path = field(init=False)
     fail_candidate_health_file: Path = field(init=False)
     fail_active_health_file: Path = field(init=False)
+    fail_first_restart_file: Path = field(init=False)
     env: dict[str, str] = field(init=False)
 
     def __post_init__(self) -> None:
@@ -53,6 +54,7 @@ class DeployHarness:
         self.lock_path = self.root / "deploy.lock"
         self.fail_candidate_health_file = self.tmp_path / "fail-candidate-health"
         self.fail_active_health_file = self.tmp_path / "fail-active-health"
+        self.fail_first_restart_file = self.tmp_path / "fail-first-restart"
 
         self.releases.mkdir(parents=True)
         self.incoming_root.mkdir(parents=True)
@@ -84,6 +86,7 @@ class DeployHarness:
             "SERVICE_STATE_FILE": str(self.service_state_file),
             "FAIL_CANDIDATE_HEALTH_FILE": str(self.fail_candidate_health_file),
             "FAIL_ACTIVE_HEALTH_FILE": str(self.fail_active_health_file),
+            "FAIL_FIRST_RESTART_FILE": str(self.fail_first_restart_file),
             "PATH": f"{self.fake_bin}:{env['PATH']}",
         }
 
@@ -124,6 +127,20 @@ class DeployHarness:
     @fail_active_health_once.setter
     def fail_active_health_once(self, value: bool) -> None:
         self._set_flag(self.fail_active_health_file, value)
+
+    @property
+    def fail_first_restart(self) -> bool:
+        return self.fail_first_restart_file.exists()
+
+    @fail_first_restart.setter
+    def fail_first_restart(self, value: bool) -> None:
+        """Make the *first* `systemctl restart` fail and later ones succeed.
+
+        A unit that can never restart is a host problem, not a deployment one.
+        The interesting case is the one a rollback can still recover from: the
+        candidate's unit refuses to come up, and the previous release's does.
+        """
+        self._set_flag(self.fail_first_restart_file, value)
 
     def _set_flag(self, path: Path, value: bool) -> None:
         if value:
@@ -176,10 +193,16 @@ from pathlib import Path
 
 events = Path(os.environ["EVENTS_FILE"])
 service_state = Path(os.environ["SERVICE_STATE_FILE"])
+fail_first_restart = Path(os.environ["FAIL_FIRST_RESTART_FILE"])
 event = sys.argv[1] if len(sys.argv) > 1 else "unknown"
 with events.open("a", encoding="utf-8") as stream:
     stream.write(f"systemctl:{event}\\n")
 if event == "restart":
+    if fail_first_restart.exists():
+        fail_first_restart.unlink()
+        with events.open("a", encoding="utf-8") as stream:
+            stream.write("systemctl:restart-failed\\n")
+        sys.exit(1)
     service_state.write_text("running\\n", encoding="utf-8")
 elif event == "stop":
     service_state.unlink(missing_ok=True)
@@ -406,6 +429,58 @@ def test_first_deploy_active_health_failure_removes_current_and_stops_service(
     assert retry.returncode == 0
     assert "already active" not in retry.stderr
     assert deploy_harness.current.resolve().name == sha
+
+
+def test_failed_service_restart_restores_the_previous_release(
+    deploy_harness: DeployHarness,
+) -> None:
+    """`systemctl restart` failing is the same outcome as the health check
+    failing, one step earlier, and it has to take the same path out.
+
+    Under `set -e` a non-zero restart ended the installer on the spot, with
+    `current` already pointing at the candidate and the previous release
+    perfectly intact beside it. Nothing rolled back, nothing restarted, and the
+    workflow reported a failed deploy while the host was left on a release that
+    had never started -- the one state the two-stage swap exists to avoid.
+    """
+    old = deploy_harness.seed_active_release()
+    sha = "1" * 38 + "cd"
+    deploy_harness.publish_archive(sha)
+    deploy_harness.fail_first_restart = True
+
+    result = deploy_harness.run(sha)
+
+    assert result.returncode != 0
+    assert deploy_harness.current.resolve() == old
+    assert deploy_harness.service_running
+    assert "previous release restored" in result.stderr
+
+    # Two restarts: the candidate's, which failed, and the previous release's.
+    assert deploy_harness.events.count("systemctl:restart") == 2
+    assert "systemctl:restart-failed" in deploy_harness.events
+
+    # And the active probe never ran: there was nothing up to probe.
+    assert "active-health" not in deploy_harness.events
+
+
+def test_first_deploy_restart_failure_leaves_no_release_active(
+    deploy_harness: DeployHarness,
+) -> None:
+    """With no previous release the rollback has nothing to restore, so it must
+    remove `current` and stop the unit rather than leave a symlink pointing at
+    a release that will not start."""
+    sha = "2" * 38 + "cd"
+    deploy_harness.publish_archive(sha)
+    deploy_harness.fail_first_restart = True
+
+    result = deploy_harness.run(sha)
+
+    assert result.returncode != 0
+    assert not deploy_harness.current.exists()
+    assert not deploy_harness.service_running
+    assert "previous release restored" not in result.stderr
+    assert "no previous release to restore" in result.stderr
+    assert "systemctl:stop" in deploy_harness.events
 
 
 def test_lock_prevents_concurrent_install(deploy_harness: DeployHarness) -> None:

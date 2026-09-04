@@ -289,9 +289,11 @@ The installer at `infra/scripts/deploy-release.sh` is intentionally atomic:
 5. atomically swap `/opt/authifi-docs/current`
 6. restart `authifi-docs` under systemd
 7. health-check the active service on `127.0.0.1:8080`
-8. if the active health check fails, restore the previous release symlink and restart the service again
+8. if either the restart or the active health check fails, restore the previous release symlink and restart the service again
 
-If there was no previous release, a failed first activation stops the service instead of claiming success.
+Both post-swap failures take the same path out. A `systemctl restart` that returns non-zero is the same outcome as a failed health check one step earlier, so it rolls back rather than leaving `current` pointing at a release that never started.
+
+If there was no previous release, a failed first activation removes `current` and stops the service instead of claiming success.
 
 ## Diagnostics
 

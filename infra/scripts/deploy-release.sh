@@ -199,20 +199,43 @@ fi
 cleanup_candidate_server
 trap - EXIT
 
-swap_current "$candidate"
-"$systemctl_bin" restart authifi-docs
+# Everything past the swap fails the same way and has to be undone the same
+# way. `systemctl restart` returning non-zero used to end the installer on the
+# spot under `set -e`, with `current` already pointing at the candidate and the
+# previous release intact beside it: nothing rolled back, nothing restarted,
+# and the host left on a release that had never started — the one state the
+# two-stage swap exists to prevent.
+abandon_activation() {
+  local reason="$1"
 
-if ! poll_health "http://127.0.0.1:8080/health" "$active_attempts"; then
   if [[ -n "$previous" ]]; then
     swap_current "$previous"
-    "$systemctl_bin" restart authifi-docs
-    echo "active release failed health check; previous release restored" >&2
+    if "$systemctl_bin" restart authifi-docs; then
+      echo "$reason; previous release restored" >&2
+    else
+      # The symlink is back either way, so a reboot or a later deploy comes up
+      # on the previous release rather than on the one that just failed.
+      echo "$reason; previous release symlink restored but its service did not restart" >&2
+    fi
   else
     rm -f "$current"
-    "$systemctl_bin" stop authifi-docs
-    echo "active release failed health check; no previous release to restore" >&2
+    # Best effort: there is nothing to fall back to, and the useful outcome is
+    # an unhealthy target rather than one serving a release that will not run.
+    "$systemctl_bin" stop authifi-docs || true
+    echo "$reason; no previous release to restore" >&2
   fi
+
   exit 1
+}
+
+swap_current "$candidate"
+
+if ! "$systemctl_bin" restart authifi-docs; then
+  abandon_activation "candidate release did not restart under systemd"
+fi
+
+if ! poll_health "http://127.0.0.1:8080/health" "$active_attempts"; then
+  abandon_activation "active release failed health check"
 fi
 
 prune_releases "$candidate"
