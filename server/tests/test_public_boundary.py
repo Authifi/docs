@@ -20,10 +20,12 @@ from urllib.parse import urljoin, urlsplit
 import pytest
 
 from server.app import (
+    MAX_NEXT_PATH_BYTES,
     PUBLIC_AUTH_PATHS,
     PUBLIC_EXACT_PATHS,
     PUBLIC_PREFIXES,
     is_public_path,
+    normalize_next_path,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -830,3 +832,47 @@ def test_a_dirty_rebuild_over_an_augmented_copy_does_not_stack_two_links(
     run_build(site_dir, "--dirty")
 
     assert_one_link_per_augmented_page(site_dir)
+
+
+# --- The `next` path cap against the real site --------------------------------
+#
+# `next` is capped by UTF-8 byte length to bound the signed cookie. The cap is
+# only safe if it cannot catch a destination the site actually publishes, so it
+# is checked against every built page rather than against a remembered number.
+
+QUERY_HEADROOM_BYTES = 128
+
+
+def published_request_paths(built_site: Path) -> list[str]:
+    paths = []
+    for path in built_site.rglob("*"):
+        if not path.is_file():
+            continue
+        relative = path.relative_to(built_site).as_posix()
+        served = relative.removesuffix("index.html")
+        paths.append(f"/{served}")
+    return paths
+
+
+def test_no_path_the_site_publishes_is_anywhere_near_the_cap(built_site: Path) -> None:
+    published = published_request_paths(built_site)
+
+    assert published, "no built files found"
+    longest = max(published, key=lambda candidate: len(candidate.encode("utf-8")))
+    assert len(longest.encode("utf-8")) <= MAX_NEXT_PATH_BYTES - QUERY_HEADROOM_BYTES, longest
+
+
+def test_every_published_path_survives_normalisation(built_site: Path) -> None:
+    """The cap must not be the reason a real page redirects to the root."""
+    for path in published_request_paths(built_site):
+        assert normalize_next_path(path) == path, path
+
+
+def test_every_published_path_still_fits_with_a_query_attached(built_site: Path) -> None:
+    """Material appends `?h=<terms>` when a search result is followed."""
+    highlight = "?h=" + "+".join(["identity"] * 12)
+    assert len(highlight.encode("utf-8")) <= QUERY_HEADROOM_BYTES
+
+    for path in published_request_paths(built_site):
+        with_query = f"{path}{highlight}"
+        assert normalize_next_path(with_query) == with_query, with_query

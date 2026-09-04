@@ -31,6 +31,15 @@ logins untouched — a forged callback must not be able to cancel someone else's
 sign-in. Users see this only if they leave more than four sign-ins half-finished
 at once; the fix is to start again from the page they wanted.
 
+The stored return path is capped at 256 UTF-8 bytes, which is what makes that
+budget an upper bound rather than something a caller picks: `next` arrives in
+the query string, so an uncapped one is a way to push the cookie past 4096
+bytes and have the browser drop it. Four pending logins at the cap measure a
+little over 3KB, and the longest path the site publishes is 63 bytes, so the cap
+leaves well over 100 bytes for a query string on top. A `next` over the cap is
+not truncated — it becomes `/`, so an over-long link signs you in and lands you
+on the home page rather than somewhere half-parsed.
+
 A pending login also has a shelf life. Authlib stamps each stored transaction
 with an hour's expiry and sweeps the expired ones the next time any callback
 completes, so a tab left open overnight gets the same `400` rather than a `500`.

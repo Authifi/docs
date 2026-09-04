@@ -19,6 +19,7 @@ from authlib.integrations.starlette_client import integration
 from starlette.testclient import TestClient
 
 from server.app import (
+    MAX_NEXT_PATH_BYTES,
     MAX_PENDING_LOGINS,
     SESSION_PENDING_LOGINS_KEY,
     SESSION_USER_KEY,
@@ -270,11 +271,82 @@ def test_the_evicted_login_fails_closed_rather_than_landing_anywhere(
     )
 
 
+# Browsers keep 4096 bytes per cookie and silently drop anything larger, which
+# would take the session with it. The cap on a stored return path is what makes
+# the worst case measurable rather than caller-controlled.
+BROWSER_COOKIE_LIMIT = 4096
+
+
 def test_the_session_cookie_stays_well_under_the_browser_limit(client: TestClient) -> None:
     for index in range(MAX_PENDING_LOGINS + 5):
         start_login(client, f"/guides/guide-{index}/")
 
     assert len(client.cookies[SESSION_COOKIE_NAME]) < 3000
+
+
+def test_the_worst_case_cookie_is_measured_and_fits(client: TestClient) -> None:
+    """Every pending slot filled with the longest return path allowed.
+
+    This is the whole point of the cap: the number below is an upper bound
+    rather than something a caller chooses. At the time of writing it measures
+    about 3.1KB, leaving roughly a kilobyte of headroom.
+    """
+    for index in range(MAX_PENDING_LOGINS):
+        at_cap = f"/{index}" + "a" * (MAX_NEXT_PATH_BYTES - len(f"/{index}"))
+        assert len(at_cap.encode("utf-8")) == MAX_NEXT_PATH_BYTES
+        start_login(client, at_cap)
+
+    pending = current_session(client)[SESSION_PENDING_LOGINS_KEY]
+    assert len(pending) == MAX_PENDING_LOGINS
+    assert all(len(path.encode("utf-8")) == MAX_NEXT_PATH_BYTES for path in pending.values())
+
+    measured = len(client.cookies[SESSION_COOKIE_NAME])
+    assert measured < 3500, measured
+    assert measured < BROWSER_COOKIE_LIMIT - 500, measured
+
+
+def test_a_crafted_next_path_cannot_inflate_the_cookie(client: TestClient) -> None:
+    """The attack the cap closes: without it this cookie was over 7KB."""
+    for index in range(MAX_PENDING_LOGINS):
+        start_login(client, f"/{index}" + "a" * 8192)
+
+    assert len(client.cookies[SESSION_COOKIE_NAME]) < BROWSER_COOKIE_LIMIT - 500
+
+
+def test_an_oversized_next_path_is_stored_as_the_site_root(client: TestClient) -> None:
+    state = start_login(client, "/guides/" + "a" * MAX_NEXT_PATH_BYTES)
+
+    assert current_session(client)[SESSION_PENDING_LOGINS_KEY][state] == "/"
+
+
+def test_an_oversized_next_path_lands_on_the_site_root(client: TestClient) -> None:
+    """Safely, not partially: no truncated path to redirect to."""
+    state = start_login(client, "/guides/" + "a" * MAX_NEXT_PATH_BYTES)
+
+    response = complete_login(client, state, "code-oversized")
+
+    assert response.status_code == 307
+    assert response.headers["location"] == "/"
+
+
+def test_a_tampered_pending_entry_is_re_normalised_on_the_way_out(
+    client: TestClient, site_dir: Path
+) -> None:
+    """The callback re-normalises, so a forged cookie cannot smuggle one back.
+
+    The stored path is only ever written by `normalize_next_path`, but the
+    cookie is decodable by anyone holding the session secret, so the redirect
+    target is normalised again at the point of use.
+    """
+    state = start_login(client, "/guides/sso-integration-guide/")
+    session = current_session(client)
+    session[SESSION_PENDING_LOGINS_KEY][state] = "/" + "a" * (MAX_NEXT_PATH_BYTES * 4)
+
+    tampered = TestClient(client.app, cookies={SESSION_COOKIE_NAME: encode_session_cookie(session)})
+    response = complete_login(tampered, state, "code-tampered")
+
+    assert response.status_code == 307
+    assert response.headers["location"] == "/"
 
 
 # --- Session fixation ---------------------------------------------------------

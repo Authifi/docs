@@ -42,6 +42,14 @@ PUBLIC_PREFIXES = ("/.well-known/", "/assets/", "/javascripts/", "/stylesheets/"
 # POSIX `NAME_MAX`, in bytes. A longer path component cannot name anything on
 # the filesystems this is deployed on, so it is refused before it is probed.
 MAX_PATH_SEGMENT_BYTES = 255
+# The most a stored return path may weigh, in bytes. `next` is caller-supplied
+# and lands in the signed session cookie once per pending login, so an uncapped
+# one is a way to inflate that cookie past the 4096 bytes browsers keep --
+# after which the browser drops it and the session stops working. Four pending
+# logins at this cap measure a little over 3KB of cookie, and the longest path
+# the site publishes is 63 bytes, so no real destination comes near it.
+# `test_the_session_cookie_stays_under_the_browser_limit` holds that measurement.
+MAX_NEXT_PATH_BYTES = 256
 SESSION_COOKIE_NAME = "authifi-session"
 DEFAULT_SITE_DIR = "site"
 DEFAULT_OIDC_SCOPE = "openid profile email"
@@ -592,6 +600,17 @@ def safe_query_string(raw_query_string: bytes) -> str:
 
 def normalize_next_path(candidate: str | None, default: str = "/") -> str:
     if not isinstance(candidate, str) or not candidate:
+        return default
+    try:
+        # Weighed first, so the scans below are bounded work on a caller-supplied
+        # string, and because bytes are the unit that matters to the cookie: 100
+        # characters of Japanese are 300 bytes of it.
+        oversized = len(candidate.encode("utf-8")) > MAX_NEXT_PATH_BYTES
+    except UnicodeError:
+        # No UTF-8 form, so no byte length, and nothing that could be stored or
+        # redirected to either.
+        return default
+    if oversized:
         return default
     if not candidate.startswith("/") or candidate.startswith("//"):
         return default

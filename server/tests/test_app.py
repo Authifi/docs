@@ -13,6 +13,7 @@ from server.app import (
     SESSION_MAX_AGE_SECONDS,
     AppConfig,
     create_app,
+    MAX_NEXT_PATH_BYTES,
     normalize_next_path,
 )
 from server.tests.support import (
@@ -1034,3 +1035,80 @@ def test_main_module_exposes_asgi_app_from_environment(site_dir: Path, monkeypat
     module = importlib.import_module("server.main")
 
     assert getattr(module, "app", None) is not None
+
+
+# --- The `next` path byte cap -------------------------------------------------
+#
+# `next` is attacker-supplied and is stored in the signed session cookie, once
+# per pending login. Uncapped, four tabs with a kilobyte each push the cookie
+# past the 4096-byte limit browsers enforce, at which point the browser drops it
+# silently and the session simply stops working.
+
+
+def sized_next(byte_length: int, filler: str = "a") -> str:
+    """A well-formed `next` path of exactly ``byte_length`` UTF-8 bytes."""
+    unit = len(filler.encode("utf-8"))
+    assert (byte_length - 1) % unit == 0
+    candidate = "/" + filler * ((byte_length - 1) // unit)
+    assert len(candidate.encode("utf-8")) == byte_length
+    return candidate
+
+
+def test_a_next_path_at_the_cap_is_kept() -> None:
+    at_cap = sized_next(MAX_NEXT_PATH_BYTES)
+
+    assert normalize_next_path(at_cap) == at_cap
+
+
+def test_a_next_path_one_byte_over_the_cap_falls_back() -> None:
+    assert normalize_next_path(sized_next(MAX_NEXT_PATH_BYTES + 1)) == "/"
+
+
+@pytest.mark.parametrize("multiple", [2, 8, 64])
+def test_a_wildly_oversized_next_path_falls_back(multiple: int) -> None:
+    assert normalize_next_path(sized_next(MAX_NEXT_PATH_BYTES * multiple)) == "/"
+
+
+def test_the_cap_counts_bytes_rather_than_characters() -> None:
+    """A filesystem and a cookie both measure bytes; `len()` does not.
+
+    These two are the same length in characters and land on opposite sides of
+    the cap.
+    """
+    ascii_at_cap = sized_next(MAX_NEXT_PATH_BYTES)
+    multibyte = "/" + "é" * (MAX_NEXT_PATH_BYTES - 1)
+
+    assert len(ascii_at_cap) == len(multibyte)
+    assert normalize_next_path(ascii_at_cap) == ascii_at_cap
+    assert normalize_next_path(multibyte) == "/"
+
+
+@pytest.mark.parametrize("filler", ["é", "😀"])
+def test_a_multibyte_next_path_is_kept_right_up_to_the_cap(filler: str) -> None:
+    unit = len(filler.encode("utf-8"))
+    at_cap = "/" + filler * ((MAX_NEXT_PATH_BYTES - 1) // unit)
+    over_cap = at_cap + filler
+
+    assert len(at_cap.encode("utf-8")) <= MAX_NEXT_PATH_BYTES
+    assert normalize_next_path(at_cap) == at_cap
+    assert normalize_next_path(over_cap) == "/"
+
+
+def test_a_next_path_that_cannot_be_encoded_falls_back() -> None:
+    """A lone surrogate has no UTF-8 form, so it has no byte length either."""
+    assert normalize_next_path("/\ud800") == "/"
+
+
+def test_the_cap_leaves_room_for_a_real_path_and_its_query() -> None:
+    """The longest path the site publishes is 63 bytes; see test_public_boundary."""
+    longest_published = "/authorization/delegating-tenant-management-to-a-shared-tenant/"
+    with_query = f"{longest_published}?h=" + "search+term+" * 8
+
+    assert normalize_next_path(with_query) == with_query
+    assert len(with_query.encode("utf-8")) < MAX_NEXT_PATH_BYTES
+
+
+def test_the_custom_default_is_used_for_an_oversized_path_too() -> None:
+    oversized = sized_next(MAX_NEXT_PATH_BYTES + 1)
+
+    assert normalize_next_path(oversized, default="/privacy-policy/") == "/privacy-policy/"
