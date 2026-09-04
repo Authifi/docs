@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 
+import pytest
 import yaml
 
 RAW_WORKFLOW = (
@@ -36,6 +38,74 @@ def step_uses(name: str) -> str | None:
 
 def step_run(name: str) -> str:
     return str(step(name).get("run", ""))
+
+
+def executable_lines(run: str) -> list[str]:
+    lines: list[str] = []
+    pending = ""
+
+    for raw_line in run.splitlines():
+        stripped = raw_line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+
+        pending = f"{pending} {stripped}".strip() if pending else stripped
+        if pending.endswith("\\"):
+            pending = pending[:-1].rstrip()
+            continue
+
+        lines.append(pending)
+        pending = ""
+
+    if pending:
+        lines.append(pending)
+    return lines
+
+
+def anchored_lines(lines: list[str], pattern: str) -> list[str]:
+    regex = re.compile(pattern)
+    return [line for line in lines if regex.match(line)]
+
+
+def anchored_line(run: str, pattern: str) -> str:
+    matches = anchored_lines(executable_lines(run), pattern)
+    assert len(matches) == 1, matches
+    return matches[0]
+
+
+def assert_failure_branch(lines: list[str], command_line: str, diagnostic_line: str) -> None:
+    index = lines.index(command_line)
+    assert lines[index + 1] == diagnostic_line
+    assert lines[index + 2] == "exit 1"
+    assert lines[index + 3] == "fi"
+
+
+def assert_rollback_head_object_guards(run: str) -> None:
+    lines = executable_lines(run)
+    head_object_lines = anchored_lines(lines, r"^if ! aws s3api head-object\b")
+
+    assert head_object_lines == [
+        'if ! aws s3api head-object --bucket "$RELEASE_BUCKET_NAME" --key "$archive_key" > /dev/null 2>&1; then',
+        'if ! aws s3api head-object --bucket "$RELEASE_BUCKET_NAME" --key "$checksum_key" > /dev/null 2>&1; then',
+    ]
+    for line in head_object_lines:
+        assert '--bucket "$RELEASE_BUCKET_NAME"' in line
+
+    assert_failure_branch(
+        lines,
+        head_object_lines[0],
+        'echo "Existing release archive not found in s3://$RELEASE_BUCKET_NAME/$archive_key" >&2',
+    )
+    assert_failure_branch(
+        lines,
+        head_object_lines[1],
+        'echo "Existing release checksum not found in s3://$RELEASE_BUCKET_NAME/$checksum_key" >&2',
+    )
+
+
+def with_line_replaced(run: str, original: str, replacement: str) -> str:
+    assert original in run, original
+    return run.replace(original, replacement, 1)
 
 
 def test_deploy_job_uses_pinned_oidc_and_expected_step_shape() -> None:
@@ -99,12 +169,13 @@ def test_select_release_handles_push_and_workflow_dispatch_safely() -> None:
     )
 
     run = step_run("Select release")
-    assert 'if [[ -n "$requested_sha" ]]; then' in run
-    assert 'sha="$requested_sha"' in run
-    assert 'build=false' in run
-    assert 'sha="$GITHUB_SHA"' in run
-    assert 'build=true' in run
-    assert "40 lowercase hexadecimal characters" in run
+    lines = executable_lines(run)
+    assert 'if [[ -n "$requested_sha" ]]; then' in lines
+    assert 'sha="$requested_sha"' in lines
+    assert "build=false" in lines
+    assert 'sha="$GITHUB_SHA"' in lines
+    assert "build=true" in lines
+    assert 'echo "Release SHA must be 40 lowercase hexadecimal characters" >&2' in lines
 
 
 def test_push_and_rerun_build_steps_keep_immutable_checksum_behavior() -> None:
@@ -113,18 +184,35 @@ def test_push_and_rerun_build_steps_keep_immutable_checksum_behavior() -> None:
 
     build_run = step_run("Build release")
     publish_run = step_run("Publish or verify release")
+    publish_lines = executable_lines(publish_run)
 
-    assert "./scripts/build-release.sh" in build_run
-    assert '--key "releases/$sha.tar.gz"' in publish_run
-    assert '--key "releases/$sha.tar.gz.sha256"' in publish_run
-    assert 'aws s3 cp "$prefix/$sha.tar.gz.sha256" "$remote_checksum"' in publish_run
-    assert 'sha256sum --check "$(basename "$remote_checksum")"' in publish_run
-    assert "checksum mismatch for existing release" in publish_run
-    assert 'aws s3 cp "dist/releases/$sha.tar.gz" "$prefix/$sha.tar.gz"' in publish_run
+    assert 'set -euo pipefail' in executable_lines(build_run)
     assert (
-        'aws s3 cp "dist/releases/$sha.tar.gz.sha256" "$prefix/$sha.tar.gz.sha256"'
-        in publish_run
+        anchored_line(
+            build_run,
+            r'^\.\/scripts\/build-release\.sh "\$\{\{ steps\.release\.outputs\.sha \}\}" dist/releases$',
+        )
+        == './scripts/build-release.sh "${{ steps.release.outputs.sha }}" dist/releases'
     )
+    assert (
+        anchored_line(
+            publish_run,
+            r'^if aws s3api head-object --bucket "\$RELEASE_BUCKET_NAME" --key "releases/\$sha\.tar\.gz" > /dev/null 2>&1; then$',
+        )
+        == 'if aws s3api head-object --bucket "$RELEASE_BUCKET_NAME" --key "releases/$sha.tar.gz" > /dev/null 2>&1; then'
+    )
+    assert (
+        anchored_line(
+            publish_run,
+            r'^aws s3api head-object --bucket "\$RELEASE_BUCKET_NAME" --key "releases/\$sha\.tar\.gz\.sha256" > /dev/null$',
+        )
+        == 'aws s3api head-object --bucket "$RELEASE_BUCKET_NAME" --key "releases/$sha.tar.gz.sha256" > /dev/null'
+    )
+    assert 'aws s3 cp "$prefix/$sha.tar.gz.sha256" "$remote_checksum"' in publish_lines
+    assert 'sha256sum --check "$(basename "$remote_checksum")"' in publish_lines
+    assert 'echo "checksum mismatch for existing release" >&2' in publish_lines
+    assert 'aws s3 cp "dist/releases/$sha.tar.gz" "$prefix/$sha.tar.gz"' in publish_lines
+    assert 'aws s3 cp "dist/releases/$sha.tar.gz.sha256" "$prefix/$sha.tar.gz.sha256"' in publish_lines
 
 
 def test_existing_release_dispatch_verifies_s3_objects_before_ssm() -> None:
@@ -135,14 +223,41 @@ def test_existing_release_dispatch_verifies_s3_objects_before_ssm() -> None:
     assert step_index("Publish or verify release") < step_index(verify_name) < step_index(send_name)
 
     verify_run = step_run(verify_name)
-    assert 'archive_key="releases/$sha.tar.gz"' in verify_run
-    assert 'checksum_key="releases/$sha.tar.gz.sha256"' in verify_run
-    assert 'Existing release archive not found in s3://$RELEASE_BUCKET_NAME/$archive_key' in verify_run
-    assert 'Existing release checksum not found in s3://$RELEASE_BUCKET_NAME/$checksum_key' in verify_run
+    verify_lines = executable_lines(verify_run)
+    assert 'archive_key="releases/$sha.tar.gz"' in verify_lines
+    assert 'checksum_key="releases/$sha.tar.gz.sha256"' in verify_lines
+    assert_rollback_head_object_guards(verify_run)
 
     send_run = step_run(send_name)
-    assert '--parameters "ReleaseSha=${sha}"' in send_run
+    assert (
+        anchored_line(send_run, r'^command_id="\$\(aws ssm send-command\b')
+        == 'command_id="$(aws ssm send-command --document-name "$DOCS_SSM_DOCUMENT_NAME" --instance-ids "$DOCS_INSTANCE_ID" --parameters "ReleaseSha=${sha}" --query \'Command.CommandId\' --output text)"'
+    )
     assert step_if(send_name) is None
+
+
+def test_rollback_guard_rejects_commented_out_head_object_commands() -> None:
+    verify_run = step_run("Verify existing release for rollback")
+    commented = with_line_replaced(
+        verify_run,
+        "if ! aws s3api head-object \\",
+        "# if ! aws s3api head-object \\",
+    )
+
+    with pytest.raises(AssertionError):
+        assert_rollback_head_object_guards(commented)
+
+
+def test_rollback_guard_rejects_echo_and_noop_mentions_of_head_object_commands() -> None:
+    verify_run = step_run("Verify existing release for rollback")
+    inert = with_line_replaced(
+        verify_run,
+        "if ! aws s3api head-object \\",
+        'echo "if ! aws s3api head-object --bucket \\"$RELEASE_BUCKET_NAME\\" --key \\"$checksum_key\\" > /dev/null 2>&1; then"\n: "aws s3api head-object --bucket \\"$RELEASE_BUCKET_NAME\\" --key \\"$checksum_key\\""',
+    )
+
+    with pytest.raises(AssertionError):
+        assert_rollback_head_object_guards(inert)
 
 
 def test_waiters_and_probes_use_only_the_release_sha_and_structured_checks() -> None:
@@ -150,18 +265,29 @@ def test_waiters_and_probes_use_only_the_release_sha_and_structured_checks() -> 
     wait_run = step_run("Wait for installer")
     alb_run = step_run("Wait for healthy ALB target")
     probe_run = step_run("Verify public and protected routes")
+    wait_lines = executable_lines(wait_run)
+    alb_lines = executable_lines(alb_run)
+    probe_lines = executable_lines(probe_run)
 
-    assert "ReleaseSha=" in send_run
-    assert "StandardOutputContent" in wait_run
-    assert "StandardErrorContent" in wait_run
-    assert "aws ssm wait command-executed" in wait_run
-    assert "aws elbv2 wait target-in-service" in alb_run
-    assert "aws elbv2 describe-target-health" in alb_run
-    assert "/privacy-policy/" in probe_run
-    assert "/guides/sso-integration-guide/" in probe_run
-    assert "--max-redirs 0" in probe_run
-    assert "%{http_code}" in probe_run
-    assert "/_auth/login" in probe_run
+    assert (
+        anchored_line(send_run, r'^command_id="\$\(aws ssm send-command\b')
+        .count("ReleaseSha=")
+        == 1
+    )
+    assert anchored_line(wait_run, r"^if ! aws ssm wait command-executed\b").startswith(
+        "if ! aws ssm wait command-executed"
+    )
+    assert 'dump_invocation StandardOutputContent >&2' in wait_lines
+    assert 'dump_invocation StandardErrorContent >&2' in wait_lines
+    assert anchored_line(alb_run, r"^if ! aws elbv2 wait target-in-service\b").startswith(
+        "if ! aws elbv2 wait target-in-service"
+    )
+    assert 'aws elbv2 describe-target-health --target-group-arn "$DOCS_TARGET_GROUP_ARN"' in alb_lines
+    assert any("/privacy-policy/" in line for line in probe_lines)
+    assert any("/guides/sso-integration-guide/" in line for line in probe_lines)
+    assert sum("--max-redirs 0" in line for line in probe_lines) == 2
+    assert any("%{http_code}" in line for line in probe_lines)
+    assert any("/_auth/login" in line for line in probe_lines)
 
     for forbidden in ("OIDC_CLIENT_SECRET", "SESSION_SECRET", "client_secret", "session_secret"):
         assert forbidden not in send_run
