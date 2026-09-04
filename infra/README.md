@@ -291,6 +291,8 @@ Application deployments happen through `.github/workflows/deploy.yml`:
 - `push` to `main`: build a release archive for `GITHUB_SHA`, upload it to S3 if missing, deploy it through SSM, wait for ALB target health, then probe public and protected routes
 - `workflow_dispatch` with `release_sha`: require an existing 40-character lowercase SHA, verify both S3 objects already exist, then redeploy that exact release without rebuilding
 
+Of those steps, the route probes are the authoritative one. `Wait for healthy ALB target` uses `aws elbv2 wait target-in-service`, which returns as soon as every target in the group reports `healthy` — and because the health check interval is longer than the swap takes, a target that was healthy before the swap can still be reporting healthy just after it. The wait therefore establishes that the load balancer can reach the instance and that `/health` answers through the target group; it does not prove which release answered. Treat a green wait with a failed probe as a failed deployment, and read the probe output rather than the wait.
+
 Those probes connect directly to `DOCS_ALB_DNS_NAME` with `curl --connect-to`
 while still using the canonical `DOCS_PUBLIC_BASE_URL` hostname for TLS SNI,
 certificate validation, redirects, and `Origin` semantics. The first workflow
@@ -321,7 +323,7 @@ When a workflow deployment fails, start with the exact stage that failed:
 
 - `Verify existing release for rollback`: the requested archive or checksum is missing from `s3://<release-bucket>/releases/`
 - `Wait for installer`: the workflow already prints SSM command status plus stdout and stderr from `GetCommandInvocation`
-- `Wait for healthy ALB target`: inspect the target health reason for the instance
+- `Wait for healthy ALB target`: inspect the target health reason for the instance. This step is necessary but not sufficient; it does not prove which release answered
 - `Verify public and protected routes`: the workflow prints the unexpected headers and redirect target it observed
 
 For host-level debugging, use Systems Manager rather than SSH. Useful checks from a Session Manager shell or Run Command are:

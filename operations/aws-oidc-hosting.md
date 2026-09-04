@@ -414,7 +414,7 @@ For local real-OIDC work, also register `http://localhost:8000/_auth/callback` a
    - `DOCS_PUBLIC_BASE_URL` from the same HTTPS origin configured as `public_base_url`
 4. Leave `docs.authifi.io` on Cloudflare Pages while ACM is validating and while you are preparing the first deployment; publish only the certificate-validation records at this stage.
 5. Prefer a protected `production` environment so the first post-merge run on `main` waits for approval. The workflow becomes manually dispatchable only once it exists on `main`, so the safest first rollout is: configure the variables first, merge, then approve the pending run or cancel it and use `workflow_dispatch` on `main`.
-6. Wait for the workflow to finish all three runtime checks: SSM command success, ALB target health, and public/protected route probes. Those probes connect directly to the ALB while preserving the canonical `DOCS_PUBLIC_BASE_URL` hostname for TLS, redirects, and `Origin` semantics.
+6. Wait for the workflow to finish all three runtime checks: SSM command success, ALB target health, and public/protected route probes. Those probes connect directly to the ALB while preserving the canonical `DOCS_PUBLIC_BASE_URL` hostname for TLS, redirects, and `Origin` semantics, and they are the authoritative check of the three. The target-health wait returns as soon as the target group reports `healthy`, and because the health check interval is longer than the symlink swap takes, a target healthy before the swap can still be reporting healthy just after it — so the wait does not prove which release answered. Read the probe output, not the wait.
 7. Cut DNS from Cloudflare to the ALB only after the direct ALB probes pass.
 8. Rerun the public and protected verification targets against `https://docs.authifi.io/` before announcing success.
 
@@ -444,7 +444,7 @@ When the deploy workflow fails, use the stage name as the first diagnostic:
 
 - `Verify existing release for rollback`: the requested archive or checksum is missing from S3
 - `Wait for installer`: inspect the SSM stdout and stderr the workflow prints
-- `Wait for healthy ALB target`: inspect target health details for the instance
+- `Wait for healthy ALB target`: inspect target health details for the instance. Remember this step is necessary but not sufficient — it does not prove which release answered
 - `Verify public and protected routes`: inspect the unexpected headers or login redirect the workflow prints
 
 ## Cutover From Cloudflare Pages

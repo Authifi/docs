@@ -4,9 +4,6 @@ site/
 # Release archives, wheelhouses, and the runtimes built beside them
 dist/
 
-# Agent working files
-docs/superpowers/
-
 # Python
 __pycache__/
 *.py[cod]

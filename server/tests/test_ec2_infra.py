@@ -811,6 +811,32 @@ def test_the_load_balancer_cannot_be_deleted_by_accident() -> None:
     assert "enable_alb_deletion_protection" in TFVARS_EXAMPLE
 
 
+def test_every_doc_that_mentions_the_target_wait_says_what_it_does_not_prove() -> None:
+    """`aws elbv2 wait target-in-service` returns as soon as every target in
+    the group reports `healthy`, and a target that was healthy before the swap
+    can still be reporting healthy after it: the health check interval is
+    longer than the swap takes. The wait therefore establishes that the load
+    balancer can reach the instance and that `/health` answers through the
+    target group. It does not establish which release answered.
+
+    The route probes that follow do -- they fetch a public page and a protected
+    page through the ALB itself. Every doc that mentions the wait has to say so,
+    because the failure this invites is an operator reading a green wait as a
+    successful deployment and stopping there.
+    """
+    for name, text in (
+        ("README.md", README),
+        ("infra/README.md", INFRA_README),
+        ("operations/aws-oidc-hosting.md", OPERATIONS_DOC),
+    ):
+        lowered = text.lower()
+        if "target health" not in lowered:
+            continue
+
+        assert "does not prove" in lowered, name
+        assert "authoritative" in lowered, name
+
+
 def test_the_absence_of_alb_access_logs_is_a_recorded_decision() -> None:
     """Not an oversight, and worth stating rather than leaving to be rediscovered.
 

@@ -194,7 +194,7 @@ Use [`infra/README.md`](infra/README.md) for the full Terraform and EC2/ALB boot
    - `DOCS_ALB_DNS_NAME`
    - `DOCS_PUBLIC_BASE_URL`
 5. Prefer a protected `production` environment so the first post-merge run on `main` waits for approval. The workflow becomes manually dispatchable only once it exists on `main`, so the safest first rollout is: configure the variables first, merge, then approve the pending run or cancel it and use `workflow_dispatch` on `main`.
-6. Use the deploy workflow to build a release archive, upload it to S3, install it through SSM, wait for ALB target health, and probe the new ALB directly while preserving the canonical `DOCS_PUBLIC_BASE_URL` hostname in TLS and HTTP.
+6. Use the deploy workflow to build a release archive, upload it to S3, install it through SSM, wait for ALB target health, and probe the new ALB directly while preserving the canonical `DOCS_PUBLIC_BASE_URL` hostname in TLS and HTTP. The direct probes are the authoritative check. The target-health wait returns as soon as the target group reports healthy, and a target healthy before the swap can still be reporting healthy just after it, so the wait does not prove which release answered — a green wait alone is not a successful deployment.
 7. Cut `docs.authifi.io` over from Cloudflare only after those direct-ALB probes pass, then rerun the canonical verification against `https://docs.authifi.io/`.
 
 If you merge the workflow before setting the required production variables or before protecting the `production` environment, the first push-triggered run may fail fast in `Verify required repository variables`. That failure is operationally honest, but it is avoidable.
