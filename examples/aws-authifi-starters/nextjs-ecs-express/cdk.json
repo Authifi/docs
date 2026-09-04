@@ -1,0 +1,12 @@
+{
+  "app": "npx tsx infra/bin/app.ts",
+  "context": {
+    "authifiHost": "https://auth.example.com",
+    "authifiTenant": "your-tenant",
+    "authifiClientId": "pending",
+    "authifiResource": "",
+    "appUrl": "",
+    "deploymentVersion": "1"
+  },
+  "versionReporting": false
+}

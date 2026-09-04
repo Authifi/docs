@@ -1,0 +1,7 @@
+node_modules/
+.next/
+cdk.out/
+*.tsbuildinfo
+.env
+.env.*
+!.env.example
