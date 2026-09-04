@@ -117,6 +117,8 @@ These configure the stack, not just the client: `--public-base-url` sets both `P
 
 Both URLs have to be something the local stacks could actually answer on: `http://`, an explicit port from 1024 to 65535, and a host that resolves only to loopback. Anything else fails before Docker is touched, with a message naming the option. That is also a guard rather than pedantry — the runner tears the stack down with `--volumes` and writes a test user into whatever issuer it is given, neither of which belongs anywhere but a throwaway local stack.
 
+`--mock-issuer` additionally requires a DNS hostname rather than an address, because that host is also the provider's Compose network alias: inside the docs container `127.0.0.1` is the docs container, so an address would point discovery at the docs server instead of the provider. `--public-base-url` has no such restriction and accepts `http://127.0.0.1:9001` or `http://[::1]:9001`.
+
 Shut down either local stack with:
 
 ```bash

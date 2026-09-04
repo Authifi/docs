@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import ipaddress
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -178,6 +179,45 @@ def build_mock_compose_env(project_dir: Path, environ: dict[str, str] | None = N
 
 Resolver = Callable[..., list]
 
+# One DNS label: letters, digits and hyphens, not starting or ending with one.
+# Underscores are excluded deliberately -- they appear in service records, not
+# in host names, and Compose aliases are host names.
+DNS_LABEL = re.compile(r"(?!-)[a-z0-9-]{1,63}(?<!-)\Z", re.IGNORECASE)
+MAX_HOSTNAME_LENGTH = 253
+
+
+def host_is_alias_safe_name(host: str) -> bool:
+    """Whether `host` is a name that can also serve as a Compose alias.
+
+    The mock issuer's host has two jobs at once: the smoke client dials it from
+    this machine, and `compose.mock.yaml` hangs it on the provider as a network
+    alias so the docs container can reach the provider under the same name. OIDC
+    requires one issuer URL for everybody, and only a name can be both.
+
+    An address cannot. Inside the docs container `127.0.0.1` is the docs
+    container, so discovery would dial the docs server instead of the provider,
+    and `::1` is not a legal alias at all -- nor does rebuilding
+    `http://::1:9400` from a host and a port produce a URL. Both are refused
+    here rather than left to fail later as something that looks like a broken
+    issuer.
+
+    A trailing dot is refused too. It is a legitimate way to write an absolute
+    name, but it is not the same string as the name without it, and this value
+    is compared as a string in a Compose alias and an issuer URL.
+    """
+    if not host or len(host) > MAX_HOSTNAME_LENGTH:
+        return False
+    if host.endswith("."):
+        return False
+    # An address is not a name, in either family. A scoped or otherwise
+    # unparseable v6 form is caught by the label rules below.
+    try:
+        ipaddress.ip_address(host)
+        return False
+    except ValueError:
+        pass
+    return all(DNS_LABEL.match(label) for label in host.split("."))
+
 
 def host_is_loopback(host: str, resolve: Resolver = socket.getaddrinfo) -> bool:
     """Whether `host` names this machine and nothing else.
@@ -228,6 +268,7 @@ def require_local_http_url(
     value: str,
     option: str,
     resolve: Resolver = socket.getaddrinfo,
+    host_must_be_a_name: bool = False,
 ) -> SplitResult:
     """`value` parsed, or a `ValueError` naming the option it came from.
 
@@ -237,6 +278,11 @@ def require_local_http_url(
     rule is also what keeps this runner pointed at a throwaway stack: it tears
     the stack down with `--volumes` when it finishes and it writes a user into
     the issuer it is given, neither of which belongs anywhere but here.
+
+    `host_must_be_a_name` is for the mock issuer, whose host doubles as a
+    Compose network alias; see `host_is_alias_safe_name`. The docs URL is not
+    held to it, because nothing resolves that name inside a container -- the
+    host dials a published loopback port, so an address is the natural value.
     """
 
     def refuse(reason: str) -> ValueError:
@@ -267,6 +313,12 @@ def require_local_http_url(
         raise refuse(
             f"must name a port between {LOWEST_UNPRIVILEGED_PORT} and {HIGHEST_PORT}"
         )
+    if host_must_be_a_name and not host_is_alias_safe_name(host):
+        raise refuse(
+            "must name a DNS hostname, not an address: it is also the provider's "
+            "Compose network alias, and inside the docs container an address "
+            "points at the docs container"
+        )
     if not host_is_loopback(host, resolve=resolve):
         raise refuse("must name a host that resolves only to loopback")
     return parts
@@ -294,7 +346,9 @@ def compose_env_for_args(
     env = build_mock_compose_env(args.project_dir, environ)
 
     docs_url = require_local_http_url(args.public_base_url, "--public-base-url", resolve)
-    issuer_url = require_local_http_url(args.mock_issuer, "--mock-issuer", resolve)
+    issuer_url = require_local_http_url(
+        args.mock_issuer, "--mock-issuer", resolve, host_must_be_a_name=True
+    )
 
     env["PUBLIC_BASE_URL"] = args.public_base_url
     env["DOCS_PORT"] = str(docs_url.port)

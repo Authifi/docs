@@ -271,6 +271,27 @@ address is enough to refuse. The default `nip.io` name and CI's `/etc/hosts`
 alias both qualify. Validation runs before Docker is touched and names the
 option in the message.
 
+`--mock-issuer` carries one extra rule: its host must be a DNS **hostname**, not
+an address. That host does two jobs at once — the smoke client dials it from
+this machine, and Compose hangs it on the provider as a network alias so the
+docs container reaches the provider under the same name — and OIDC requires
+every party to agree on one issuer URL, which only a name can satisfy. An
+address cannot: inside the docs container `127.0.0.1` *is* the docs container,
+so discovery would dial the docs server instead of the provider and the failure
+would read as a broken issuer rather than a bad argument. `::1` is worse, being
+neither a legal alias nor something that survives being rebuilt from a host and
+a port — `http://::1:9400` is not a URL. A trailing dot is refused as well:
+it is a valid way to write an absolute name, but it is a different string, and
+this value is compared as one in both the alias and the issuer URL.
+
+`--public-base-url` is deliberately not held to that rule. Nothing resolves it
+inside a container; the host reaches the docs server through a published
+loopback port, so `http://127.0.0.1:9001` and `http://[::1]:9001` are both
+natural values. A bracketed IPv6 URL keeps its brackets everywhere it is taken
+apart and rebuilt. A zone index such as `fe80::1%en0` is refused in either
+option, since it means something only on the machine that wrote it and cannot
+be carried by a port mapping or a browser `Origin`.
+
 That last rule is a safety guard, not tidiness. The runner tears its stack down
 with `--volumes` and writes a test user into whatever issuer URL it is handed,
 so being able to point it at a non-local address is not a capability worth

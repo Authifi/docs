@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import socket
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -32,6 +33,7 @@ from server.local_smoke import (
     DEFAULT_MOCK_HOST,
     DEFAULT_MOCK_PORT,
     compose_env_for_args,
+    host_is_alias_safe_name,
     host_is_loopback,
     parse_args,
     require_local_http_url,
@@ -303,6 +305,173 @@ def test_a_mock_issuer_this_stack_cannot_serve_stops_the_run(tmp_path: Path) -> 
     args = args_for(["--mock-issuer", "https://issuer.example.com"], tmp_path)
 
     with pytest.raises(ValueError, match="--mock-issuer"):
+        compose_env_for_args(args, environ={})
+
+
+# --- The mock issuer host has to be a name, not an address -------------------
+#
+# `MOCK_OIDC_HOST` is a Compose network alias as well as the host the smoke
+# client dials, and OIDC requires both to agree on one issuer URL. An address
+# cannot do that job. Inside the docs container `127.0.0.1` is the docs
+# container, so discovery would dial the docs server -- or nothing -- instead of
+# the provider, and the failure would look like a broken issuer rather than a
+# bad argument. `::1` is worse: it is not a legal alias, and rebuilding
+# `http://::1:9400` from a host and a port does not even produce a URL.
+#
+# `--public-base-url` is held to no such rule. Nothing resolves it inside a
+# container; the host dials the published loopback port, so an address is the
+# most natural thing to write there.
+
+IP_LITERAL_ISSUERS = {
+    "ipv4-loopback": "http://127.0.0.1:9400",
+    "ipv4-other-loopback": "http://127.0.0.53:9400",
+    "ipv4-lan": "http://192.168.1.10:9400",
+    "ipv6-loopback": "http://[::1]:9400",
+    "ipv6-loopback-long": "http://[0:0:0:0:0:0:0:1]:9400",
+    "ipv6-unspecified": "http://[::]:9400",
+}
+
+
+@pytest.mark.parametrize("issuer", IP_LITERAL_ISSUERS.values(), ids=IP_LITERAL_ISSUERS)
+def test_an_ip_literal_mock_issuer_stops_the_run(tmp_path: Path, issuer: str) -> None:
+    args = args_for(["--mock-issuer", issuer], tmp_path)
+
+    with pytest.raises(ValueError, match="--mock-issuer"):
+        compose_env_for_args(args, environ={})
+
+
+def test_the_refusal_of_an_address_explains_what_it_would_have_meant(
+    tmp_path: Path,
+) -> None:
+    """The message has to be about the container, or the next person just picks
+    a different address."""
+    args = args_for(["--mock-issuer", "http://127.0.0.1:9400"], tmp_path)
+
+    with pytest.raises(ValueError, match="hostname"):
+        compose_env_for_args(args, environ={})
+
+
+MALFORMED_ISSUER_HOSTS = {
+    "scoped-ipv6": "http://[fe80::1%25en0]:9400",
+    "trailing-dot": "http://oidc-mock.alt.localhost.:9400",
+    "empty-label": "http://oidc..alt.localhost:9400",
+    "leading-dot": "http://.alt.localhost:9400",
+    "underscore": "http://oidc_mock.alt.localhost:9400",
+    "leading-hyphen": "http://-oidc.alt.localhost:9400",
+    "trailing-hyphen": "http://oidc-.alt.localhost:9400",
+    "space": "http://oidc mock.alt.localhost:9400",
+}
+
+
+@pytest.mark.parametrize(
+    "issuer", MALFORMED_ISSUER_HOSTS.values(), ids=MALFORMED_ISSUER_HOSTS
+)
+def test_a_mock_issuer_host_that_is_not_a_hostname_stops_the_run(
+    tmp_path: Path, issuer: str
+) -> None:
+    args = args_for(["--mock-issuer", issuer], tmp_path)
+
+    with pytest.raises(ValueError, match="--mock-issuer"):
+        compose_env_for_args(args, environ={})
+
+
+def test_a_label_longer_than_dns_allows_stops_the_run(tmp_path: Path) -> None:
+    args = args_for(["--mock-issuer", f"http://{'a' * 64}.localhost:9400"], tmp_path)
+
+    with pytest.raises(ValueError, match="--mock-issuer"):
+        compose_env_for_args(args, environ={})
+
+
+def test_a_dotted_localhost_name_is_accepted(tmp_path: Path) -> None:
+    """The shape these tests use, and a legitimate one: RFC 6761 reserves it."""
+    args = args_for(["--mock-issuer", ALT_MOCK_ISSUER], tmp_path)
+
+    env = compose_env_for_args(args, environ={})
+
+    assert env["MOCK_OIDC_HOST"] == ALT_MOCK_HOST
+
+
+def test_a_custom_hostname_resolving_only_to_loopback_is_accepted(
+    tmp_path: Path,
+) -> None:
+    """CI's `/etc/hosts` alias, which is a name and resolves to `127.0.0.1`."""
+    args = args_for(["--mock-issuer", "http://oidc-mock.local.test:9400"], tmp_path)
+
+    env = compose_env_for_args(
+        args, environ={}, resolve=resolver_for({"oidc-mock.local.test": ["127.0.0.1"]})
+    )
+
+    assert env["MOCK_OIDC_HOST"] == "oidc-mock.local.test"
+
+
+def test_a_hostname_that_resolves_off_loopback_still_stops_the_run(
+    tmp_path: Path,
+) -> None:
+    """Being a name is necessary, not sufficient."""
+    args = args_for(["--mock-issuer", "http://oidc.example.test:9400"], tmp_path)
+
+    with pytest.raises(ValueError, match="loopback"):
+        compose_env_for_args(
+            args, environ={}, resolve=resolver_for({"oidc.example.test": ["93.184.216.34"]})
+        )
+
+
+@pytest.mark.parametrize(
+    ("host", "expected"),
+    [
+        ("oidc-mock.alt.localhost", True),
+        ("oidc-mock", True),
+        ("OIDC-Mock.Alt.Localhost", True),
+        ("a" * 63 + ".localhost", True),
+        ("127.0.0.1", False),
+        ("::1", False),
+        ("fe80::1%en0", False),
+        ("oidc-mock.alt.localhost.", False),
+        ("oidc..alt", False),
+        ("", False),
+        ("_oidc", False),
+        ("a" * 64, False),
+        (("a" * 63 + ".") * 4 + "localhost", False),
+    ],
+)
+def test_which_hosts_can_serve_as_a_compose_alias(host: str, expected: bool) -> None:
+    assert host_is_alias_safe_name(host) is expected
+
+
+# --- An address is still fine for the docs URL -------------------------------
+
+
+@pytest.mark.parametrize(
+    "url", ["http://127.0.0.1:9001", "http://[::1]:9001", "http://localhost:9001"]
+)
+def test_the_public_base_url_still_accepts_an_address(tmp_path: Path, url: str) -> None:
+    args = args_for(["--public-base-url", url], tmp_path)
+
+    env = compose_env_for_args(args, environ={})
+
+    assert env["PUBLIC_BASE_URL"] == url
+    assert env["DOCS_PORT"] == "9001"
+
+
+def test_a_bracketed_ipv6_docs_url_survives_being_taken_apart(tmp_path: Path) -> None:
+    """The brackets are what make it a URL, so every value rebuilt from it has
+    to keep them. `http://::1:9001` is not something a client can dial."""
+    args = args_for(["--public-base-url", "http://[::1]:9001"], tmp_path)
+
+    settings = settings_for_args(args, compose_env_for_args(args, environ={}))
+
+    assert settings.origin == "http://[::1]:9001"
+    assert settings.protected_url.startswith("http://[::1]:9001/")
+    assert urlsplit(settings.origin).hostname == "::1"
+    assert urlsplit(settings.origin).port == 9001
+
+
+def test_a_scoped_ipv6_docs_url_is_refused(tmp_path: Path) -> None:
+    """A zone index is meaningful only on the machine that wrote it, and is not
+    something a published port mapping or a browser `Origin` can carry."""
+    args = args_for(["--public-base-url", "http://[fe80::1%25en0]:9001"], tmp_path)
+
+    with pytest.raises(ValueError, match="--public-base-url"):
         compose_env_for_args(args, environ={})
 
 
