@@ -1,6 +1,26 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# The Noble cloud image ships python3 3.12 without `ensurepip`, which Ubuntu
+# packages separately as python3.12-venv. Without it the release installer's
+# `python3 -m venv` fails on the very first deploy. The package comes over the
+# private subnet's shared NAT route.
+#
+# Retried, because this is the first thing on the host to depend on that route
+# and `set -e` would otherwise turn one bad response into an instance with no
+# service unit and no installer.
+export DEBIAN_FRONTEND=noninteractive
+for attempt in 1 2 3 4 5; do
+  if apt-get update && apt-get install --yes python3-venv; then
+    break
+  fi
+  if [[ "$attempt" -eq 5 ]]; then
+    echo "could not install python3-venv" >&2
+    exit 1
+  fi
+  sleep "$((attempt * 5))"
+done
+
 useradd --system --home-dir /opt/authifi-docs --shell /sbin/nologin authifi-docs || true
 install -d -o authifi-docs -g authifi-docs /opt/authifi-docs/releases /opt/authifi-docs/incoming
 install -d -m 0700 -o root -g root /etc/authifi-docs

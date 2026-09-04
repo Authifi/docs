@@ -59,8 +59,80 @@ def test_app_runner_and_ecr_are_absent() -> None:
 def test_instance_is_private_and_uses_encrypted_ebs() -> None:
     instance = hcl_block(MAIN, 'resource "aws_instance" "docs"')
     assert "associate_public_ip_address = false" in instance
+    assert "subnet_id                   = var.private_app_subnet_id" in instance
     root = hcl_block(instance, "root_block_device")
     assert "encrypted = true" in root
+
+
+# --- The shared network is consumed, not rebuilt -------------------------------
+
+
+def test_terraform_reuses_the_shared_vpc_and_subnets() -> None:
+    """A second VPC would need its own NAT to give the server the internet
+    egress the OIDC code exchange requires. This root takes Authifi's."""
+    for resource in (
+        'resource "aws_vpc"',
+        'resource "aws_subnet"',
+        'resource "aws_internet_gateway"',
+        'resource "aws_nat_gateway"',
+        'resource "aws_route"',
+    ):
+        assert resource not in MAIN, resource
+
+    alb = hcl_block(MAIN, 'resource "aws_lb" "docs"')
+    assert "subnets            = var.public_subnet_ids" in alb
+
+
+def test_the_target_group_lives_in_the_shared_vpc() -> None:
+    target = hcl_block(MAIN, 'resource "aws_lb_target_group" "docs"')
+
+    assert attribute(target, "vpc_id") == "var.vpc_id"
+
+
+def test_supplied_subnets_are_checked_against_the_supplied_vpc() -> None:
+    """Three IDs that each exist but do not belong together fail at apply time
+    with an AWS error about the load balancer, not about the inputs. The
+    postconditions turn that into a plan-time message naming the variable.
+    """
+    for name in ("public", "app"):
+        postcondition = hcl_block(hcl_block(MAIN, f'data "aws_subnet" "{name}"'), "postcondition")
+
+        assert attribute(postcondition, "condition") == "self.vpc_id == var.vpc_id"
+        assert "error_message" in postcondition
+
+
+def test_the_load_balancer_checks_it_spans_two_zones() -> None:
+    """Two distinct subnet IDs are not two availability zones, and an
+    internet-facing load balancer sitting in one has no second zone.
+
+    This is also what makes the subnet lookups load-bearing: referencing them
+    here puts them ahead of the load balancer in the graph, so their vpc_id
+    postconditions are what fails rather than an opaque AWS error.
+    """
+    precondition = hcl_block(hcl_block(MAIN, 'resource "aws_lb" "docs"'), "precondition")
+
+    assert "data.aws_subnet.public" in precondition
+    assert "availability_zone" in precondition
+    assert "== 2" in precondition
+
+
+def test_the_instance_rejects_a_subnet_that_hands_out_public_addresses() -> None:
+    """`private_app_subnet_id` is a plain string, and a public subnet ID is a
+    valid one. Catching it here fails the plan instead of quietly putting the
+    docs server in a subnet with a route to an internet gateway.
+    """
+    precondition = hcl_block(hcl_block(MAIN, 'resource "aws_instance" "docs"'), "precondition")
+
+    assert "data.aws_subnet.app.map_public_ip_on_launch == false" in precondition
+
+
+def test_two_distinct_public_subnets_are_required() -> None:
+    """An internet-facing ALB needs two availability zones, and the same subnet
+    listed twice satisfies a length check while providing one."""
+    block = hcl_block(VARIABLES, 'variable "public_subnet_ids"')
+
+    assert "length(var.public_subnet_ids) == 2" in block
+    assert "length(distinct(var.public_subnet_ids)) == 2" in block
 
 
 def test_the_instance_requires_imdsv2() -> None:
@@ -70,21 +142,6 @@ def test_the_instance_requires_imdsv2() -> None:
 
     assert attribute(metadata, "http_tokens") == '"required"'
     assert attribute(metadata, "http_put_response_hop_limit") == "1"
-
-
-def test_the_app_subnet_has_no_route_off_the_vpc() -> None:
-    """The private route table's emptiness is the containment, so it is pinned.
-
-    A second `aws_route` is how a NAT or gateway route gets added without anyone
-    revisiting whether the instance should be able to dial out.
-    """
-    routes = re.findall(r'resource "aws_route" "([^"]+)"', MAIN)
-
-    assert routes == ["public_internet"]
-    assert attribute(hcl_block(MAIN, 'resource "aws_route" "public_internet"'), "route_table_id") == (
-        "aws_route_table.public.id"
-    )
-    assert 'resource "aws_nat_gateway"' not in MAIN
 
 
 def test_the_instance_is_registered_with_the_target_group() -> None:
@@ -106,35 +163,56 @@ def test_only_the_alb_security_group_can_reach_the_app_port() -> None:
     assert "cidr_ipv4" not in ingress
 
 
-def test_the_app_has_no_unrestricted_egress() -> None:
-    """Egress is the exfiltration path out of a subnet with no inbound door."""
-    app_egress = [
-        body
-        for body in security_group_rules("egress").values()
+def test_app_egress_supports_shared_nat_oidc_and_bootstrap() -> None:
+    """The docs server performs OIDC discovery and the authorization-code
+    exchange itself, and the host installs one Ubuntu package at first boot.
+    Both leave the subnet through the shared NAT, so the security group has to
+    permit them; VPC endpoints no longer stand in for that egress.
+    """
+    for name, port in (("app_http", 80), ("app_https", 443)):
+        rule = hcl_block(
+            MAIN,
+            f'resource "aws_vpc_security_group_egress_rule" "{name}"',
+        )
+        assert f"from_port   = {port}" in rule
+        assert f"to_port     = {port}" in rule
+        assert 'cidr_ipv4   = "0.0.0.0/0"' in rule
+
+    assert 'resource "aws_vpc_endpoint"' not in MAIN
+
+
+def test_the_app_resolves_names_inside_the_vpc_only() -> None:
+    """DNS is the one flow that must not go to the internet: pointing it at an
+    external resolver would break the VPC's own private zones."""
+    for name, protocol in (("app_dns_udp", "udp"), ("app_dns_tcp", "tcp")):
+        rule = hcl_block(MAIN, f'resource "aws_vpc_security_group_egress_rule" "{name}"')
+
+        assert attribute(rule, "cidr_ipv4") == "data.aws_vpc.shared.cidr_block"
+        assert attribute(rule, "ip_protocol") == f'"{protocol}"'
+        assert attribute(rule, "from_port") == "53"
+
+
+def test_app_egress_is_confined_to_named_ports() -> None:
+    """`0.0.0.0/0` on 80 and 443 is required; `0.0.0.0/0` on every port is not.
+    A blanket `ip_protocol = "-1"` rule would satisfy the flows above while
+    opening every outbound port on the instance.
+    """
+    app_egress = {
+        name: body
+        for name, body in security_group_rules("egress").items()
         if attribute(body, "security_group_id") == "aws_security_group.app.id"
-    ]
+    }
 
-    assert app_egress, "the app security group has no egress rules to check"
-    for body in app_egress:
-        assert "0.0.0.0/0" not in body, body
-        assert "::/0" not in body, body
-
-
-def test_the_app_reaches_s3_through_the_gateway_endpoints_prefix_list() -> None:
-    """Gateway-endpoint traffic keeps S3's public addresses, so a security group
-    that only allows the interface endpoints silently breaks every download."""
-    to_s3 = hcl_block(MAIN, 'resource "aws_vpc_security_group_egress_rule" "app_to_s3"')
-
-    assert attribute(to_s3, "prefix_list_id") == "aws_vpc_endpoint.s3.prefix_list_id"
-    assert attribute(to_s3, "from_port") == "443"
-
-
-def test_the_endpoint_security_group_admits_only_the_app() -> None:
-    ingress = hcl_block(MAIN, 'resource "aws_vpc_security_group_ingress_rule" "endpoints_from_app"')
-
-    assert attribute(ingress, "referenced_security_group_id") == "aws_security_group.app.id"
-    assert attribute(ingress, "from_port") == "443"
-    assert "cidr_ipv4" not in ingress
+    assert set(app_egress) == {
+        "app_dns_tcp",
+        "app_dns_udp",
+        "app_http",
+        "app_https",
+        "app_time_sync",
+    }
+    for name, body in app_egress.items():
+        assert attribute(body, "ip_protocol") in ('"tcp"', '"udp"'), name
+        assert attribute(body, "from_port") == attribute(body, "to_port"), name
 
 
 # --- The public edge ----------------------------------------------------------
@@ -147,19 +225,38 @@ def test_alb_redirects_http_and_checks_application_health() -> None:
     assert 'path                = "/health"' in hcl_block(target, "health_check")
 
 
-def test_https_is_served_only_once_the_certificate_is_enabled() -> None:
-    """DNS lives outside this root, so the first apply cannot have a validated
-    certificate. The bootstrap listener holds port 80 until it does, and the two
-    counts are exact inverses so port 80 is never claimed twice or left unbound.
-    """
-    counts = {
-        name: attribute(hcl_block(MAIN, f'resource "aws_lb_listener" "{name}"'), "count")
-        for name in ("http", "https", "bootstrap")
-    }
+def test_one_stable_listener_owns_port_eighty() -> None:
+    """Two count-gated listeners on port 80 are a create racing a destroy, and
+    AWS rejects the overlap with DuplicateListener, so the flip to HTTPS needed
+    a second apply to converge.
 
-    assert counts["http"] == "var.enable_https_listener ? 1 : 0"
-    assert counts["https"] == "var.enable_https_listener ? 1 : 0"
-    assert counts["bootstrap"] == "var.enable_https_listener ? 0 : 1"
+    One unconditional listener whose default action swaps between the bootstrap
+    response and the redirect is an in-place update, so the flip lands in one
+    apply.
+    """
+    http = hcl_block(MAIN, 'resource "aws_lb_listener" "http"')
+
+    assert 'resource "aws_lb_listener" "bootstrap"' not in MAIN
+    assert attribute(http, "count") is None
+    assert attribute(http, "port") == "80"
+
+    # Exact inverses, so port 80 always has one default action and never two.
+    assert re.findall(r"for_each\s*=\s*(.+)", http) == [
+        "var.enable_https_listener ? [1] : []",
+        "var.enable_https_listener ? [] : [1]",
+    ]
+    assert '"redirect"' in http
+    assert '"fixed-response"' in http
+
+
+def test_https_is_served_only_once_the_certificate_is_enabled() -> None:
+    """Nothing else claims port 443, so this one stays count-gated: it cannot
+    exist at all until the certificate it references has been issued.
+    """
+    https = hcl_block(MAIN, 'resource "aws_lb_listener" "https"')
+
+    assert attribute(https, "count") == "var.enable_https_listener ? 1 : 0"
+    assert attribute(https, "certificate_arn") == "aws_acm_certificate.docs.arn"
 
 
 def test_the_certificate_is_not_blocked_on_validation_at_apply_time() -> None:
@@ -170,14 +267,6 @@ def test_the_certificate_is_not_blocked_on_validation_at_apply_time() -> None:
 
 
 # --- Deployment reaches the instance without SSH or a public address ---------
-
-
-def test_private_endpoints_cover_release_and_ssm_traffic() -> None:
-    assert 'resource "aws_vpc_endpoint" "s3"' in MAIN
-    for name in ("ssm", "ssmmessages", "ec2messages"):
-        endpoint = hcl_block(MAIN, f'resource "aws_vpc_endpoint" "{name}"')
-        assert 'vpc_endpoint_type = "Interface"' in endpoint
-        assert "private_dns_enabled = true" in endpoint
 
 
 def test_ssm_document_stages_both_objects_before_running_the_installer() -> None:
@@ -296,6 +385,28 @@ def test_bootstrap_creates_a_non_root_service_and_root_only_session_key() -> Non
     assert "chmod 0600 /etc/authifi-docs/session.env" in USER_DATA
     assert "openssl rand -hex 32" in USER_DATA
     assert "SESSION_SECRET=" not in MAIN
+
+
+def test_bootstrap_installs_the_venv_package_ubuntu_leaves_out() -> None:
+    """The Noble cloud image ships python3 3.12 with no `ensurepip`: that module
+    is owned by python3.12-venv, which the image does not include. Without this
+    the installer's `python3 -m venv` fails on the very first deploy.
+
+    It has to happen before the service is enabled, and it is only reachable at
+    all because the private subnet routes through the shared NAT.
+    """
+    assert "apt-get update" in USER_DATA
+    assert "apt-get install --yes python3-venv" in USER_DATA
+    assert USER_DATA.index("apt-get install") < USER_DATA.index("systemctl enable")
+
+
+def test_the_bootstrap_package_install_does_not_fail_on_one_bad_response() -> None:
+    """It is the first thing on this host to use the shared NAT, and `set -e`
+    would turn a transient apt failure into an instance with no service unit and
+    no installer.
+    """
+    assert "DEBIAN_FRONTEND=noninteractive" in USER_DATA
+    assert re.search(r"for attempt in .*; do", USER_DATA)
 
 
 def test_the_session_secret_survives_a_reboot() -> None:

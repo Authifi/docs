@@ -21,41 +21,41 @@ variable "service_name" {
   }
 }
 
-variable "vpc_cidr" {
-  description = "IPv4 CIDR block for the docs VPC."
+variable "vpc_id" {
+  description = "Existing shared Authifi VPC ID."
   type        = string
-  default     = "10.42.0.0/16"
 
   validation {
-    condition     = can(cidrnetmask(var.vpc_cidr))
-    error_message = "vpc_cidr must be a valid IPv4 CIDR block."
+    condition     = can(regex("^vpc-[0-9a-f]{8,17}$", var.vpc_id))
+    error_message = "vpc_id must be an existing VPC ID such as vpc-0123456789abcdef0."
   }
 }
 
-variable "public_subnet_cidrs" {
-  description = "The two public subnet CIDR blocks the internet-facing load balancer spans."
+variable "public_subnet_ids" {
+  description = "The two existing public subnet IDs, in different availability zones, that the internet-facing load balancer spans."
   type        = list(string)
-  default     = ["10.42.0.0/24", "10.42.1.0/24"]
 
+  # Two entries and two *distinct* entries are different requirements. An
+  # internet-facing load balancer needs two availability zones, and the same
+  # subnet listed twice would pass a length check while supplying one.
   validation {
-    condition     = length(var.public_subnet_cidrs) == 2
-    error_message = "Exactly two public subnet CIDRs are required for the ALB."
+    condition     = length(var.public_subnet_ids) == 2 && length(distinct(var.public_subnet_ids)) == 2
+    error_message = "Exactly two distinct existing public subnet IDs are required for the ALB."
   }
 
   validation {
-    condition     = alltrue([for block in var.public_subnet_cidrs : can(cidrnetmask(block))])
-    error_message = "Every entry in public_subnet_cidrs must be a valid IPv4 CIDR block."
+    condition     = alltrue([for id in var.public_subnet_ids : can(regex("^subnet-[0-9a-f]{8,17}$", id))])
+    error_message = "Every entry in public_subnet_ids must be an existing subnet ID."
   }
 }
 
-variable "private_subnet_cidr" {
-  description = "IPv4 CIDR block for the private subnet that holds the docs instance."
+variable "private_app_subnet_id" {
+  description = "Existing private application subnet whose route table uses the shared NAT Gateway."
   type        = string
-  default     = "10.42.10.0/24"
 
   validation {
-    condition     = can(cidrnetmask(var.private_subnet_cidr))
-    error_message = "private_subnet_cidr must be a valid IPv4 CIDR block."
+    condition     = can(regex("^subnet-[0-9a-f]{8,17}$", var.private_app_subnet_id))
+    error_message = "private_app_subnet_id must be an existing subnet ID."
   }
 }
 

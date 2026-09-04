@@ -1,11 +1,19 @@
 aws_region   = "us-east-1"
 service_name = "authifi-docs"
 
-# Network sizing. Two public subnets are required: an internet-facing
-# application load balancer will not accept fewer.
-vpc_cidr            = "10.42.0.0/16"
-public_subnet_cidrs = ["10.42.0.0/24", "10.42.1.0/24"]
-private_subnet_cidr = "10.42.10.0/24"
+# Authifi's existing shared network. This root creates no VPC, subnets, routes,
+# or NAT Gateway; it validates that all three IDs belong together and attaches
+# to them.
+#
+# The two public subnets must be distinct and in different availability zones,
+# because an internet-facing application load balancer will not accept fewer.
+# The private application subnet's existing route table must already route
+# 0.0.0.0/0 through the shared NAT Gateway: the docs server performs OIDC
+# discovery and the authorization-code exchange itself, and first boot installs
+# one Ubuntu package.
+vpc_id                = "vpc-0123456789abcdef0"
+public_subnet_ids     = ["subnet-0123456789abcdef0", "subnet-0123456789abcdef1"]
+private_app_subnet_id = "subnet-0123456789abcdef2"
 
 instance_type        = "t3.micro"
 root_volume_size_gib = 20

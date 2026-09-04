@@ -6,10 +6,6 @@ data "aws_caller_identity" "current" {}
 
 data "aws_partition" "current" {}
 
-data "aws_availability_zones" "available" {
-  state = "available"
-}
-
 # Canonical's official images. The account ID is pinned because an AMI name is
 # not a trust boundary: anyone may publish an image called
 # "ubuntu/images/...-server-*".
@@ -53,73 +49,40 @@ locals {
   })
 }
 
-# --- Network ------------------------------------------------------------------
+# --- The shared network this root consumes ------------------------------------
 
-resource "aws_vpc" "docs" {
-  cidr_block           = var.vpc_cidr
-  enable_dns_support   = true
-  enable_dns_hostnames = true
-
-  tags = merge(local.common_tags, { Name = var.service_name })
+# Authifi's VPC, its two public subnets, and the private application subnet
+# whose route table already points at the shared NAT Gateway. That egress is
+# what makes server-side OIDC discovery and the authorization-code exchange
+# possible, so this root reads the network rather than building a second one.
+data "aws_vpc" "shared" {
+  id = var.vpc_id
 }
 
-resource "aws_internet_gateway" "docs" {
-  vpc_id = aws_vpc.docs.id
+# Three IDs can each exist and still not belong together. Left unchecked, the
+# mismatch surfaces at apply time as an AWS error about the load balancer or the
+# instance; the postconditions turn it into a message naming the variable.
+data "aws_subnet" "public" {
+  for_each = toset(var.public_subnet_ids)
+  id       = each.value
 
-  tags = merge(local.common_tags, { Name = var.service_name })
+  lifecycle {
+    postcondition {
+      condition     = self.vpc_id == var.vpc_id
+      error_message = "Every public subnet must belong to vpc_id."
+    }
+  }
 }
 
-# Two, in two availability zones, because that is the minimum an internet-facing
-# application load balancer accepts.
-resource "aws_subnet" "public" {
-  count                   = 2
-  vpc_id                  = aws_vpc.docs.id
-  cidr_block              = var.public_subnet_cidrs[count.index]
-  availability_zone       = data.aws_availability_zones.available.names[count.index]
-  map_public_ip_on_launch = true
+data "aws_subnet" "app" {
+  id = var.private_app_subnet_id
 
-  tags = merge(local.common_tags, { Name = "${var.service_name}-public-${count.index}" })
-}
-
-resource "aws_subnet" "app" {
-  vpc_id                  = aws_vpc.docs.id
-  cidr_block              = var.private_subnet_cidr
-  availability_zone       = data.aws_availability_zones.available.names[0]
-  map_public_ip_on_launch = false
-
-  tags = merge(local.common_tags, { Name = "${var.service_name}-app" })
-}
-
-resource "aws_route_table" "public" {
-  vpc_id = aws_vpc.docs.id
-
-  tags = merge(local.common_tags, { Name = "${var.service_name}-public" })
-}
-
-resource "aws_route" "public_internet" {
-  route_table_id         = aws_route_table.public.id
-  destination_cidr_block = "0.0.0.0/0"
-  gateway_id             = aws_internet_gateway.docs.id
-}
-
-resource "aws_route_table_association" "public" {
-  count          = 2
-  subnet_id      = aws_subnet.public[count.index].id
-  route_table_id = aws_route_table.public.id
-}
-
-# Deliberately routeless apart from the VPC's own range and the S3 gateway
-# endpoint's prefix list. Adding a route here is how this instance would get an
-# unreviewed path to the internet.
-resource "aws_route_table" "app" {
-  vpc_id = aws_vpc.docs.id
-
-  tags = merge(local.common_tags, { Name = "${var.service_name}-app" })
-}
-
-resource "aws_route_table_association" "app" {
-  subnet_id      = aws_subnet.app.id
-  route_table_id = aws_route_table.app.id
+  lifecycle {
+    postcondition {
+      condition     = self.vpc_id == var.vpc_id
+      error_message = "private_app_subnet_id must belong to vpc_id."
+    }
+  }
 }
 
 # --- Security groups ----------------------------------------------------------
@@ -127,7 +90,7 @@ resource "aws_route_table_association" "app" {
 resource "aws_security_group" "alb" {
   name        = "${var.service_name}-alb"
   description = "Public load balancer for the Authifi docs site"
-  vpc_id      = aws_vpc.docs.id
+  vpc_id      = var.vpc_id
 
   tags = merge(local.common_tags, { Name = "${var.service_name}-alb" })
 }
@@ -135,17 +98,9 @@ resource "aws_security_group" "alb" {
 resource "aws_security_group" "app" {
   name        = "${var.service_name}-app"
   description = "Private docs instance"
-  vpc_id      = aws_vpc.docs.id
+  vpc_id      = var.vpc_id
 
   tags = merge(local.common_tags, { Name = "${var.service_name}-app" })
-}
-
-resource "aws_security_group" "endpoints" {
-  name        = "${var.service_name}-endpoints"
-  description = "Interface VPC endpoints for Systems Manager"
-  vpc_id      = aws_vpc.docs.id
-
-  tags = merge(local.common_tags, { Name = "${var.service_name}-endpoints" })
 }
 
 resource "aws_vpc_security_group_ingress_rule" "alb_http_from_internet" {
@@ -187,45 +142,68 @@ resource "aws_vpc_security_group_ingress_rule" "app_from_alb" {
   to_port                      = var.app_port
 }
 
-resource "aws_vpc_security_group_egress_rule" "app_to_endpoints" {
-  security_group_id            = aws_security_group.app.id
-  description                  = "Systems Manager interface endpoints"
-  referenced_security_group_id = aws_security_group.endpoints.id
-  ip_protocol                  = "tcp"
-  from_port                    = 443
-  to_port                      = 443
+# Egress leaves through the private subnet's existing shared NAT route. It is
+# named port by port rather than opened wholesale: `ip_protocol = "-1"` would
+# cover all four flows below and every other outbound port as well.
+#
+# DNS is the one flow that stays inside the VPC. Sending it to an external
+# resolver would break the VPC's own private hosted zones.
+resource "aws_vpc_security_group_egress_rule" "app_dns_udp" {
+  security_group_id = aws_security_group.app.id
+
+  description = "VPC resolver"
+  cidr_ipv4   = data.aws_vpc.shared.cidr_block
+  ip_protocol = "udp"
+  from_port   = 53
+  to_port     = 53
 }
 
-# A gateway endpoint leaves S3's public addresses in place and routes them
-# privately, so a security group that only allowed the interface endpoints would
-# let SSM stage nothing at all.
-resource "aws_vpc_security_group_egress_rule" "app_to_s3" {
+# Truncated answers and zone transfers fall back to TCP.
+resource "aws_vpc_security_group_egress_rule" "app_dns_tcp" {
   security_group_id = aws_security_group.app.id
-  description       = "Release archives through the S3 gateway endpoint"
-  prefix_list_id    = aws_vpc_endpoint.s3.prefix_list_id
-  ip_protocol       = "tcp"
-  from_port         = 443
-  to_port           = 443
+
+  description = "VPC resolver over TCP"
+  cidr_ipv4   = data.aws_vpc.shared.cidr_block
+  ip_protocol = "tcp"
+  from_port   = 53
+  to_port     = 53
+}
+
+# Ubuntu's archive mirrors are plain HTTP; the packages are signature-checked by
+# apt rather than by the transport. This is what lets first boot install the
+# python3-venv package the cloud image leaves out.
+resource "aws_vpc_security_group_egress_rule" "app_http" {
+  security_group_id = aws_security_group.app.id
+
+  description = "Ubuntu package mirrors during first-boot bootstrap"
+  cidr_ipv4   = "0.0.0.0/0"
+  ip_protocol = "tcp"
+  from_port   = 80
+  to_port     = 80
+}
+
+# OIDC discovery, signing-key retrieval, and the authorization-code exchange,
+# all of which the docs server performs itself, plus Systems Manager and S3.
+resource "aws_vpc_security_group_egress_rule" "app_https" {
+  security_group_id = aws_security_group.app.id
+
+  description = "OIDC, Systems Manager, S3, and package updates"
+  cidr_ipv4   = "0.0.0.0/0"
+  ip_protocol = "tcp"
+  from_port   = 443
+  to_port     = 443
 }
 
 # Clock skew shows up as an OIDC failure rather than a clock failure, because
-# the ID token's `iat`, `exp`, and `nonce` checks are the first thing it breaks.
-resource "aws_vpc_security_group_egress_rule" "app_to_time_sync" {
+# the ID token's `iat` and `exp` checks are the first thing it breaks.
+resource "aws_vpc_security_group_egress_rule" "app_time_sync" {
   security_group_id = aws_security_group.app.id
-  description       = "Amazon Time Sync Service"
-  cidr_ipv4         = "169.254.169.123/32"
-  ip_protocol       = "udp"
-  from_port         = 123
-  to_port           = 123
-}
 
-resource "aws_vpc_security_group_ingress_rule" "endpoints_from_app" {
-  security_group_id            = aws_security_group.endpoints.id
-  description                  = "Docs instance to Systems Manager"
-  referenced_security_group_id = aws_security_group.app.id
-  ip_protocol                  = "tcp"
-  from_port                    = 443
-  to_port                      = 443
+  description = "Amazon Time Sync Service"
+  cidr_ipv4   = "169.254.169.123/32"
+  ip_protocol = "udp"
+  from_port   = 123
+  to_port     = 123
 }
 
 # --- Public edge --------------------------------------------------------------
@@ -235,18 +213,29 @@ resource "aws_lb" "docs" {
   internal           = false
   load_balancer_type = "application"
   security_groups    = [aws_security_group.alb.id]
-  subnets            = aws_subnet.public[*].id
+  subnets            = var.public_subnet_ids
 
   drop_invalid_header_fields = true
 
   tags = local.common_tags
+
+  lifecycle {
+    # Two distinct subnet IDs are not two availability zones. Referencing the
+    # lookups here also orders them ahead of this load balancer, so a subnet
+    # from the wrong VPC fails their postconditions during plan rather than
+    # failing this resource during apply.
+    precondition {
+      condition     = length(distinct([for subnet in data.aws_subnet.public : subnet.availability_zone])) == 2
+      error_message = "public_subnet_ids must name subnets in two different availability zones."
+    }
+  }
 }
 
 resource "aws_lb_target_group" "docs" {
   name     = var.service_name
   port     = var.app_port
   protocol = "HTTP"
-  vpc_id   = aws_vpc.docs.id
+  vpc_id   = var.vpc_id
 
   health_check {
     enabled             = true
@@ -283,27 +272,45 @@ resource "aws_acm_certificate" "docs" {
 }
 
 # The two-stage switch below exists because of that gap. AWS refuses to attach a
-# pending certificate to an HTTPS listener, so the first apply serves the
-# bootstrap response on port 80, and the apply after DNS validation reports
-# ISSUED replaces it with the redirect and the HTTPS listener.
+# pending certificate to an HTTPS listener, so the first apply answers port 80
+# with a holding response, and the apply after DNS validation reports ISSUED
+# turns it into a redirect and adds the HTTPS listener.
 #
-# Both port-80 listeners are separate resources with no dependency between them,
-# so that apply may try to create this one before it has finished destroying
-# `bootstrap` and fail with DuplicateListener. Re-running apply converges,
-# because by then only one of the two is left to do.
+# One listener owns port 80 unconditionally, and only its default action is
+# conditional. Two count-gated listeners would make the flip a create racing a
+# destroy on the same port, which AWS rejects with DuplicateListener; this is an
+# in-place update, so the flip lands in a single apply. The two `for_each`
+# expressions are exact inverses, so the listener always has one action.
 resource "aws_lb_listener" "http" {
-  count             = var.enable_https_listener ? 1 : 0
   load_balancer_arn = aws_lb.docs.arn
   port              = 80
   protocol          = "HTTP"
 
-  default_action {
-    type = "redirect"
+  dynamic "default_action" {
+    for_each = var.enable_https_listener ? [1] : []
 
-    redirect {
-      port        = "443"
-      protocol    = "HTTPS"
-      status_code = "HTTP_301"
+    content {
+      type = "redirect"
+
+      redirect {
+        port        = "443"
+        protocol    = "HTTPS"
+        status_code = "HTTP_301"
+      }
+    }
+  }
+
+  dynamic "default_action" {
+    for_each = var.enable_https_listener ? [] : [1]
+
+    content {
+      type = "fixed-response"
+
+      fixed_response {
+        content_type = "text/plain"
+        message_body = "HTTPS certificate validation is pending"
+        status_code  = "503"
+      }
     }
   }
 
@@ -321,25 +328,6 @@ resource "aws_lb_listener" "https" {
   default_action {
     type             = "forward"
     target_group_arn = aws_lb_target_group.docs.arn
-  }
-
-  tags = local.common_tags
-}
-
-resource "aws_lb_listener" "bootstrap" {
-  count             = var.enable_https_listener ? 0 : 1
-  load_balancer_arn = aws_lb.docs.arn
-  port              = 80
-  protocol          = "HTTP"
-
-  default_action {
-    type = "fixed-response"
-
-    fixed_response {
-      content_type = "text/plain"
-      message_body = "HTTPS certificate validation is pending"
-      status_code  = "503"
-    }
   }
 
   tags = local.common_tags
@@ -409,63 +397,6 @@ resource "aws_s3_bucket_lifecycle_configuration" "releases" {
   depends_on = [aws_s3_bucket_versioning.releases]
 }
 
-# --- Private access to S3 and Systems Manager ---------------------------------
-
-# No endpoint policy: the default defers to IAM, and the only principal that can
-# route through this endpoint is an instance whose role grants s3:GetObject on
-# one prefix. A bucket allowlist here would instead have to be kept in step with
-# the AWS-managed buckets SSM Agent reads, and silently breaks the agent when it
-# is not.
-resource "aws_vpc_endpoint" "s3" {
-  vpc_id            = aws_vpc.docs.id
-  service_name      = "com.amazonaws.${var.aws_region}.s3"
-  vpc_endpoint_type = "Gateway"
-  route_table_ids   = [aws_route_table.app.id]
-
-  tags = merge(local.common_tags, { Name = "${var.service_name}-s3" })
-}
-
-resource "aws_vpc_endpoint" "ssm" {
-  vpc_id            = aws_vpc.docs.id
-  service_name      = "com.amazonaws.${var.aws_region}.ssm"
-  vpc_endpoint_type = "Interface"
-
-  subnet_ids         = [aws_subnet.app.id]
-  security_group_ids = [aws_security_group.endpoints.id]
-
-  # Without this the agent would have to be reconfigured to use the endpoint's
-  # own hostname instead of ssm.<region>.amazonaws.com.
-  private_dns_enabled = true
-
-  tags = merge(local.common_tags, { Name = "${var.service_name}-ssm" })
-}
-
-resource "aws_vpc_endpoint" "ssmmessages" {
-  vpc_id            = aws_vpc.docs.id
-  service_name      = "com.amazonaws.${var.aws_region}.ssmmessages"
-  vpc_endpoint_type = "Interface"
-
-  subnet_ids         = [aws_subnet.app.id]
-  security_group_ids = [aws_security_group.endpoints.id]
-
-  private_dns_enabled = true
-
-  tags = merge(local.common_tags, { Name = "${var.service_name}-ssmmessages" })
-}
-
-resource "aws_vpc_endpoint" "ec2messages" {
-  vpc_id            = aws_vpc.docs.id
-  service_name      = "com.amazonaws.${var.aws_region}.ec2messages"
-  vpc_endpoint_type = "Interface"
-
-  subnet_ids         = [aws_subnet.app.id]
-  security_group_ids = [aws_security_group.endpoints.id]
-
-  private_dns_enabled = true
-
-  tags = merge(local.common_tags, { Name = "${var.service_name}-ec2messages" })
-}
-
 # --- Instance identity --------------------------------------------------------
 
 data "aws_iam_policy_document" "instance_assume_role" {
@@ -522,22 +453,22 @@ resource "aws_iam_instance_profile" "docs" {
 
 # --- The docs instance --------------------------------------------------------
 
+# No public address and no inbound administrative port. Outbound traffic leaves
+# through the private subnet's shared NAT route; inbound reaches the application
+# port only from the load balancer's security group.
+#
+# Cloud-init runs user data once, on first boot, so `user_data_replace_on_change`
+# is what keeps a templated value from changing the plan while changing nothing
+# on the host — the wrong failure mode for the OIDC client and the site paths.
+# Replacement regenerates the session secret and empties the release directory,
+# so a redeploy has to follow one.
 resource "aws_instance" "docs" {
-  ami                    = data.aws_ami.ubuntu.id
-  instance_type          = var.instance_type
-  subnet_id              = aws_subnet.app.id
-  vpc_security_group_ids = [aws_security_group.app.id]
-  iam_instance_profile   = aws_iam_instance_profile.docs.name
-
-  # There is no public address and no route to a NAT, so the load balancer and
-  # the VPC endpoints are the only ways in and out.
+  ami                         = data.aws_ami.ubuntu.id
+  instance_type               = var.instance_type
+  subnet_id                   = var.private_app_subnet_id
+  vpc_security_group_ids      = [aws_security_group.app.id]
+  iam_instance_profile        = aws_iam_instance_profile.docs.name
   associate_public_ip_address = false
-
-  # Cloud-init runs user data once, on first boot. Without replacement, editing
-  # a templated value here would change the plan and change nothing on the host,
-  # which is the wrong failure mode for the OIDC client and the site paths.
-  # Replacement regenerates the session secret and empties the release
-  # directory, so a redeploy has to follow.
   user_data                   = local.user_data
   user_data_replace_on_change = true
 
@@ -561,20 +492,28 @@ resource "aws_instance" "docs" {
 
   tags = merge(local.common_tags, { Name = var.service_name })
 
-  # The agent registers with Systems Manager during first boot. Terraform would
-  # otherwise be free to create the instance alongside the endpoints, the
-  # security group rules, and the policy attachments the agent needs, leaving a
-  # node that never becomes managed until something restarts the agent.
+  lifecycle {
+    # A public subnet ID is a perfectly valid string for this variable. Failing
+    # the plan is better than quietly placing the docs server in a subnet that
+    # routes to an internet gateway.
+    precondition {
+      condition     = data.aws_subnet.app.map_public_ip_on_launch == false
+      error_message = "private_app_subnet_id must name a private subnet; this one auto-assigns public addresses."
+    }
+  }
+
+  # First boot does two things that need the network already permitted: it
+  # installs a package over HTTP, and the agent registers with Systems Manager
+  # over HTTPS. Terraform would otherwise be free to create the instance
+  # alongside these rules, leaving a host whose user data aborted and a node
+  # that never becomes managed until something restarts the agent.
   depends_on = [
     aws_iam_role_policy_attachment.instance_ssm_core,
     aws_iam_role_policy_attachment.instance_releases,
-    aws_vpc_endpoint.ssm,
-    aws_vpc_endpoint.ssmmessages,
-    aws_vpc_endpoint.ec2messages,
-    aws_vpc_endpoint.s3,
-    aws_vpc_security_group_egress_rule.app_to_endpoints,
-    aws_vpc_security_group_egress_rule.app_to_s3,
-    aws_vpc_security_group_ingress_rule.endpoints_from_app,
+    aws_vpc_security_group_egress_rule.app_dns_udp,
+    aws_vpc_security_group_egress_rule.app_dns_tcp,
+    aws_vpc_security_group_egress_rule.app_http,
+    aws_vpc_security_group_egress_rule.app_https,
   ]
 }
 
