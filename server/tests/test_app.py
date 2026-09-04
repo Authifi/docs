@@ -15,6 +15,7 @@ from server.app import (
     SESSION_MAX_AGE_SECONDS,
     AppConfig,
     create_app,
+    create_auth_client,
     MAX_NEXT_PATH_BYTES,
     normalize_next_path,
 )
@@ -419,8 +420,37 @@ def test_login_redirects_and_persists_safe_next(site_dir: Path) -> None:
     }
 
 
+@pytest.mark.parametrize(
+    ("secret", "expected_method"),
+    [(None, "none"), ("confidential-secret", "client_secret_basic")],
+)
+def test_auth_client_selects_token_authentication_from_secret_presence(
+    secret: str | None,
+    expected_method: str,
+    site_dir: Path,
+) -> None:
+    config = AppConfig(
+        oidc_issuer="https://issuer.example.com",
+        oidc_client_id="docs",
+        oidc_client_secret=secret,
+        session_secret="session-secret",
+        public_base_url="https://docs.example.com",
+        site_dir=site_dir,
+    )
+    client = create_auth_client(config)
+    assert client.client_kwargs["token_endpoint_auth_method"] == expected_method
+
+
 def test_login_with_real_authlib_client_generates_pkce_challenge_and_persists_verifier(site_dir: Path) -> None:
-    app = create_app(build_config(site_dir))
+    config = AppConfig(
+        oidc_issuer="https://issuer.example.com",
+        oidc_client_id="docs",
+        oidc_client_secret=None,
+        session_secret="session-secret",
+        public_base_url="https://docs.example.com",
+        site_dir=site_dir,
+    )
+    app = create_app(config)
 
     async def fake_metadata() -> dict[str, str]:
         return {
@@ -974,6 +1004,28 @@ def test_health_returns_expected_payload(site_dir: Path) -> None:
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+@pytest.mark.parametrize("secret", [None, ""])
+def test_oidc_client_secret_is_optional_for_a_pkce_public_client(
+    monkeypatch: pytest.MonkeyPatch,
+    secret: str | None,
+) -> None:
+    values = {
+        "OIDC_ISSUER": "https://issuer.example.com",
+        "OIDC_CLIENT_ID": "docs",
+        "SESSION_SECRET": "session-secret",
+        "PUBLIC_BASE_URL": "https://docs.example.com",
+        "SITE_DIR": "/tmp/site",
+    }
+    for name, value in values.items():
+        monkeypatch.setenv(name, value)
+    if secret is None:
+        monkeypatch.delenv("OIDC_CLIENT_SECRET", raising=False)
+    else:
+        monkeypatch.setenv("OIDC_CLIENT_SECRET", secret)
+
+    assert AppConfig.from_env().oidc_client_secret is None
 
 
 def test_app_config_reads_environment_defaults() -> None:

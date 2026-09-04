@@ -169,7 +169,7 @@ DOT_SEGMENTS = frozenset({".", ".."})
 class AppConfig:
     oidc_issuer: str
     oidc_client_id: str
-    oidc_client_secret: str
+    oidc_client_secret: str | None
     session_secret: str
     public_base_url: str
     site_dir: Path
@@ -197,7 +197,7 @@ class AppConfig:
         return cls(
             oidc_issuer=env["OIDC_ISSUER"],
             oidc_client_id=env["OIDC_CLIENT_ID"],
-            oidc_client_secret=env["OIDC_CLIENT_SECRET"],
+            oidc_client_secret=env.get("OIDC_CLIENT_SECRET") or None,
             session_secret=env["SESSION_SECRET"],
             public_base_url=env["PUBLIC_BASE_URL"],
             site_dir=site_dir,
@@ -1127,6 +1127,9 @@ class DocsOAuth(OAuth):
 
 def create_auth_client(config: AppConfig):
     oauth = DocsOAuth()
+    token_auth_method = (
+        "client_secret_basic" if config.oidc_client_secret else "none"
+    )
     oauth.register(
         name="authifi",
         client_id=config.oidc_client_id,
@@ -1135,6 +1138,10 @@ def create_auth_client(config: AppConfig):
             config.oidc_issuer.rstrip("/"),
             "/.well-known/openid-configuration",
         ),
-        client_kwargs={"scope": DEFAULT_OIDC_SCOPE, "code_challenge_method": "S256"},
+        client_kwargs={
+            "scope": DEFAULT_OIDC_SCOPE,
+            "code_challenge_method": "S256",
+            "token_endpoint_auth_method": token_auth_method,
+        },
     )
     return oauth.create_client("authifi")
