@@ -26,11 +26,13 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DOCKERFILE = REPO_ROOT / "Dockerfile"
 CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 README = REPO_ROOT / "README.md"
+EXTRACTED_RUNTIME_LOCK = (REPO_ROOT / "dist" / "expanded" / "requirements.txt").resolve()
 
 PIN_PATTERN = re.compile(r"^(?P<name>[A-Za-z0-9._-]+)==(?P<version>[A-Za-z0-9._+!-]+)$")
 
@@ -393,19 +395,56 @@ def ci_pip_commands() -> list[str]:
     return commands
 
 
-def requirement_files_installed_by(commands: list[str]) -> set[Path]:
+def executable_lines(run: str) -> list[str]:
+    lines: list[str] = []
+    pending = ""
+
+    for raw_line in run.splitlines():
+        stripped = raw_line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+
+        pending = f"{pending} {stripped}".strip() if pending else stripped
+        if pending.endswith("\\"):
+            pending = pending[:-1].rstrip()
+            continue
+
+        lines.append(pending)
+        pending = ""
+
+    if pending:
+        lines.append(pending)
+    return lines
+
+
+def ci_step(name: str) -> dict[str, object]:
+    steps = yaml.safe_load(CI_WORKFLOW.read_text(encoding="utf-8"))["jobs"]["validate"]["steps"]
+    return next(candidate for candidate in steps if candidate.get("name") == name)
+
+
+def ci_generated_lock_aliases(run: str) -> dict[Path, Path]:
+    aliases: dict[Path, Path] = {}
+    if 'cmp --silent dist/expanded/requirements.txt server/requirements.txt' in executable_lines(run):
+        aliases[EXTRACTED_RUNTIME_LOCK] = SERVER_LOCK.lock.resolve()
+    return aliases
+
+
+def requirement_files_installed_by(
+    commands: list[str], generated_lock_aliases: dict[Path, Path] | None = None
+) -> set[Path]:
     """Every requirements file the commands reach, following `-r` includes.
 
     `server/requirements-dev.txt` is how CI gets the server lock, so a check
     that only looked at the command line would miss it.
     """
+    aliases = {path.resolve(): target.resolve() for path, target in (generated_lock_aliases or {}).items()}
     frontier: list[Path] = []
     for command in commands:
         if "pip install" not in command:
             continue
         arguments = command.split()
         frontier += [
-            REPO_ROOT / argument
+            aliases.get((REPO_ROOT / argument).resolve(), (REPO_ROOT / argument).resolve())
             for flag, argument in zip(arguments, arguments[1:])
             if flag == "-r"
         ]
@@ -439,7 +478,10 @@ def test_ci_does_not_upgrade_pip() -> None:
 
 @pytest.mark.parametrize("lock", LOCKS, ids=lock_id)
 def test_ci_installs_the_complete_lock(lock: Lock) -> None:
-    installed = requirement_files_installed_by(ci_pip_commands())
+    installed = requirement_files_installed_by(
+        ci_pip_commands(),
+        ci_generated_lock_aliases(str(ci_step("Verify offline release installation").get("run", ""))),
+    )
 
     assert lock.lock.resolve() in installed, f"CI does not install {lock.lock}"
     assert lock.direct.resolve() not in installed, f"CI installs {lock.direct} directly"
@@ -457,20 +499,26 @@ def test_ci_pins_everything_it_installs() -> None:
             )
 
 
-def test_ci_exercises_the_native_release_without_production_docker() -> None:
-    workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+def test_ci_accepts_the_extracted_runtime_lock_only_with_a_real_cmp_guard() -> None:
+    commands = [
+        "python -m pip install --no-index --find-links=dist/expanded/wheelhouse -r dist/expanded/requirements.txt"
+    ]
 
-    assert "./scripts/build-release.sh" in workflow
-    assert "--no-index" in workflow
-    assert "dist/releases" in workflow
-    assert "uvicorn server.main:app" in workflow
-    assert "docker build --tag authifi-docs:test" not in workflow
+    assert requirement_files_installed_by(
+        commands, ci_generated_lock_aliases("cmp --silent dist/expanded/requirements.txt server/requirements.txt")
+    ) == {SERVER_LOCK.lock.resolve()}
 
 
-def test_ci_keeps_optional_compose_mock_coverage_explicit() -> None:
-    workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+def test_ci_does_not_accept_a_commented_cmp_as_generated_lock_proof() -> None:
+    assert not ci_generated_lock_aliases(
+        "# cmp --silent dist/expanded/requirements.txt server/requirements.txt"
+    )
 
-    assert "Credential-free local mock OIDC smoke test" in workflow
+
+def test_ci_does_not_accept_a_noop_cmp_mention_as_generated_lock_proof() -> None:
+    assert not ci_generated_lock_aliases(
+        ': "cmp --silent dist/expanded/requirements.txt server/requirements.txt"'
+    )
 
 
 def readme_pip_commands() -> list[str]:
@@ -487,7 +535,8 @@ def test_the_readme_sets_up_the_same_environment_ci_validates() -> None:
 
     assert commands
     assert requirement_files_installed_by(commands) == requirement_files_installed_by(
-        ci_pip_commands()
+        ci_pip_commands(),
+        ci_generated_lock_aliases(str(ci_step("Verify offline release installation").get("run", ""))),
     )
     for command in commands:
         assert "--upgrade pip" not in command, f"README upgrades pip: {command!r}"

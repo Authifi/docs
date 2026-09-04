@@ -76,7 +76,7 @@ jobs:
           python -m venv dist/runtime
           source dist/runtime/bin/activate
           cmp --silent dist/expanded/requirements.txt server/requirements.txt
-          python -m pip install --no-index --find-links=dist/expanded/wheelhouse -r server/requirements.txt
+          python -m pip install --no-index --find-links=dist/expanded/wheelhouse -r dist/expanded/requirements.txt
 
       - name: Probe native release server
         shell: bash
@@ -130,18 +130,47 @@ jobs:
           fi
 
           curl --fail --silent --show-error "${base_url}/health" | grep -q '"status":"ok"'
-          for probe in \
-            "/assets/%2e%2e/index.html" \
-            "/assets/%2e%2e/search/search_index.json" \
-            "/javascripts/%2e%2e/index.html" \
-            "/stylesheets/%2e%2e/index.html" \
-            "/.well-known/%2e%2e/index.html"; do
-            status="$(curl --silent --path-as-is --output /dev/null \
+          mapfile -t bypass_probes < <(python - <<'PY'
+          from server.local_smoke import BYPASS_PROBE_PATHS
+
+          for path in BYPASS_PROBE_PATHS:
+              print(path)
+          PY
+          )
+
+          for probe in "${bypass_probes[@]}"; do
+            body_file="$(mktemp)"
+            status="$(curl --silent --show-error --path-as-is \
+              --output "$body_file" \
               --write-out '%{http_code}' "${base_url}${probe}")"
             if [[ "$status" != "404" ]]; then
               echo "Encoded traversal probe $probe returned $status, expected 404" >&2
+              cat "$body_file" >&2
+              rm -f "$body_file"
               exit 1
             fi
+
+            if ! python - "$probe" "$body_file" <<'PY'
+            from pathlib import Path
+            import sys
+
+            from server.local_smoke import PROTECTED_CONTENT_MARKERS
+
+            path = sys.argv[1]
+            body = Path(sys.argv[2]).read_text(encoding="utf-8", errors="replace")
+            for marker in PROTECTED_CONTENT_MARKERS:
+                if marker in body:
+                    raise SystemExit(
+                        f"bypass probe {path!r} leaked protected content marker {marker!r}"
+                    )
+            PY
+            then
+              cat "$body_file" >&2
+              rm -f "$body_file"
+              exit 1
+            fi
+
+            rm -f "$body_file"
           done
 
       # Needed only by the host-side smoke client, which reaches the provider
