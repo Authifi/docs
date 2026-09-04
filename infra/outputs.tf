@@ -3,34 +3,50 @@ output "aws_region" {
   value       = var.aws_region
 }
 
-output "ecr_repository_arn" {
-  description = "Private ECR repository ARN."
-  value       = aws_ecr_repository.docs.arn
+output "release_bucket_name" {
+  description = "Private bucket the deployment workflow uploads release archives to."
+  value       = aws_s3_bucket.releases.id
 }
 
-output "ecr_repository_name" {
-  description = "Private ECR repository name."
-  value       = aws_ecr_repository.docs.name
+output "instance_id" {
+  description = "Managed node the deployment command targets."
+  value       = aws_instance.docs.id
 }
 
-output "ecr_repository_url" {
-  description = "Private ECR repository URL used by Docker builds and App Runner."
-  value       = aws_ecr_repository.docs.repository_url
+output "target_group_arn" {
+  description = "Target group the workflow polls for target health after a deployment."
+  value       = aws_lb_target_group.docs.arn
 }
 
-output "apprunner_service_arn" {
-  description = "App Runner service ARN, or null when create_service is false."
-  value       = try(aws_apprunner_service.docs[0].arn, null)
+output "ssm_document_name" {
+  description = "Command document that stages a release and runs the installer."
+  value       = aws_ssm_document.deploy.name
 }
 
-output "apprunner_service_url" {
-  description = "App Runner-generated service hostname, or null when create_service is false."
-  value       = try(aws_apprunner_service.docs[0].service_url, null)
+output "alb_dns_name" {
+  description = "Load balancer hostname to point the site's DNS record at."
+  value       = aws_lb.docs.dns_name
 }
 
-output "apprunner_service_https_url" {
-  description = "App Runner-generated service HTTPS URL, or null when create_service is false."
-  value       = try("https://${aws_apprunner_service.docs[0].service_url}", null)
+output "alb_zone_id" {
+  description = "Hosted zone ID of the load balancer, for an alias record."
+  value       = aws_lb.docs.zone_id
+}
+
+output "certificate_arn" {
+  description = "ACM certificate the HTTPS listener serves once it is issued."
+  value       = aws_acm_certificate.docs.arn
+}
+
+output "certificate_validation_records" {
+  description = "DNS records to create externally before applying with enable_https_listener=true."
+  value = [
+    for option in aws_acm_certificate.docs.domain_validation_options : {
+      name  = option.resource_record_name
+      type  = option.resource_record_type
+      value = option.resource_record_value
+    }
+  ]
 }
 
 output "github_deploy_role_arn" {
@@ -41,30 +57,4 @@ output "github_deploy_role_arn" {
 output "github_oidc_provider_arn" {
   description = "GitHub OIDC provider ARN used by the deployment role."
   value       = local.github_oidc_provider_arn
-}
-
-output "custom_domain_dns_target" {
-  description = "App Runner DNS target for the custom domain CNAME record, or null when no custom domain association exists."
-  value       = try(aws_apprunner_custom_domain_association.docs[0].dns_target, null)
-}
-
-output "custom_domain_cname_record" {
-  description = "Primary custom-domain DNS record to point at the App Runner service."
-  value = try({
-    name  = var.custom_domain_name
-    type  = "CNAME"
-    value = aws_apprunner_custom_domain_association.docs[0].dns_target
-  }, null)
-}
-
-output "custom_domain_certificate_validation_records" {
-  description = "Certificate validation CNAME records that must be created in DNS after the custom domain association is applied."
-  value = try([
-    for record in aws_apprunner_custom_domain_association.docs[0].certificate_validation_records : {
-      name   = record.name
-      status = record.status
-      type   = record.type
-      value  = record.value
-    }
-  ], null)
 }

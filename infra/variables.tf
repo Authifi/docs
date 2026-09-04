@@ -1,79 +1,152 @@
 variable "aws_region" {
-  description = "AWS region for ECR, App Runner, and IAM resources."
+  description = "AWS region for the VPC, load balancer, instance, and IAM resources."
   type        = string
-}
-
-variable "service_name" {
-  description = "App Runner service name."
-  type        = string
-  default     = "authifi-docs"
-}
-
-variable "ecr_repository_name" {
-  description = "Private ECR repository name for deployable docs images."
-  type        = string
-  default     = "authifi-docs"
-}
-
-variable "ecr_image_retention_count" {
-  description = "How many of the most recent images the ECR lifecycle policy retains."
-  type        = number
-  default     = 10
 
   validation {
-    condition     = var.ecr_image_retention_count > 0
-    error_message = "ecr_image_retention_count must be greater than 0."
+    condition     = can(regex("^[a-z]{2}(-[a-z]+)+-[0-9]$", var.aws_region))
+    error_message = "aws_region must be a region code such as us-east-1."
   }
 }
 
-variable "create_service" {
-  description = "Create the App Runner service and custom domain resources. Set false for the first bootstrap apply before an image exists."
-  type        = bool
-  default     = true
+variable "service_name" {
+  description = "Name applied to the load balancer, target group, instance, and IAM resources."
+  type        = string
+  default     = "authifi-docs"
+
+  validation {
+    # Also the load balancer and target group name, which AWS limits to 32
+    # characters of alphanumerics and hyphens, with no hyphen at either end.
+    condition     = can(regex("^[a-zA-Z0-9]([a-zA-Z0-9-]{0,30}[a-zA-Z0-9])?$", var.service_name))
+    error_message = "service_name must be 1-32 alphanumerics or hyphens and must not start or end with a hyphen."
+  }
 }
 
-variable "image_identifier" {
-  description = "Full ECR image identifier to deploy, for example 123456789012.dkr.ecr.us-east-1.amazonaws.com/authifi-docs:<git-sha>."
+variable "vpc_cidr" {
+  description = "IPv4 CIDR block for the docs VPC."
   type        = string
-  default     = ""
+  default     = "10.42.0.0/16"
+
+  validation {
+    condition     = can(cidrnetmask(var.vpc_cidr))
+    error_message = "vpc_cidr must be a valid IPv4 CIDR block."
+  }
+}
+
+variable "public_subnet_cidrs" {
+  description = "The two public subnet CIDR blocks the internet-facing load balancer spans."
+  type        = list(string)
+  default     = ["10.42.0.0/24", "10.42.1.0/24"]
+
+  validation {
+    condition     = length(var.public_subnet_cidrs) == 2
+    error_message = "Exactly two public subnet CIDRs are required for the ALB."
+  }
+
+  validation {
+    condition     = alltrue([for block in var.public_subnet_cidrs : can(cidrnetmask(block))])
+    error_message = "Every entry in public_subnet_cidrs must be a valid IPv4 CIDR block."
+  }
+}
+
+variable "private_subnet_cidr" {
+  description = "IPv4 CIDR block for the private subnet that holds the docs instance."
+  type        = string
+  default     = "10.42.10.0/24"
+
+  validation {
+    condition     = can(cidrnetmask(var.private_subnet_cidr))
+    error_message = "private_subnet_cidr must be a valid IPv4 CIDR block."
+  }
+}
+
+variable "instance_type" {
+  description = "EC2 instance type for the docs server."
+  type        = string
+  default     = "t3.micro"
+}
+
+variable "root_volume_size_gib" {
+  description = "Encrypted root EBS volume size in GiB. Holds up to three releases and their virtualenvs."
+  type        = number
+  default     = 20
+
+  validation {
+    condition     = var.root_volume_size_gib >= 8
+    error_message = "root_volume_size_gib must be at least 8."
+  }
+}
+
+variable "app_port" {
+  description = "TCP port the uvicorn process listens on, and the target group's target port."
+  type        = number
+  default     = 8080
+
+  # infra/scripts/deploy-release.sh probes the restarted service on
+  # 127.0.0.1:8080, so changing this without changing the installer would make
+  # every deployment roll itself back on a health check that can never pass.
+  validation {
+    condition     = var.app_port == 8080
+    error_message = "app_port must stay 8080 until infra/scripts/deploy-release.sh takes the port as an input."
+  }
+}
+
+variable "release_bucket_name" {
+  description = "Release bucket name. Leave null to derive one from service_name and the account ID."
+  type        = string
+  default     = null
+  nullable    = true
+}
+
+variable "release_retention_days" {
+  description = "How long release archives and their superseded versions are kept in the bucket."
+  type        = number
+  default     = 90
+
+  validation {
+    condition     = var.release_retention_days > 0
+    error_message = "release_retention_days must be greater than 0."
+  }
 }
 
 variable "oidc_issuer" {
-  description = "OIDC issuer base URL exposed to the docs server."
+  description = "OIDC issuer base URL the docs server discovers and exchanges codes against."
   type        = string
+
+  validation {
+    condition     = startswith(var.oidc_issuer, "https://")
+    error_message = "oidc_issuer must be an https URL."
+  }
 }
 
 variable "oidc_client_id" {
   description = "OIDC client ID exposed to the docs server."
   type        = string
-}
 
-variable "oidc_client_secret_arn" {
-  description = "ARN of the pre-created Secrets Manager secret containing the OIDC client secret."
-  type        = string
-}
-
-variable "session_secret_arn" {
-  description = "ARN of the pre-created Secrets Manager secret containing the session secret."
-  type        = string
-}
-
-variable "runtime_secret_kms_key_arns" {
-  description = "Optional customer-managed KMS key ARNs that encrypt the runtime secrets. When set, App Runner also gets kms:Decrypt on only these keys."
-  type        = list(string)
-  default     = []
+  validation {
+    condition     = trimspace(var.oidc_client_id) != ""
+    error_message = "oidc_client_id must not be empty."
+  }
 }
 
 variable "public_base_url" {
-  description = "Public HTTPS origin served by App Runner."
+  description = "Public HTTPS origin users reach the docs through. Must match the ALB's certificate."
   type        = string
-  default     = "https://docs.authifi.io"
+
+  validation {
+    condition     = startswith(var.public_base_url, "https://")
+    error_message = "public_base_url must be an https URL."
+  }
 }
 
 variable "site_dir" {
-  description = "Absolute in-container path to the built MkDocs site."
+  description = "Absolute on-host path to the built MkDocs site inside the active release."
   type        = string
-  default     = "/app/site"
+  default     = "/opt/authifi-docs/current/site"
+
+  validation {
+    condition     = startswith(var.site_dir, "/")
+    error_message = "site_dir must be an absolute path."
+  }
 }
 
 variable "post_logout_path" {
@@ -105,15 +178,20 @@ variable "post_logout_path" {
 }
 
 variable "custom_domain_name" {
-  description = "App Runner custom domain to associate with the service."
+  description = "Domain name the ACM certificate is issued for and the ALB serves."
   type        = string
   default     = "docs.authifi.io"
+
+  validation {
+    condition     = can(regex("^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$", var.custom_domain_name))
+    error_message = "custom_domain_name must be a lowercase DNS name such as docs.authifi.io."
+  }
 }
 
-variable "enable_custom_domain" {
-  description = "Whether to create the App Runner custom domain association when the service exists."
+variable "enable_https_listener" {
+  description = "Enable redirect and HTTPS listeners after ACM DNS validation succeeds."
   type        = bool
-  default     = true
+  default     = false
 }
 
 variable "existing_github_oidc_provider_arn" {
@@ -123,41 +201,26 @@ variable "existing_github_oidc_provider_arn" {
   nullable    = true
 }
 
-variable "apprunner_encryption_kms_key_arn" {
-  description = "Optional customer-managed KMS key ARN for App Runner service encryption. Leave null to use the AWS-managed App Runner key."
+variable "github_repository" {
+  description = "GitHub repository, as owner/name, whose workflow may assume the deployment role."
   type        = string
-  default     = null
-  nullable    = true
+  default     = "Authifi/docs"
+
+  validation {
+    condition     = can(regex("^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$", var.github_repository))
+    error_message = "github_repository must be in owner/name form."
+  }
 }
 
-variable "instance_cpu" {
-  description = "App Runner vCPU reservation. Defaults to the lowest 1 vCPU tier."
+variable "deploy_branch" {
+  description = "The one branch whose workflow runs may assume the deployment role."
   type        = string
-  default     = "1024"
-}
+  default     = "main"
 
-variable "instance_memory" {
-  description = "App Runner memory reservation paired with instance_cpu."
-  type        = string
-  default     = "2048"
-}
-
-variable "auto_scaling_max_concurrency" {
-  description = "Maximum concurrent requests per App Runner instance before scaling out."
-  type        = number
-  default     = 50
-}
-
-variable "auto_scaling_max_size" {
-  description = "Maximum number of provisioned App Runner instances."
-  type        = number
-  default     = 2
-}
-
-variable "auto_scaling_min_size" {
-  description = "Minimum number of provisioned App Runner instances."
-  type        = number
-  default     = 1
+  validation {
+    condition     = can(regex("^[A-Za-z0-9._/-]+$", var.deploy_branch))
+    error_message = "deploy_branch must be a plain branch name."
+  }
 }
 
 variable "tags" {

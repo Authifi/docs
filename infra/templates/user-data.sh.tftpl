@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+useradd --system --home-dir /opt/authifi-docs --shell /sbin/nologin authifi-docs || true
+install -d -o authifi-docs -g authifi-docs /opt/authifi-docs/releases /opt/authifi-docs/incoming
+install -d -m 0700 -o root -g root /etc/authifi-docs
+
+cat > /etc/authifi-docs/environment <<'ENV'
+OIDC_ISSUER=${oidc_issuer}
+OIDC_CLIENT_ID=${oidc_client_id}
+PUBLIC_BASE_URL=${public_base_url}
+SITE_DIR=${site_dir}
+POST_LOGOUT_PATH=${post_logout_path}
+ENV
+chmod 0600 /etc/authifi-docs/environment
+
+# Generated on the host and never in Terraform state, and deliberately not
+# regenerated: rewriting it on every boot would invalidate every live session
+# cookie, and instances reboot for reasons that have nothing to do with deploys.
+if [[ ! -s /etc/authifi-docs/session.env ]]; then
+  umask 077
+  printf 'SESSION_SECRET=%s\n' "$(openssl rand -hex 32)" \
+    > /etc/authifi-docs/session.env
+fi
+chmod 0600 /etc/authifi-docs/session.env
+
+# The installer is bash, so it is full of dollar signs, brace expansions, and
+# heredocs of its own. Base64 keeps Terraform's template language, which reads
+# this whole file including these comments, from touching any of it.
+base64 -d > /usr/local/sbin/authifi-docs-deploy <<'SCRIPT'
+${deploy_script_base64}
+SCRIPT
+chmod 0750 /usr/local/sbin/authifi-docs-deploy
+
+cat > /etc/systemd/system/authifi-docs.service <<'UNIT'
+[Unit]
+Description=Authifi OIDC-protected documentation
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=authifi-docs
+Group=authifi-docs
+WorkingDirectory=/opt/authifi-docs/current
+EnvironmentFile=/etc/authifi-docs/environment
+EnvironmentFile=/etc/authifi-docs/session.env
+ExecStart=/opt/authifi-docs/current/.venv/bin/uvicorn server.main:app --host 0.0.0.0 --port ${app_port}
+Restart=on-failure
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/authifi-docs
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+systemctl daemon-reload
+# Enabled, not started: there is no release under /opt/authifi-docs/current
+# until the first deploy, so starting here would only log a failure.
+systemctl enable authifi-docs.service

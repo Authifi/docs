@@ -1,29 +1,46 @@
-aws_region          = "us-east-1"
-service_name        = "authifi-docs"
-ecr_repository_name = "authifi-docs"
-ecr_image_retention_count = 10
+aws_region   = "us-east-1"
+service_name = "authifi-docs"
 
-# First bootstrap apply can leave the service off until an image exists in ECR.
-create_service   = false
-image_identifier = ""
+# Network sizing. Two public subnets are required: an internet-facing
+# application load balancer will not accept fewer.
+vpc_cidr            = "10.42.0.0/16"
+public_subnet_cidrs = ["10.42.0.0/24", "10.42.1.0/24"]
+private_subnet_cidr = "10.42.10.0/24"
 
-oidc_issuer            = "https://issuer.example.com"
-oidc_client_id         = "authifi-docs"
-oidc_client_secret_arn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:authifi/docs/oidc-client-secret-AbCdEf"
-session_secret_arn     = "arn:aws:secretsmanager:us-east-1:123456789012:secret:authifi/docs/session-secret-ZyXwVu"
-runtime_secret_kms_key_arns = []
+instance_type        = "t3.micro"
+root_volume_size_gib = 20
+app_port             = 8080
 
-public_base_url     = "https://docs.authifi.io"
-site_dir            = "/app/site"
-custom_domain_name  = "docs.authifi.io"
-enable_custom_domain = true
+# Leave null to derive "<service_name>-releases-<account id>".
+release_bucket_name    = null
+release_retention_days = 90
+
+# Non-secret. This client is a public PKCE client, so there is no client secret
+# to hold anywhere, and the session secret is generated on the host at first
+# boot rather than passed in.
+oidc_issuer     = "https://issuer.example.com"
+oidc_client_id  = "authifi-docs"
+public_base_url = "https://docs.authifi.io"
+site_dir        = "/opt/authifi-docs/current/site"
 
 # Must be a publicly served path, and must be registered with Authifi as a
 # post-logout redirect URI.
 post_logout_path = "/privacy-policy/"
 
+custom_domain_name = "docs.authifi.io"
+
+# Leave false for the first apply. The certificate is requested but cannot be
+# validated until its DNS records exist, and AWS refuses to attach a pending
+# certificate to an HTTPS listener. Read
+# `terraform output certificate_validation_records`, create those records, wait
+# for the certificate to report ISSUED, then apply again with this set to true.
+enable_https_listener = false
+
 # Set this only if the account already has a shared GitHub OIDC provider.
 existing_github_oidc_provider_arn = null
+
+github_repository = "Authifi/docs"
+deploy_branch     = "main"
 
 tags = {
   Environment = "prod"
