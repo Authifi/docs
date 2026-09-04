@@ -217,7 +217,7 @@ def test_assert_content_type_rejects_octet_stream() -> None:
 @pytest.mark.parametrize(
     ("location", "expected_mode"),
     [
-        ("/privacy-policy/", "local"),
+        ("/logged-off", "local"),
         ("http://oidc-mock.127.0.0.1.nip.io:9400/session/end?client_id=x", "rp-initiated"),
     ],
 )

@@ -41,6 +41,7 @@ STATIC_COPIES = (
     ".well-known/agent-skills/authifi-oauth-concepts/SKILL.md",
 )
 PUBLIC_SITEMAP_PATHS = (
+    "logged-off.md",
     "privacy-policy.md",
     "terms-of-service.md",
     "sms-opt-in.html",

@@ -522,7 +522,7 @@ def validate_post_logout_path(path: str) -> str:
 # without its built site answers `404` to everything, and reporting that as
 # healthy is how it becomes the live deployment. Written out rather than derived
 # so the list is reviewable; a test holds it equal to the configured target.
-HEALTH_REQUIRED_ARTIFACTS = ("index.html", "privacy-policy/index.html")
+HEALTH_REQUIRED_ARTIFACTS = ("index.html", "logged-off/index.html")
 
 
 def artifact_is_readable(path: Path) -> bool:

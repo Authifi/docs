@@ -38,6 +38,7 @@ def test_write_sitemap_includes_only_public_content(tmp_path: Path) -> None:
     namespace = {"sm": "http://www.sitemaps.org/schemas/sitemap/0.9"}
     urls = [node.text for node in sitemap.findall("sm:url/sm:loc", namespace)]
     assert urls == [
+        "https://docs.authifi.io/logged-off/",
         "https://docs.authifi.io/privacy-policy/",
         "https://docs.authifi.io/terms-of-service/",
         "https://docs.authifi.io/sms-opt-in.html",

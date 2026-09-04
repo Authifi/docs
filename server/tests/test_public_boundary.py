@@ -292,6 +292,7 @@ def test_sitemap_lists_only_public_urls(built_site: Path) -> None:
     locations = sitemap_locations((built_site / "sitemap.xml").read_text(encoding="utf-8"))
 
     assert locations == [
+        f"{SITE_URL}/logged-off/",
         f"{SITE_URL}/privacy-policy/",
         f"{SITE_URL}/terms-of-service/",
         f"{SITE_URL}/sms-opt-in.html",

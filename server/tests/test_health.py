@@ -6,10 +6,9 @@ running is worse than useless: a runtime stage that shipped without its built
 site answers every request with a `404`, and a green health check would make
 that the live deployment.
 
-So the check reads the site instead of the process: the front page, and the page
-every logout lands on -- which is also the compliance document that has to stay
-publicly reachable. A failure names neither the path nor the directory, because
-this endpoint is served to anyone.
+So the check reads the site instead of the process: the front page and the page
+every logout lands on. A failure names neither the path nor the directory,
+because this endpoint is served to anyone.
 """
 
 from __future__ import annotations
@@ -28,7 +27,7 @@ from server.app import (
 )
 from server.tests.support import build_client, build_config
 
-REQUIRED_RELATIVE_PATHS = ("index.html", "privacy-policy/index.html")
+REQUIRED_RELATIVE_PATHS = ("index.html", "logged-off/index.html")
 
 
 def test_a_complete_site_is_healthy(site_dir: Path) -> None:
@@ -113,7 +112,7 @@ def test_the_failure_names_nothing_about_the_filesystem(site_dir: Path) -> None:
     assert json.loads(body) == {"status": "unavailable"}
     assert str(site_dir) not in body
     assert "index.html" not in body
-    assert "privacy-policy" not in body
+    assert "logged-off" not in body
     assert "/app" not in body
 
 
@@ -135,9 +134,9 @@ def test_the_healthy_answer_is_not_cached_either(site_dir: Path) -> None:
 
 def test_the_probe_reports_which_artifacts_failed_for_the_log(site_dir: Path) -> None:
     """Operators need the detail the response withholds."""
-    (site_dir / "privacy-policy" / "index.html").unlink()
+    (site_dir / "logged-off" / "index.html").unlink()
 
-    assert unhealthy_site_artifacts(build_config(site_dir)) == ["privacy-policy/index.html"]
+    assert unhealthy_site_artifacts(build_config(site_dir)) == ["logged-off/index.html"]
 
 
 def test_the_probe_reports_nothing_for_a_complete_site(site_dir: Path) -> None:

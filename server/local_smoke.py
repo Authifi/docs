@@ -62,6 +62,8 @@ BYPASS_PROBE_PATHS = (
 )
 PROTECTED_CONTENT_MARKERS = ("md-content__inner", '"docs":', "md-nav__link")
 PUBLIC_MIME_PROBES = (
+    ("/logged-off", "text/html; charset=utf-8"),
+    ("/logged-off/", "text/html; charset=utf-8"),
     ("/privacy-policy/", "text/html; charset=utf-8"),
     ("/terms-of-service/", "text/html; charset=utf-8"),
     ("/sms-opt-in.html", "text/html; charset=utf-8"),
