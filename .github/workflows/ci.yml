@@ -10,6 +10,12 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  TERRAFORM_IMAGE: hashicorp/terraform:1.15.7@sha256:40e61a86763083ea987ded0ffa15f6d75e0df48ed16275811f949b3ecbcd8aae
+  HEALTH_CONTAINER_NAME: authifi-docs-ci
+  HEALTH_PORT: "8080"
+  MOCK_OIDC_HOST: oidc-mock.local.test
+
 jobs:
   validate:
     name: Validate
@@ -45,6 +51,85 @@ jobs:
           set -euo pipefail
           docker build --tag authifi-docs:test .
 
+      - name: Run container rootless and probe health, MIME, and bypass
+        run: |
+          set -euo pipefail
+
+          docker run --detach \
+            --name "$HEALTH_CONTAINER_NAME" \
+            --read-only \
+            --tmpfs /tmp:rw,noexec,nosuid,nodev,size=16m \
+            --cap-drop ALL \
+            --security-opt no-new-privileges:true \
+            --publish "127.0.0.1:${HEALTH_PORT}:8080" \
+            --env OIDC_ISSUER=https://issuer.invalid \
+            --env OIDC_CLIENT_ID=ci-client \
+            --env OIDC_CLIENT_SECRET=ci-secret \
+            --env SESSION_SECRET=ci-session-secret \
+            --env "PUBLIC_BASE_URL=http://127.0.0.1:${HEALTH_PORT}" \
+            authifi-docs:test
+
+          base_url="http://127.0.0.1:${HEALTH_PORT}"
+
+          for _ in $(seq 1 60); do
+            if curl --fail --silent --show-error "${base_url}/health" > /dev/null; then
+              break
+            fi
+            sleep 1
+          done
+
+          curl --fail --silent --show-error "${base_url}/health" | grep -q '"status"'
+
+          runtime_uid="$(docker exec "$HEALTH_CONTAINER_NAME" id -u)"
+          if [[ "$runtime_uid" == "0" ]]; then
+            echo "Container is running as root" >&2
+            exit 1
+          fi
+          echo "Container runs as uid $runtime_uid"
+
+          content_type="$(curl --fail --silent --show-error --output /dev/null \
+            --write-out '%{content_type}' "${base_url}/privacy-policy/")"
+          if [[ "$content_type" != "text/html; charset=utf-8" ]]; then
+            echo "Expected text/html for /privacy-policy/, got $content_type" >&2
+            exit 1
+          fi
+
+          for probe in \
+            "/assets/%2e%2e/index.html" \
+            "/assets/%2e%2e/search/search_index.json" \
+            "/javascripts/%2e%2e/index.html" \
+            "/stylesheets/%2e%2e/index.html" \
+            "/.well-known/%2e%2e/index.html"; do
+            status="$(curl --silent --path-as-is --output /dev/null \
+              --write-out '%{http_code}' "${base_url}${probe}")"
+            if [[ "$status" != "404" ]]; then
+              echo "Encoded traversal probe $probe returned $status, expected 404" >&2
+              exit 1
+            fi
+          done
+
+      - name: Stop health container
+        if: always()
+        run: |
+          set -uo pipefail
+          docker rm --force "$HEALTH_CONTAINER_NAME" || true
+
+      - name: Resolve the mock issuer hostname locally
+        run: |
+          set -euo pipefail
+          echo "127.0.0.1 ${MOCK_OIDC_HOST}" | sudo tee -a /etc/hosts > /dev/null
+
+      - name: Run credential-free mock OIDC smoke
+        run: |
+          set -euo pipefail
+          python -m server.local_smoke
+
+      - name: Tear down the mock OIDC stack
+        if: always()
+        run: |
+          set -uo pipefail
+          docker compose -f compose.yaml -f compose.mock.yaml down --volumes --remove-orphans || true
+
       - name: Terraform format check
         run: |
           set -euo pipefail
@@ -52,7 +137,7 @@ jobs:
             --user "$(id -u):$(id -g)" \
             -v "$PWD:/workspace" \
             -w /workspace/infra \
-            hashicorp/terraform:1.15.7 \
+            "$TERRAFORM_IMAGE" \
             fmt -check -recursive
 
       - name: Terraform validate
@@ -62,11 +147,11 @@ jobs:
             --user "$(id -u):$(id -g)" \
             -v "$PWD:/workspace" \
             -w /workspace/infra \
-            hashicorp/terraform:1.15.7 \
+            "$TERRAFORM_IMAGE" \
             init -backend=false
           docker run --rm \
             --user "$(id -u):$(id -g)" \
             -v "$PWD:/workspace" \
             -w /workspace/infra \
-            hashicorp/terraform:1.15.7 \
+            "$TERRAFORM_IMAGE" \
             validate

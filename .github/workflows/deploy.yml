@@ -44,16 +44,58 @@ jobs:
       - name: Log in to Amazon ECR
         uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2.1.7
 
-      - name: Build and push image
+      - name: Resolve immutable image URI
         id: image
         env:
           IMAGE_TAG: ${{ github.sha }}
         run: |
           set -euo pipefail
+
+          repository_name="${ECR_REPOSITORY_URL#*/}"
           image_uri="${ECR_REPOSITORY_URL}:${IMAGE_TAG}"
-          docker build --tag "$image_uri" .
-          docker push "$image_uri"
-          echo "image_uri=$image_uri" >> "$GITHUB_OUTPUT"
+
+          # The ECR repository is immutable, so a rerun of this workflow cannot
+          # push the same SHA tag again. Detect the existing image and skip
+          # straight to the App Runner update instead of failing the rerun.
+          if aws ecr describe-images \
+            --repository-name "$repository_name" \
+            --image-ids "imageTag=${IMAGE_TAG}" \
+            --output json > /dev/null 2>&1; then
+            echo "Image $image_uri already exists in ECR; skipping build and push."
+            already_pushed=true
+          else
+            already_pushed=false
+          fi
+
+          {
+            echo "image_uri=$image_uri"
+            echo "repository_name=$repository_name"
+            echo "already_pushed=$already_pushed"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and push image
+        if: steps.image.outputs.already_pushed != 'true'
+        env:
+          IMAGE_URI: ${{ steps.image.outputs.image_uri }}
+        run: |
+          set -euo pipefail
+
+          # App Runner only runs linux/amd64. Build through a docker-container
+          # buildx builder so the platform is explicit and independent of the
+          # runner's own architecture.
+          docker buildx create --name authifi-docs-builder --driver docker-container --use
+          docker buildx build \
+            --platform linux/amd64 \
+            --provenance false \
+            --tag "$IMAGE_URI" \
+            --push \
+            .
+
+      - name: Remove buildx builder
+        if: always()
+        run: |
+          set -euo pipefail
+          docker buildx rm authifi-docs-builder || true
 
       - name: Update App Runner source image
         id: deploy

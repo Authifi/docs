@@ -322,6 +322,14 @@ resource "aws_apprunner_service" "docs" {
   tags = local.common_tags
 
   lifecycle {
+    # GitHub Actions owns the deployed image after bootstrap. Without this,
+    # the next terraform apply would roll production back to whatever SHA is
+    # still recorded in tfvars. Roll images forward or back with the App
+    # Runner procedures in infra/README.md, not with terraform apply.
+    ignore_changes = [
+      source_configuration[0].image_repository[0].image_identifier,
+    ]
+
     precondition {
       condition     = trimspace(var.image_identifier) != ""
       error_message = "image_identifier must be set when create_service is true. Bootstrap with create_service=false until an image exists in ECR."

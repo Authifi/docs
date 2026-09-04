@@ -3,6 +3,8 @@
 .venv
 .pytest_cache
 .superpowers
+.env
+.env.*
 docs/superpowers
 infra/.terraform
 infra/*.tfstate

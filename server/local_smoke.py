@@ -286,7 +286,8 @@ def run_smoke(
             probe = client.get(f"{settings.public_base_url.rstrip('/')}{path}", follow_redirects=False)
             assert_no_protected_content(path, probe.status_code, probe.text)
 
-        complete_logout(client, settings)
+        logout_mode = complete_logout(client, settings)
+        print(f"logout completed via {logout_mode} flow")
 
         post_logout_redirect = require_redirect(
             *extract_status_location(client.get(settings.protected_url, follow_redirects=False)),

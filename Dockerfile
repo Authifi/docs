@@ -1,4 +1,6 @@
-FROM python:3.12-slim AS site-builder
+# python:3.12-slim, pinned by digest so every build resolves the same base.
+# Refresh with: docker buildx imagetools inspect python:3.12-slim
+FROM python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea AS site-builder
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
@@ -17,7 +19,8 @@ COPY mkdocs.yml ./
 RUN mkdocs build --strict
 
 
-FROM python:3.12-slim AS runtime
+# python:3.12-slim, same digest as the site-builder stage above.
+FROM python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea AS runtime
 
 ARG APP_USER=app
 ARG APP_UID=10001

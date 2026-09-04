@@ -17,9 +17,13 @@ services:
       - --user-claims-file
       - /config/users.yaml
     ports:
-      - "${MOCK_OIDC_PORT:-9400}:9400"
+      - "127.0.0.1:${MOCK_OIDC_PORT:-9400}:9400"
     volumes:
       - ./local/mock-oidc-users.yaml:/config/users.yaml:ro
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     healthcheck:
       test:
         - CMD

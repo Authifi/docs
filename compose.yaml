@@ -3,11 +3,21 @@ services:
     build:
       context: .
     image: authifi-docs:local
+    # Loopback-only: the local docs server is gated content and must not be
+    # reachable from the LAN.
     ports:
-      - "${DOCS_PORT:-8000}:8080"
+      - "127.0.0.1:${DOCS_PORT:-8000}:8080"
     environment:
       PUBLIC_BASE_URL: "${PUBLIC_BASE_URL:-http://localhost:${DOCS_PORT:-8000}}"
+      POST_LOGOUT_PATH: "${POST_LOGOUT_PATH:-/privacy-policy/}"
       SITE_DIR: /app/site
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     healthcheck:
       test:
         - CMD
