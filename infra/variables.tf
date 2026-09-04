@@ -91,12 +91,16 @@ variable "post_logout_path" {
     error_message = "post_logout_path must not contain backslashes or control characters."
   }
 
+  # Mirrors PUBLIC_EXACT_PATHS in server/app.py, which the server re-checks at
+  # startup. The public *prefixes* are deliberately excluded: they serve
+  # stylesheets, scripts, and well-known documents, none of which is a page to
+  # land on. server/tests/test_public_boundary.py fails if the two lists drift.
   validation {
     condition = contains(
-      ["/privacy-policy/", "/terms-of-service/", "/sms-opt-in.html", "/robots.txt", "/auth.md", "/sitemap.xml"],
+      ["/auth.md", "/privacy-policy/", "/robots.txt", "/sitemap.xml", "/sms-opt-in.html", "/terms-of-service/"],
       var.post_logout_path
-    ) || startswith(var.post_logout_path, "/.well-known/") || startswith(var.post_logout_path, "/assets/") || startswith(var.post_logout_path, "/javascripts/") || startswith(var.post_logout_path, "/stylesheets/")
-    error_message = "post_logout_path must be one of the publicly served paths in the server allowlist, otherwise logout sends users straight back into a login redirect."
+    )
+    error_message = "post_logout_path must be one of the publicly served pages in the server allowlist, otherwise logout sends users straight back into a login redirect."
   }
 }
 

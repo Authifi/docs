@@ -29,6 +29,35 @@ Rootless Linux engines may require an override, such as:
 
 - using a different reachable hostname or IP for `MOCK_OIDC_HOST`
 - removing the `host-gateway` mapping in a local compose override
+
+### The Default Mock Hostname Needs Public DNS
+
+`MOCK_OIDC_HOST` defaults to `oidc-mock.127.0.0.1.nip.io`. The issuer URL has to
+resolve identically on the host running the smoke and inside the docs container,
+and `nip.io` gives that for free by resolving any `<anything>.127.0.0.1.nip.io`
+name to `127.0.0.1`. The cost is a dependency on a third-party public resolver,
+which fails in two situations that look like a broken mock:
+
+- **Offline or network-restricted machines.** `nip.io` is a real DNS lookup, so
+  an air-gapped laptop or a CI runner with egress filtering cannot resolve it.
+- **DNS rebinding protection.** Many home routers, corporate resolvers, and
+  systemd-resolved configurations drop answers that map a public name to a
+  loopback or private address, which is exactly what `nip.io` returns. The
+  lookup does not fail cleanly; it returns `NXDOMAIN` or an empty answer.
+
+The fix in both cases is to stop depending on public DNS. Pick a name, resolve
+it locally, and point `MOCK_OIDC_HOST` at it:
+
+```bash
+echo "127.0.0.1 oidc-mock.local.test" | sudo tee -a /etc/hosts
+echo "MOCK_OIDC_HOST=oidc-mock.local.test" >> .env
+```
+
+`compose.mock.yaml` maps whatever `MOCK_OIDC_HOST` is set to onto the host
+gateway, so the container resolves the same name without needing the host's
+`/etc/hosts`. CI already does exactly this, which is why the workflow has no
+`nip.io` dependency. Use `.local.test` or another reserved suffix rather than a
+name that could later resolve publicly.
 - publishing the mock issuer under a host name your engine can already resolve from containers
 
 If the docs container cannot resolve the mock issuer host, the login flow will fail before callback handling.
@@ -45,8 +74,15 @@ The server performs RP-initiated logout against the tenant's discovered `end_ses
 
 The landing path is `POST_LOGOUT_PATH`, wired end to end:
 
-- production: the `post_logout_path` Terraform variable, which App Runner passes through as `POST_LOGOUT_PATH`. Terraform validates at plan time that it is site-relative and publicly served, so a protected path cannot reach production.
+- production: the `post_logout_path` Terraform variable, which App Runner passes through as `POST_LOGOUT_PATH`. Terraform validates at plan time that it is site-relative and one of the exact public pages, so a protected path cannot reach production.
 - local real and mock stacks: `POST_LOGOUT_PATH` in `.env` or the environment, read by `compose.yaml` for both overlays.
+
+The server re-checks the value at startup against the same list and refuses to start if it fails, so a misconfigured local stack fails on `make local-up` rather than silently misbehaving at the first logout. The list is the exact public paths only; the public prefixes serve stylesheets, scripts, and well-known documents, none of which is a page to land on.
+
+Two behaviours worth knowing when reading logs:
+
+- A `?next=` on `/_auth/logout` is ignored. `post_logout_redirect_uri` is always the configured path, because Authifi matches it against the registered URI exactly and would reject anything else.
+- Logout with no session never contacts the issuer. There is nothing to end, and it stops an anonymous caller from driving outbound metadata requests by hitting the route repeatedly.
 
 Change it in one place per environment and register the matching absolute URL with Authifi.
 
@@ -60,6 +96,7 @@ For local real-OIDC work, also register `http://localhost:8000/_auth/callback` a
    - `AWS_DEPLOY_ROLE_ARN`
    - `APP_RUNNER_SERVICE_ARN`
    - `ECR_REPOSITORY_URL`
+   - `APP_RUNNER_SERVICE_URL` (optional; overrides the origin the post-deploy check probes)
 3. Merge to `main` and monitor `.github/workflows/deploy.yml`.
 4. After the App Runner custom domain association is ready, publish the required DNS records.
 5. Verify both public and protected route behavior before announcing success.

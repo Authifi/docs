@@ -15,6 +15,7 @@ from server.local_smoke import (
     assert_no_existence_disclosure,
     assert_no_protected_content,
     build_compose_command,
+    assert_registered_post_logout_uri,
     build_mock_compose_env,
     classify_logout_redirect,
     parse_args,
@@ -211,7 +212,7 @@ def test_assert_content_type_rejects_octet_stream() -> None:
 @pytest.mark.parametrize(
     ("location", "expected_mode"),
     [
-        ("/terms-of-service/", "local"),
+        ("/privacy-policy/", "local"),
         ("http://oidc-mock.127.0.0.1.nip.io:9400/session/end?client_id=x", "rp-initiated"),
     ],
 )
@@ -228,6 +229,66 @@ def test_classify_logout_redirect_rejects_foreign_targets(tmp_path: Path) -> Non
 
     with pytest.raises(AssertionError, match="unexpected logout redirect target"):
         classify_logout_redirect("https://evil.example/", settings)
+
+
+def test_classify_logout_redirect_rejects_a_local_target_that_is_not_post_logout_path(
+    tmp_path: Path,
+) -> None:
+    """`next` reaching the redirect is exactly the regression this guards."""
+    settings = resolve_settings(tmp_path, environ={})
+
+    with pytest.raises(AssertionError, match="unexpected logout redirect target"):
+        classify_logout_redirect(settings.public_path, settings)
+
+
+# --- Registered post-logout URI ----------------------------------------------
+
+
+def test_logout_url_sends_a_next_that_must_be_ignored(tmp_path: Path) -> None:
+    settings = resolve_settings(tmp_path, environ={})
+
+    assert settings.public_path != settings.post_logout_path
+    assert f"next={quote(settings.public_path, safe='')}" in settings.logout_url
+
+
+def test_assert_registered_post_logout_uri_accepts_the_configured_target(tmp_path: Path) -> None:
+    settings = resolve_settings(tmp_path, environ={})
+    location = (
+        f"{settings.mock_issuer}/session/end"
+        f"?client_id=authifi-docs&post_logout_redirect_uri={quote(settings.post_logout_url, safe='')}"
+    )
+
+    assert_registered_post_logout_uri(location, settings)
+
+
+def test_assert_registered_post_logout_uri_rejects_a_next_derived_target(tmp_path: Path) -> None:
+    settings = resolve_settings(tmp_path, environ={})
+    leaked = f"{settings.public_base_url.rstrip('/')}{settings.public_path}"
+    location = (
+        f"{settings.mock_issuer}/session/end"
+        f"?client_id=authifi-docs&post_logout_redirect_uri={quote(leaked, safe='')}"
+    )
+
+    with pytest.raises(AssertionError, match="post_logout_redirect_uri"):
+        assert_registered_post_logout_uri(location, settings)
+
+
+def test_assert_registered_post_logout_uri_requires_client_id(tmp_path: Path) -> None:
+    settings = resolve_settings(tmp_path, environ={})
+    location = (
+        f"{settings.mock_issuer}/session/end"
+        f"?post_logout_redirect_uri={quote(settings.post_logout_url, safe='')}"
+    )
+
+    with pytest.raises(AssertionError, match="client_id"):
+        assert_registered_post_logout_uri(location, settings)
+
+
+def test_settings_track_the_configured_post_logout_path(tmp_path: Path) -> None:
+    settings = resolve_settings(tmp_path, environ={"POST_LOGOUT_PATH": "/terms-of-service/"})
+
+    assert settings.post_logout_path == "/terms-of-service/"
+    assert settings.post_logout_url.endswith("/terms-of-service/")
 
 
 def assert_required_values(values: Mapping[str, str], expected: Mapping[str, str]) -> None:

@@ -2,22 +2,25 @@ import importlib
 import sys
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
-from unittest.mock import ANY
+from unittest.mock import ANY, patch
 
 import pytest
 from starlette.testclient import TestClient
 
 from server.app import (
     DEFAULT_POST_LOGOUT_PATH,
+    PUBLIC_EXACT_PATHS,
     SESSION_MAX_AGE_SECONDS,
     AppConfig,
     create_app,
     normalize_next_path,
 )
 from server.tests.support import (
+    SESSION_COOKIE_NAME,
     DummyAuthClient,
     NoDiscoveryAuthClient,
     assert_no_protected_content,
+    build_app,
     authenticated_client,
     build_client,
     build_config,
@@ -575,7 +578,7 @@ def test_logout_uses_rp_initiated_end_session_endpoint_when_discovered(site_dir:
     )
     client = authenticated_client(site_dir, auth_client=auth_client)
 
-    response = client.get("/_auth/logout?next=/terms-of-service/", follow_redirects=False)
+    response = client.get("/_auth/logout", follow_redirects=False)
 
     assert response.status_code == 307
     location = urlparse(response.headers["location"])
@@ -583,9 +586,72 @@ def test_logout_uses_rp_initiated_end_session_endpoint_when_discovered(site_dir:
     assert location.netloc == "issuer.example.com"
     assert location.path == "/oidc/logout"
     params = parse_qs(location.query)
-    assert params["post_logout_redirect_uri"] == ["https://docs.example.com/terms-of-service/"]
+    assert params["post_logout_redirect_uri"] == [
+        f"https://docs.example.com{DEFAULT_POST_LOGOUT_PATH}"
+    ]
     assert params["client_id"] == ["client-id"]
     assert "expires=Thu, 01 Jan 1970 00:00:00 GMT" in response.headers["set-cookie"]
+
+
+@pytest.mark.parametrize(
+    "next_value",
+    ["/terms-of-service/", "/sms-opt-in.html", "/guides/sso-integration-guide/", "//evil.example"],
+)
+def test_logout_never_sends_next_to_the_issuer(site_dir: Path, next_value: str) -> None:
+    """post_logout_redirect_uri must match the URI registered with Authifi exactly.
+
+    Authifi rejects an unregistered value, so letting ``next`` through would turn
+    every logout into a failed one; it would also hand a caller influence over a
+    URI the issuer is asked to trust.
+    """
+    auth_client = DummyAuthClient(
+        metadata={"end_session_endpoint": "https://issuer.example.com/oidc/logout"}
+    )
+    client = authenticated_client(site_dir, auth_client=auth_client)
+
+    response = client.get("/_auth/logout", params={"next": next_value}, follow_redirects=False)
+
+    params = parse_qs(urlparse(response.headers["location"]).query)
+    assert params["post_logout_redirect_uri"] == [
+        f"https://docs.example.com{DEFAULT_POST_LOGOUT_PATH}"
+    ]
+
+
+@pytest.mark.parametrize("next_value", ["/terms-of-service/", "/sms-opt-in.html"])
+def test_logout_local_fallback_also_ignores_next(site_dir: Path, next_value: str) -> None:
+    """The two logout flows must land in the same place, or the difference leaks."""
+    client = authenticated_client(site_dir, auth_client=DummyAuthClient(metadata={}))
+
+    response = client.get("/_auth/logout", params={"next": next_value}, follow_redirects=False)
+
+    assert response.status_code == 307
+    assert response.headers["location"] == DEFAULT_POST_LOGOUT_PATH
+
+
+def test_logout_without_a_session_never_contacts_the_issuer(site_dir: Path) -> None:
+    """An anonymous caller must not be able to drive outbound metadata fetches."""
+    auth_client = DummyAuthClient(
+        metadata={"end_session_endpoint": "https://issuer.example.com/oidc/logout"}
+    )
+    client = build_client(site_dir, auth_client=auth_client)
+
+    response = client.get("/_auth/logout", follow_redirects=False)
+
+    assert auth_client.metadata_requests == 0
+    assert response.status_code == 307
+    assert response.headers["location"] == DEFAULT_POST_LOGOUT_PATH
+
+
+def test_repeated_anonymous_logouts_stay_local(site_dir: Path) -> None:
+    auth_client = DummyAuthClient(
+        metadata={"end_session_endpoint": "https://issuer.example.com/oidc/logout"}
+    )
+    client = build_client(site_dir, auth_client=auth_client)
+
+    for _ in range(5):
+        client.get("/_auth/logout", params={"next": "/terms-of-service/"}, follow_redirects=False)
+
+    assert auth_client.metadata_requests == 0
 
 
 def test_logout_preserves_existing_end_session_query_parameters(site_dir: Path) -> None:
@@ -621,19 +687,19 @@ def test_logout_falls_back_when_discovery_is_unavailable(site_dir: Path) -> None
     auth_client = DummyAuthClient(metadata_error=RuntimeError("issuer unreachable"))
     client = authenticated_client(site_dir, auth_client=auth_client)
 
-    response = client.get("/_auth/logout?next=/privacy-policy/", follow_redirects=False)
+    response = client.get("/_auth/logout", follow_redirects=False)
 
     assert response.status_code == 307
-    assert response.headers["location"] == "/privacy-policy/"
+    assert response.headers["location"] == DEFAULT_POST_LOGOUT_PATH
 
 
 def test_logout_falls_back_when_client_has_no_discovery_support(site_dir: Path) -> None:
     client = authenticated_client(site_dir, auth_client=NoDiscoveryAuthClient())
 
-    response = client.get("/_auth/logout?next=/terms-of-service/", follow_redirects=False)
+    response = client.get("/_auth/logout", follow_redirects=False)
 
     assert response.status_code == 307
-    assert response.headers["location"] == "/terms-of-service/"
+    assert response.headers["location"] == DEFAULT_POST_LOGOUT_PATH
 
 
 def test_logout_clears_local_session_even_when_redirecting_to_issuer(site_dir: Path) -> None:
@@ -651,7 +717,7 @@ def test_logout_clears_local_session_even_when_redirecting_to_issuer(site_dir: P
     assert response.headers["location"] == "/_auth/login?next=%2F"
 
 
-def test_logout_rejects_unsafe_next_and_uses_configured_default(site_dir: Path) -> None:
+def test_logout_ignores_next_entirely_and_uses_the_configured_default(site_dir: Path) -> None:
     client = authenticated_client(site_dir, auth_client=DummyAuthClient())
 
     response = client.get("/_auth/logout", params={"next": "//evil.example"}, follow_redirects=False)
@@ -667,6 +733,191 @@ def test_logout_uses_custom_configured_post_logout_path(site_dir: Path) -> None:
 
     assert response.status_code == 307
     assert response.headers["location"] == "/terms-of-service/"
+
+
+# --- Unhandled server errors --------------------------------------------------
+#
+# Starlette generates the 500 for an unhandled exception in ServerErrorMiddleware,
+# which sits *outside* every middleware the app installs. Without an explicit
+# handler that response escapes SecurityHeadersMiddleware entirely, so it must be
+# hardened at the point it is built.
+
+
+def failing_client(site_dir: Path, **overrides) -> TestClient:
+    return build_client(site_dir, raise_server_exceptions=False, **overrides)
+
+
+@pytest.mark.parametrize("path", ["/privacy-policy/", "/assets/app.css", "/robots.txt"])
+def test_unhandled_errors_on_public_paths_are_never_cacheable(site_dir: Path, path: str) -> None:
+    client = failing_client(site_dir)
+
+    with patch("server.app.resolve_site_file", side_effect=RuntimeError("boom")):
+        response = client.get(path, follow_redirects=False)
+
+    assert response.status_code == 500
+    assert response.headers["cache-control"] == "private, no-store"
+
+
+def test_unhandled_errors_on_protected_paths_are_never_cacheable(site_dir: Path) -> None:
+    client = failing_client(site_dir)
+    client.cookies.set(SESSION_COOKIE_NAME, encode_session_cookie({"user": {"sub": "user-123"}}))
+
+    with patch("server.app.resolve_site_file", side_effect=RuntimeError("boom")):
+        response = client.get("/", follow_redirects=False)
+
+    assert response.status_code == 500
+    assert response.headers["cache-control"] == "private, no-store"
+
+
+def test_unhandled_errors_carry_the_baseline_security_headers(site_dir: Path) -> None:
+    client = failing_client(site_dir)
+
+    with patch("server.app.resolve_site_file", side_effect=RuntimeError("boom")):
+        response = client.get("/privacy-policy/", follow_redirects=False)
+
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["x-frame-options"] == "DENY"
+    assert response.headers["referrer-policy"] == "strict-origin-when-cross-origin"
+    assert response.headers["vary"] == "Cookie"
+
+
+def test_unhandled_errors_send_hsts_only_under_https(site_dir: Path) -> None:
+    with patch("server.app.resolve_site_file", side_effect=RuntimeError("boom")):
+        secure = failing_client(site_dir, public_base_url="https://docs.example.com").get(
+            "/privacy-policy/"
+        )
+        insecure = failing_client(site_dir, public_base_url="http://localhost:8000").get(
+            "/privacy-policy/"
+        )
+
+    assert secure.headers["strict-transport-security"] == "max-age=63072000; includeSubDomains"
+    assert "strict-transport-security" not in insecure.headers
+
+
+def test_unhandled_errors_do_not_leak_the_exception(site_dir: Path) -> None:
+    client = failing_client(site_dir)
+
+    with patch("server.app.resolve_site_file", side_effect=RuntimeError("boom: /etc/secret")):
+        response = client.get("/privacy-policy/", follow_redirects=False)
+
+    assert "boom" not in response.text
+    assert "Traceback" not in response.text
+    assert response.headers["content-type"].startswith("text/plain")
+    assert_no_protected_content(response.text)
+
+
+def test_error_handling_leaves_app_state_and_the_client_usable(site_dir: Path) -> None:
+    app = build_app(site_dir)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    with patch("server.app.resolve_site_file", side_effect=RuntimeError("boom")):
+        assert client.get("/privacy-policy/").status_code == 500
+
+    assert app.state.config.site_dir == site_dir
+    assert app.state.auth_client is not None
+    assert client.get("/privacy-policy/").status_code == 200
+
+
+# --- Missing public resources -------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/assets/missing.css",
+        "/javascripts/missing.js",
+        "/stylesheets/missing.css",
+        "/.well-known/missing.json",
+    ],
+)
+def test_public_prefix_404s_are_not_cacheable(site_dir: Path, path: str) -> None:
+    """A cached 404 for a public asset outlives the deploy that adds the file."""
+    client = build_client(site_dir)
+
+    response = client.get(path, follow_redirects=False)
+
+    assert response.status_code == 404
+    assert response.headers["cache-control"] == "private, no-store"
+
+
+def test_public_resources_that_exist_are_still_cacheable(site_dir: Path) -> None:
+    client = build_client(site_dir)
+
+    response = client.get("/assets/app.css", follow_redirects=False)
+
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "public, max-age=300"
+
+
+# --- Post-logout path validation ----------------------------------------------
+
+
+@pytest.mark.parametrize("path", sorted(PUBLIC_EXACT_PATHS))
+def test_every_exact_public_path_is_an_acceptable_post_logout_target(
+    site_dir: Path, path: str
+) -> None:
+    app = build_app(site_dir, post_logout_path=path)
+
+    assert app.state.config.post_logout_path == path
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/guides/sso-integration-guide/",
+        "/",
+        "/health",
+        "/_auth/login",
+        # Public by prefix, but not a page anyone can land on after logout.
+        "/assets/app.css",
+        "/.well-known/api-catalog",
+        "//evil.example",
+        "https://evil.example/",
+        "back\\slash",
+        "/privacy-policy/\n",
+        "relative/",
+        "",
+    ],
+)
+def test_startup_rejects_unsafe_or_non_public_post_logout_paths(site_dir: Path, path: str) -> None:
+    with pytest.raises(ValueError, match="POST_LOGOUT_PATH"):
+        build_app(site_dir, post_logout_path=path)
+
+
+def test_from_env_keeps_an_invalid_post_logout_path_so_startup_can_reject_it(
+    site_dir: Path,
+) -> None:
+    """Silently falling back to the default would hide a misconfigured deploy."""
+    config = AppConfig.from_env(
+        {
+            "OIDC_ISSUER": "https://issuer.example.com",
+            "OIDC_CLIENT_ID": "client-id",
+            "OIDC_CLIENT_SECRET": "client-secret",
+            "SESSION_SECRET": "session-secret",
+            "PUBLIC_BASE_URL": "https://docs.example.com",
+            "SITE_DIR": str(site_dir),
+            "POST_LOGOUT_PATH": "/guides/sso-integration-guide/",
+        }
+    )
+
+    assert config.post_logout_path == "/guides/sso-integration-guide/"
+    with pytest.raises(ValueError, match="POST_LOGOUT_PATH"):
+        create_app(config=config, auth_client=DummyAuthClient())
+
+
+def test_from_env_falls_back_to_the_default_when_unset(site_dir: Path) -> None:
+    config = AppConfig.from_env(
+        {
+            "OIDC_ISSUER": "https://issuer.example.com",
+            "OIDC_CLIENT_ID": "client-id",
+            "OIDC_CLIENT_SECRET": "client-secret",
+            "SESSION_SECRET": "session-secret",
+            "PUBLIC_BASE_URL": "https://docs.example.com",
+            "SITE_DIR": str(site_dir),
+        }
+    )
+
+    assert config.post_logout_path == DEFAULT_POST_LOGOUT_PATH
 
 
 # --- Misc ---------------------------------------------------------------------
@@ -747,7 +998,7 @@ def test_app_config_reads_post_logout_path_from_environment() -> None:
     assert config.post_logout_path == "/terms-of-service/"
 
 
-def test_app_config_rejects_unsafe_post_logout_path() -> None:
+def test_startup_rejects_an_unsafe_post_logout_path_from_the_environment(site_dir: Path) -> None:
     config = AppConfig.from_env(
         {
             "OIDC_ISSUER": "https://issuer.example.com",
@@ -755,11 +1006,13 @@ def test_app_config_rejects_unsafe_post_logout_path() -> None:
             "OIDC_CLIENT_SECRET": "client-secret",
             "SESSION_SECRET": "session-secret",
             "PUBLIC_BASE_URL": "https://docs.example.com",
+            "SITE_DIR": str(site_dir),
             "POST_LOGOUT_PATH": "https://evil.example/",
         }
     )
 
-    assert config.post_logout_path == DEFAULT_POST_LOGOUT_PATH
+    with pytest.raises(ValueError, match="POST_LOGOUT_PATH"):
+        create_app(config=config, auth_client=DummyAuthClient())
 
 
 def test_main_module_exposes_asgi_app_from_environment(site_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:

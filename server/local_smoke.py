@@ -7,7 +7,7 @@ import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import parse_qs, quote, urlparse
 
 import httpx
 
@@ -66,6 +66,7 @@ class SmokeSettings:
     mock_port: str
     mock_issuer: str
     subject: str
+    post_logout_path: str = DEFAULT_POST_LOGOUT_PATH
 
     @property
     def public_url(self) -> str:
@@ -82,8 +83,14 @@ class SmokeSettings:
 
     @property
     def logout_url(self) -> str:
-        next_path = quote(self.public_path, safe="")
-        return f"{self.public_base_url.rstrip('/')}/_auth/logout?next={next_path}"
+        # `next` is passed deliberately. Logout must ignore it and use the
+        # configured POST_LOGOUT_PATH, which is the URI registered with the
+        # issuer, so a smoke run that sent no `next` would prove nothing.
+        return f"{self.public_base_url.rstrip('/')}/_auth/logout?next={quote(self.public_path, safe='')}"
+
+    @property
+    def post_logout_url(self) -> str:
+        return f"{self.public_base_url.rstrip('/')}{self.post_logout_path}"
 
     @property
     def discovery_url(self) -> str:
@@ -154,6 +161,7 @@ def resolve_settings(
         mock_port=env["MOCK_OIDC_PORT"],
         mock_issuer=f"http://{env['MOCK_OIDC_HOST']}:{env['MOCK_OIDC_PORT']}",
         subject=env["MOCK_OIDC_SUBJECT"],
+        post_logout_path=env["POST_LOGOUT_PATH"],
     )
 
 
@@ -311,6 +319,8 @@ def run_smoke(
         logout_mode = complete_logout(client, settings)
         print(f"logout completed via {logout_mode} flow")
 
+        assert_anonymous_logout_stays_local(client, settings)
+
         post_logout_redirect = require_redirect(
             *extract_status_location(client.get(settings.protected_url, follow_redirects=False)),
             expected_prefix="/_auth/login?next=",
@@ -342,15 +352,27 @@ def classify_logout_redirect(location: str | None, settings: SmokeSettings) -> s
     """Return "local" or "rp-initiated" for a logout redirect target."""
     if not location:
         raise AssertionError("logout response did not include a Location header")
-    if location.startswith(settings.public_path):
+    if location == settings.post_logout_path:
         return "local"
     if location.startswith(settings.mock_issuer.rstrip("/")):
         return "rp-initiated"
     raise AssertionError(f"unexpected logout redirect target {location!r}")
 
 
+def assert_registered_post_logout_uri(location: str, settings: SmokeSettings) -> None:
+    """The issuer must be handed the exact registered URI, never a caller's `next`."""
+    params = parse_qs(urlparse(location).query)
+    redirect_uris = params.get("post_logout_redirect_uri", [])
+    if redirect_uris != [settings.post_logout_url]:
+        raise AssertionError(
+            f"expected post_logout_redirect_uri {settings.post_logout_url!r}, got {redirect_uris!r}"
+        )
+    if not params.get("client_id"):
+        raise AssertionError(f"RP-initiated logout is missing client_id: {location!r}")
+
+
 def complete_logout(client: httpx.Client, settings: SmokeSettings) -> str:
-    """Run logout, tolerating both RP-initiated and local-fallback behaviour."""
+    """Run the documented production logout and assert it lands where it should."""
     response = client.get(settings.logout_url, follow_redirects=False)
     if response.status_code != 307:
         raise AssertionError(f"expected logout status 307, got {response.status_code}")
@@ -358,12 +380,24 @@ def complete_logout(client: httpx.Client, settings: SmokeSettings) -> str:
     location = response.headers.get("location")
     mode = classify_logout_redirect(location, settings)
     if mode == "rp-initiated":
+        assert_registered_post_logout_uri(str(location), settings)
         issuer_response = client.get(str(location), follow_redirects=True)
         if issuer_response.status_code >= 400:
             raise AssertionError(
                 f"RP-initiated logout endpoint returned {issuer_response.status_code}"
             )
     return mode
+
+
+def assert_anonymous_logout_stays_local(client: httpx.Client, settings: SmokeSettings) -> None:
+    """With no session there is nothing to end, so no outbound issuer hop."""
+    response = client.get(settings.logout_url, follow_redirects=False)
+    location = response.headers.get("location")
+    if response.status_code != 307 or location != settings.post_logout_path:
+        raise AssertionError(
+            f"expected anonymous logout to redirect to {settings.post_logout_path!r}, "
+            f"got {response.status_code} -> {location!r}"
+        )
 
 
 def extract_status_location(response: httpx.Response) -> tuple[int, str | None]:
@@ -402,6 +436,7 @@ def main() -> int:
         mock_port=compose_env["MOCK_OIDC_PORT"],
         mock_issuer=args.mock_issuer,
         subject=args.subject,
+        post_logout_path=compose_env["POST_LOGOUT_PATH"],
     )
     try:
         run_compose(args.project_dir, compose_env, "up", "-d", "--build")

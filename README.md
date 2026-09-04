@@ -104,7 +104,9 @@ Register the docs site in Authifi as a **confidential Web App**.
 
 Logout is RP-initiated: the server clears the local session and, when the tenant publishes an `end_session_endpoint`, redirects there with `client_id` and `post_logout_redirect_uri`. Tenants without an `end_session_endpoint` fall back to a plain local redirect to the same path.
 
-The post-logout target must be a **public** path so users are not bounced straight back into a login. It is configured as `POST_LOGOUT_PATH`: set it in `.env` for the local stacks, or through the validated `post_logout_path` Terraform variable for production, which App Runner passes through as the same environment variable. Terraform rejects a non-public value at plan time.
+The post-logout target is always the configured `POST_LOGOUT_PATH`. A `?next=` on the logout URL is ignored: the issuer only accepts the `post_logout_redirect_uri` registered with it, and letting a caller influence that value would break every logout while handing them a say in a URI the issuer is asked to trust. The local fallback uses the same path so both flows land in the same place. Logging out with no session skips discovery entirely and redirects locally, so an anonymous caller cannot drive outbound requests to the issuer.
+
+`POST_LOGOUT_PATH` must be one of the **exact** public pages the server serves, and the server validates it at startup rather than at the first logout, so a bad value fails the container immediately in local Compose and in App Runner alike. Set it in `.env` for the local stacks, or through the `post_logout_path` Terraform variable for production, which App Runner passes through as the same environment variable and which rejects the same values at plan time.
 
 If you run the docs server on a different base URL or port, update `PUBLIC_BASE_URL` and register the matching callback and post-logout destinations in Authifi.
 
@@ -120,7 +122,10 @@ Use [`infra/README.md`](infra/README.md) for the full Terraform and App Runner b
    - `AWS_DEPLOY_ROLE_ARN`
    - `APP_RUNNER_SERVICE_ARN`
    - `ECR_REPOSITORY_URL`
+   - `APP_RUNNER_SERVICE_URL` (optional; the origin the post-deploy check probes, defaulting to the App Runner hostname)
 5. Merge to `main` to let the deploy workflow build, push, and update the App Runner service.
+
+After the App Runner operation succeeds, the workflow requests `/privacy-policy/` from the live origin and requires HTTP 200 with a `text/html` content type. A container that starts but cannot serve therefore fails the deploy instead of the next visitor.
 
 Images are built for `linux/amd64` and pushed under immutable commit-SHA tags. Rerunning the deploy workflow for a SHA that is already in ECR reuses the existing image and continues to the App Runner update, so reruns are safe. Terraform seeds `image_identifier` only when the service is created and then ignores it, so a later `terraform apply` cannot roll the deployed image backwards; see [`infra/README.md`](infra/README.md) for the explicit App Runner rollback procedure.
 
