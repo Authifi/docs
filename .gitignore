@@ -34,6 +34,10 @@ override.tf
 override.tf.json
 *_override.tf
 *_override.tf.json
+# Caller-supplied state backend declaration; see infra/README.md. Already
+# covered by the pattern above, named explicitly so narrowing it stays a
+# deliberate act rather than an accidental way to commit account specifics.
+infra/backend_override.tf
 
 # IDE
 .idea/

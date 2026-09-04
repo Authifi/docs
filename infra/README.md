@@ -7,7 +7,7 @@ This directory provisions the AWS deployment path for `Authifi/docs`:
 - IAM roles for App Runner runtime access and GitHub Actions OIDC deployment
 - an optional App Runner custom domain association for `docs.authifi.io`
 
-The Terraform root intentionally does **not** configure a backend. Choose the state backend at init time so each caller can supply their own S3, local, or Terraform Cloud settings.
+The Terraform root intentionally does **not** configure a backend, so each caller keeps their own choice of state storage. Local state needs no setup; a remote backend needs one gitignored file before `init`. See [Init](#init).
 
 ## Files
 
@@ -66,19 +66,52 @@ tags = {
 
 ## Init
 
-Local state:
+### Local state (the default)
+
+The root declares no backend, so Terraform uses the implicit local backend and
+no configuration is needed:
 
 ```bash
 terraform -chdir=infra init
 ```
 
-S3 backend supplied by the caller:
+### Remote state supplied by the caller
+
+`-backend-config` only supplies values for a `backend` block that already
+exists. Passing it to a configuration with no such block does **not** fail —
+Terraform prints a `Missing backend configuration` warning and initialises the
+local backend anyway, so the state you meant to put in S3 lands on your disk.
+
+Declare the backend first, in a file that is never committed. Terraform loads
+`*_override.tf` last, so `infra/backend_override.tf` can introduce the block the
+committed configuration deliberately omits:
+
+```bash
+cat > infra/backend_override.tf <<'EOF'
+terraform {
+  backend "s3" {}
+}
+EOF
+```
+
+Leave the block empty and pass your own settings as partial configuration:
 
 ```bash
 terraform -chdir=infra init \
   -backend-config="bucket=my-tf-state" \
   -backend-config="key=authifi/docs/prod.tfstate" \
   -backend-config="region=us-east-1"
+```
+
+`infra/backend_override.tf` is gitignored. Keep it that way: it is the one place
+a caller's account-specific state location would otherwise leak into the
+repository. The same pattern works for any other backend — substitute
+`backend "azurerm" {}`, `backend "gcs" {}`, or a Terraform Cloud `cloud` block.
+
+Confirm the backend Terraform actually selected before applying:
+
+```bash
+terraform -chdir=infra init ... && grep '"type"' infra/.terraform/terraform.tfstate
 ```
 
 ## Plan
