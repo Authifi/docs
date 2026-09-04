@@ -213,6 +213,7 @@ Terraform state. Capture its region before destroying that state, then delete
 the final runtime setting after Terraform finishes:
 
 ```bash
+set -euo pipefail
 aws_region="$(terraform -chdir=infra output -raw aws_region)"
 terraform -chdir=infra apply -var-file=terraform.tfvars \
   -var='enable_alb_deletion_protection=false' \

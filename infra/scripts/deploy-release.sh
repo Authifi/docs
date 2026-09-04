@@ -561,8 +561,11 @@ stop_candidate_server
 if (( already_active == 1 )); then
   echo "release $sha is already active; reloading runtime configuration" >&2
   if ! "$systemctl_bin" restart authifi-docs; then
-    echo "active release failed to restart" >&2
-    exit 1
+    echo "active release failed to restart; attempting recovery start" >&2
+    if ! "$systemctl_bin" start authifi-docs; then
+      echo "active release failed recovery start" >&2
+      exit 1
+    fi
   fi
   if ! poll_health "http://127.0.0.1:8080/health" "$active_attempts"; then
     echo "active release failed health check after configuration reload" >&2

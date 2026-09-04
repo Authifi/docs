@@ -1343,10 +1343,16 @@ def test_teardown_docs_apply_both_deletion_flags_before_destroy() -> None:
 def test_teardown_deletes_the_secret_from_the_terraform_region() -> None:
     region_capture = 'aws_region="$(terraform -chdir=infra output -raw aws_region)"'
     parameter_delete = "aws ssm delete-parameter"
+    region_position = INFRA_README.index(region_capture)
+    teardown_block = INFRA_README[
+        INFRA_README.rindex("```bash", 0, region_position) :
+        INFRA_README.index("```", INFRA_README.index(parameter_delete))
+    ]
 
     assert region_capture in INFRA_README
     assert '--region "$aws_region"' in INFRA_README
     assert "--region us-east-1" not in INFRA_README
+    assert teardown_block.splitlines()[1] == "set -euo pipefail"
     assert (
         INFRA_README.index(region_capture)
         < INFRA_README.index("terraform -chdir=infra destroy")
