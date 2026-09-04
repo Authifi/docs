@@ -85,6 +85,18 @@ SESSION_MAX_AGE_SECONDS = 8 * 60 * 60
 ABSOLUTE_SESSION_LIFETIME_SECONDS = 8 * 60 * 60
 DEFAULT_POST_LOGOUT_PATH = "/privacy-policy/"
 
+# `303 See Other` is the status that ends a POST: it tells the browser the
+# submission is finished and the thing to fetch next is a `GET`. Starlette's
+# `RedirectResponse` defaults to `307`, which preserves the method, so a browser
+# that had just submitted the sign-out form would POST the landing page too --
+# and the site route serves `GET`, so the reader's sign-out finished on a `405`.
+#
+# The issuer hop needs it for the same reason and one more: whether an
+# end-session endpoint accepts a `POST` is the tenant's decision, since the
+# specification permits either and many issuers answer `GET` only. Sending one
+# there is a bet on somebody else's deployment.
+LOGOUT_REDIRECT_STATUS = 303
+
 # Per-claim ceilings, in UTF-8 bytes. The issuer decides how long these are, and
 # all three ride in the same signed cookie as the pending logins, so each needs
 # a bound of its own rather than a shared hope that they are all short.
@@ -666,6 +678,15 @@ async def callback_endpoint(request: Request) -> Response:
     return RedirectResponse(url=normalize_next_path(next_path))
 
 
+def see_other(url: str) -> RedirectResponse:
+    """Send the browser on with a `GET`, whatever method got it here.
+
+    Every exit from logout goes through this, so no branch can be added that
+    leaves the reader's POST to be replayed against the destination.
+    """
+    return RedirectResponse(url=url, status_code=LOGOUT_REDIRECT_STATUS)
+
+
 async def logout_endpoint(request: Request) -> Response:
     set_cache_visibility(request, VISIBILITY_PROTECTED)
     config = request.app.state.config
@@ -703,15 +724,13 @@ async def logout_endpoint(request: Request) -> Response:
     if not was_signed_in:
         # Nothing to end at the issuer, and an anonymous caller must not be able
         # to drive outbound metadata requests by hitting this route in a loop.
-        return RedirectResponse(url=config.post_logout_path)
+        return see_other(config.post_logout_path)
 
     end_session_endpoint = await discover_end_session_endpoint(request.app.state.auth_client)
     if end_session_endpoint is None:
-        return RedirectResponse(url=config.post_logout_path)
+        return see_other(config.post_logout_path)
 
-    return RedirectResponse(
-        url=build_end_session_url(end_session_endpoint, config, config.post_logout_path)
-    )
+    return see_other(build_end_session_url(end_session_endpoint, config, config.post_logout_path))
 
 
 async def site_endpoint(request: Request) -> Response:

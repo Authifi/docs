@@ -7,7 +7,7 @@ from urllib.parse import quote
 
 import pytest
 
-from server import local_smoke
+from server import app, local_smoke
 from server.local_smoke import (
     BYPASS_PROBE_PATHS,
     DEFAULT_POST_LOGOUT_PATH,
@@ -243,6 +243,21 @@ def test_classify_logout_redirect_rejects_a_local_target_that_is_not_post_logout
 
     with pytest.raises(AssertionError, match="unexpected logout redirect target"):
         classify_logout_redirect(settings.public_path, settings)
+
+
+# --- The status the smoke expects from a logout -------------------------------
+
+
+def test_the_smoke_expects_the_status_the_server_actually_sends() -> None:
+    """`local_smoke` runs against a container and deliberately imports nothing
+    from the app, so the one number they both have to agree on is pinned here
+    rather than left to drift."""
+    assert local_smoke.EXPECTED_LOGOUT_STATUS == app.LOGOUT_REDIRECT_STATUS
+
+
+def test_the_smoke_expects_a_see_other() -> None:
+    """Spelled out, so changing it is a decision rather than a rename."""
+    assert local_smoke.EXPECTED_LOGOUT_STATUS == 303
 
 
 # --- Registered post-logout URI ----------------------------------------------

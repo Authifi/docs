@@ -37,6 +37,13 @@ LOWEST_UNPRIVILEGED_PORT = 1024
 HIGHEST_PORT = 65535
 LOCAL_URL_SCHEME = "http"
 
+# `303 See Other` is what the logout route answers, so that a browser which had
+# just submitted the sign-out form arrives at the destination with a `GET`. Kept
+# as a number here rather than imported: this module runs against a container
+# and deliberately knows nothing about the application package. A test in
+# `server/tests/test_local_smoke.py` holds the two equal.
+EXPECTED_LOGOUT_STATUS = 303
+
 # httpx normalises literal ".." segments away but leaves "%2e%2e" alone, so
 # these probes reach the server exactly as written and prove that a public
 # prefix cannot carry a request into protected content.
@@ -470,40 +477,7 @@ def run_smoke(
                 f"expected protected redirect next to match {settings.protected_path!r}, got {redirect_suffix!r}"
             )
 
-        login_response = client.get(settings.login_url, follow_redirects=False)
-        authorize_url = require_redirect(
-            login_response.status_code,
-            login_response.headers.get("location"),
-            f"{settings.mock_issuer.rstrip('/')}/oauth2/authorize",
-            expected_status=302,
-        )
-
-        client.put(
-            settings.user_url,
-            json={"email": settings.subject, "name": "Smoke Test User"},
-        ).raise_for_status()
-
-        authorize_response = client.post(
-            f"{settings.mock_issuer.rstrip('/')}/oauth2/authorize{authorize_url}",
-            data={"sub": settings.subject},
-            follow_redirects=False,
-        )
-        callback_url = require_redirect(
-            authorize_response.status_code,
-            authorize_response.headers.get("location"),
-            f"{settings.public_base_url.rstrip('/')}/_auth/callback",
-            expected_status=302,
-        )
-
-        callback_response = client.get(
-            f"{settings.public_base_url.rstrip('/')}/_auth/callback{callback_url}",
-            follow_redirects=False,
-        )
-        require_redirect(
-            callback_response.status_code,
-            callback_response.headers.get("location"),
-            settings.protected_path,
-        )
+        sign_in(client, settings)
 
         protected_response = client.get(settings.protected_url, follow_redirects=False)
         if protected_response.status_code != 200:
@@ -527,6 +501,7 @@ def run_smoke(
         print(f"logout completed via {logout_mode} flow")
 
         assert_anonymous_logout_stays_local(client, settings)
+        assert_an_anonymous_browser_also_lands_on_the_landing_page(client, settings)
 
         post_logout_redirect = require_redirect(
             *extract_status_location(client.get(settings.protected_url, follow_redirects=False)),
@@ -536,6 +511,12 @@ def run_smoke(
             raise AssertionError(
                 f"expected logout to clear session for {settings.protected_path!r}, got {post_logout_redirect!r}"
             )
+
+        # A second sign-in, because the checks above spent the first one. This
+        # is the only way to watch a browser follow the *authenticated* logout,
+        # which is the flow that goes through the issuer.
+        sign_in(client, settings)
+        assert_a_browser_completes_the_rp_sign_out(client, settings)
 
 
 def assert_no_existence_disclosure(probes: dict[str, httpx.Response]) -> None:
@@ -576,6 +557,49 @@ def assert_registered_post_logout_uri(location: str, settings: SmokeSettings) ->
         )
     if not params.get("client_id"):
         raise AssertionError(f"RP-initiated logout is missing client_id: {location!r}")
+
+
+def sign_in(client: httpx.Client, settings: SmokeSettings) -> None:
+    """Drive one complete authorization-code sign-in against the mock issuer.
+
+    A function rather than a stretch of `run_smoke` because the run signs in
+    more than once: ending a session is what the logout assertions do, so
+    anything that has to be checked with a live session needs a fresh one.
+    """
+    login_response = client.get(settings.login_url, follow_redirects=False)
+    authorize_url = require_redirect(
+        login_response.status_code,
+        login_response.headers.get("location"),
+        f"{settings.mock_issuer.rstrip('/')}/oauth2/authorize",
+        expected_status=302,
+    )
+
+    client.put(
+        settings.user_url,
+        json={"email": settings.subject, "name": "Smoke Test User"},
+    ).raise_for_status()
+
+    authorize_response = client.post(
+        f"{settings.mock_issuer.rstrip('/')}/oauth2/authorize{authorize_url}",
+        data={"sub": settings.subject},
+        follow_redirects=False,
+    )
+    callback_url = require_redirect(
+        authorize_response.status_code,
+        authorize_response.headers.get("location"),
+        f"{settings.public_base_url.rstrip('/')}/_auth/callback",
+        expected_status=302,
+    )
+
+    callback_response = client.get(
+        f"{settings.public_base_url.rstrip('/')}/_auth/callback{callback_url}",
+        follow_redirects=False,
+    )
+    require_redirect(
+        callback_response.status_code,
+        callback_response.headers.get("location"),
+        settings.protected_path,
+    )
 
 
 def post_logout(client: httpx.Client, settings: SmokeSettings, origin: str | None):
@@ -625,8 +649,10 @@ def assert_still_signed_in(client: httpx.Client, settings: SmokeSettings, after:
 def complete_logout(client: httpx.Client, settings: SmokeSettings) -> str:
     """Run the documented production logout and assert it lands where it should."""
     response = post_logout(client, settings, settings.origin)
-    if response.status_code != 307:
-        raise AssertionError(f"expected logout status 307, got {response.status_code}")
+    if response.status_code != EXPECTED_LOGOUT_STATUS:
+        raise AssertionError(
+            f"expected logout status {EXPECTED_LOGOUT_STATUS}, got {response.status_code}"
+        )
 
     location = response.headers.get("location")
     mode = classify_logout_redirect(location, settings)
@@ -640,14 +666,80 @@ def complete_logout(client: httpx.Client, settings: SmokeSettings) -> str:
     return mode
 
 
+def assert_a_browser_completes_the_rp_sign_out(
+    client: httpx.Client, settings: SmokeSettings
+) -> None:
+    """Sign out the way a browser does, and follow it the way a browser would.
+
+    The status is the point. A `307` preserves the method, so the browser would
+    have re-sent the POST to whatever came next -- the landing page, whose route
+    serves `GET` and answers `405`, or the issuer's end-session endpoint, where
+    accepting a POST is the tenant's decision. This walks the real chain and
+    fails if any hop after the submission is not a `GET`.
+
+    Where the chain ends is the issuer's business, not ours: an end-session
+    endpoint may return its own page rather than bouncing on to
+    `post_logout_redirect_uri`, and the mock does exactly that. So this asserts
+    the method of every hop, a final `200`, and a session that is gone --
+    `assert_an_anonymous_browser_also_lands_on_the_landing_page` is what pins
+    the local flow to our own landing page.
+
+    Needs a live session and spends it, so it runs last.
+    """
+    response = client.post(
+        settings.logout_url,
+        headers={"Origin": settings.origin},
+        follow_redirects=True,
+    )
+
+    hops = [(hop.request.method, str(hop.request.url)) for hop in response.history]
+    hops.append((response.request.method, str(response.request.url)))
+    if response.status_code != 200:
+        raise AssertionError(
+            f"expected a followed sign-out to land on 200, got {response.status_code}: {hops}"
+        )
+    if hops[0][0] != "POST":
+        raise AssertionError(f"the sign-out itself was not a POST: {hops}")
+    if len(hops) < 2:
+        raise AssertionError(f"the sign-out did not redirect anywhere: {hops}")
+    for method, url in hops[1:]:
+        if method != "GET":
+            raise AssertionError(f"a browser would have re-sent {method} to {url}: {hops}")
+
+    probe = client.get(settings.protected_url, follow_redirects=False)
+    if probe.status_code != 307:
+        raise AssertionError(
+            f"the session survived a followed sign-out: protected page answered "
+            f"{probe.status_code}"
+        )
+    print(f"a browser's sign-out followed {len(hops) - 1} GET hop(s) to a 200 and cleared the session")
+
+
 def assert_anonymous_logout_stays_local(client: httpx.Client, settings: SmokeSettings) -> None:
     """With no session there is nothing to end, so no outbound issuer hop."""
     response = post_logout(client, settings, settings.origin)
     location = response.headers.get("location")
-    if response.status_code != 307 or location != settings.post_logout_path:
+    if response.status_code != EXPECTED_LOGOUT_STATUS or location != settings.post_logout_path:
         raise AssertionError(
             f"expected anonymous logout to redirect to {settings.post_logout_path!r}, "
             f"got {response.status_code} -> {location!r}"
+        )
+
+
+def assert_an_anonymous_browser_also_lands_on_the_landing_page(
+    client: httpx.Client, settings: SmokeSettings
+) -> None:
+    """The local fallback, followed. No session, so no issuer hop is involved,
+    which makes this the branch that would have 405'd most often."""
+    response = client.post(
+        settings.logout_url,
+        headers={"Origin": settings.origin},
+        follow_redirects=True,
+    )
+    if response.status_code != 200 or response.request.method != "GET":
+        raise AssertionError(
+            f"expected an anonymous followed sign-out to land on 200 via GET, got "
+            f"{response.status_code} via {response.request.method} at {response.request.url}"
         )
 
 

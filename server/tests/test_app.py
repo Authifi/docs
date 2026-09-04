@@ -9,6 +9,7 @@ from starlette.testclient import TestClient
 
 from server.app import (
     DEFAULT_POST_LOGOUT_PATH,
+    LOGOUT_REDIRECT_STATUS,
     PUBLIC_EXACT_PATHS,
     SESSION_AUTHENTICATED_AT_KEY,
     SESSION_MAX_AGE_SECONDS,
@@ -589,7 +590,7 @@ def test_logout_uses_rp_initiated_end_session_endpoint_when_discovered(site_dir:
 
     response = sign_out(client)
 
-    assert response.status_code == 307
+    assert response.status_code == LOGOUT_REDIRECT_STATUS
     location = urlparse(response.headers["location"])
     assert location.scheme == "https"
     assert location.netloc == "issuer.example.com"
@@ -633,7 +634,7 @@ def test_logout_local_fallback_also_ignores_next(site_dir: Path, next_value: str
 
     response = sign_out(client, params={"next": next_value})
 
-    assert response.status_code == 307
+    assert response.status_code == LOGOUT_REDIRECT_STATUS
     assert response.headers["location"] == DEFAULT_POST_LOGOUT_PATH
 
 
@@ -647,7 +648,7 @@ def test_logout_without_a_session_never_contacts_the_issuer(site_dir: Path) -> N
     response = sign_out(client)
 
     assert auth_client.metadata_requests == 0
-    assert response.status_code == 307
+    assert response.status_code == LOGOUT_REDIRECT_STATUS
     assert response.headers["location"] == DEFAULT_POST_LOGOUT_PATH
 
 
@@ -687,7 +688,7 @@ def test_logout_falls_back_to_configured_public_path_without_end_session_endpoin
 
     response = sign_out(client)
 
-    assert response.status_code == 307
+    assert response.status_code == LOGOUT_REDIRECT_STATUS
     assert response.headers["location"] == DEFAULT_POST_LOGOUT_PATH
     assert "expires=Thu, 01 Jan 1970 00:00:00 GMT" in response.headers["set-cookie"]
 
@@ -698,7 +699,7 @@ def test_logout_falls_back_when_discovery_is_unavailable(site_dir: Path) -> None
 
     response = sign_out(client)
 
-    assert response.status_code == 307
+    assert response.status_code == LOGOUT_REDIRECT_STATUS
     assert response.headers["location"] == DEFAULT_POST_LOGOUT_PATH
 
 
@@ -707,7 +708,7 @@ def test_logout_falls_back_when_client_has_no_discovery_support(site_dir: Path) 
 
     response = sign_out(client)
 
-    assert response.status_code == 307
+    assert response.status_code == LOGOUT_REDIRECT_STATUS
     assert response.headers["location"] == DEFAULT_POST_LOGOUT_PATH
 
 
@@ -731,7 +732,7 @@ def test_logout_ignores_next_entirely_and_uses_the_configured_default(site_dir: 
 
     response = sign_out(client, params={"next": "//evil.example"})
 
-    assert response.status_code == 307
+    assert response.status_code == LOGOUT_REDIRECT_STATUS
     assert response.headers["location"] == DEFAULT_POST_LOGOUT_PATH
 
 
@@ -740,7 +741,7 @@ def test_logout_uses_custom_configured_post_logout_path(site_dir: Path) -> None:
 
     response = sign_out(client)
 
-    assert response.status_code == 307
+    assert response.status_code == LOGOUT_REDIRECT_STATUS
     assert response.headers["location"] == "/terms-of-service/"
 
 

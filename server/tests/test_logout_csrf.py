@@ -23,7 +23,12 @@ from pathlib import Path
 
 import pytest
 
-from server.app import DEFAULT_POST_LOGOUT_PATH, create_app, normalize_origin
+from server.app import (
+    DEFAULT_POST_LOGOUT_PATH,
+    LOGOUT_REDIRECT_STATUS,
+    create_app,
+    normalize_origin,
+)
 from server.tests.support import (
     DEFAULT_PUBLIC_BASE_URL,
     DummyAuthClient,
@@ -99,7 +104,7 @@ def test_a_post_from_the_sites_own_origin_signs_out(site_dir: Path) -> None:
 
     response = sign_out(client)
 
-    assert response.status_code == 307
+    assert response.status_code == LOGOUT_REDIRECT_STATUS
     assert response.headers["location"].startswith(ISSUER_LOGOUT)
     assert auth_client.metadata_requests == 1
     assert not still_signed_in(site_dir, response)
@@ -111,7 +116,7 @@ def test_an_anonymous_post_from_our_origin_still_redirects_locally(site_dir: Pat
 
     response = sign_out(client)
 
-    assert response.status_code == 307
+    assert response.status_code == LOGOUT_REDIRECT_STATUS
     assert response.headers["location"] == DEFAULT_POST_LOGOUT_PATH
     assert auth_client.metadata_requests == 0
 
@@ -121,7 +126,7 @@ def test_the_expected_origin_comes_from_the_public_base_url(site_dir: Path) -> N
     local = "http://localhost:8000"
     client = authenticated_client(site_dir, public_base_url=local)
 
-    assert sign_out(client, public_base_url=local).status_code == 307
+    assert sign_out(client, public_base_url=local).status_code == LOGOUT_REDIRECT_STATUS
     assert sign_out(client, public_base_url=DEFAULT_PUBLIC_BASE_URL).status_code == 403
 
 
@@ -139,7 +144,116 @@ def test_the_origin_is_compared_as_an_origin_not_as_a_string(site_dir: Path, ori
         "/_auth/logout", headers={"origin": origin}, follow_redirects=False
     )
 
-    assert response.status_code == 307
+    assert response.status_code == LOGOUT_REDIRECT_STATUS
+
+
+# --- What the browser actually does with the redirect -------------------------
+#
+# The status is the whole behaviour here. A `307` preserves the method, so a
+# browser that had just POSTed the sign-out form would POST the landing page
+# too, and the site route serves `GET` only: the reader's sign-out ended on a
+# `405`. `303 See Other` is the status that means "your POST is done, now GET
+# this instead", which is exactly the handoff a logout needs.
+
+
+def followed(client, **kwargs):
+    """Sign out and let the client behave like a browser."""
+    return client.post(
+        "/_auth/logout",
+        headers={"origin": OUR_ORIGIN},
+        follow_redirects=True,
+        **kwargs,
+    )
+
+
+def methods_of(response) -> list[tuple[str, str]]:
+    """The (method, path) of every hop, in order, including the final one."""
+    return [(hop.request.method, hop.request.url.path) for hop in response.history] + [
+        (response.request.method, response.request.url.path)
+    ]
+
+
+def test_the_redirect_tells_the_browser_to_switch_to_get(site_dir: Path) -> None:
+    """303, not 307. A 307 would re-send the POST to the landing page."""
+    client = authenticated_client(site_dir)
+
+    assert sign_out(client).status_code == 303
+
+
+def test_a_local_sign_out_lands_on_the_landing_page_with_a_get(site_dir: Path) -> None:
+    client = build_client(site_dir)
+
+    response = followed(client)
+
+    assert response.status_code == 200
+    assert methods_of(response) == [
+        ("POST", "/_auth/logout"),
+        ("GET", DEFAULT_POST_LOGOUT_PATH),
+    ]
+
+
+def test_a_signed_in_local_sign_out_lands_on_the_landing_page_with_a_get(
+    site_dir: Path,
+) -> None:
+    """The tenant publishes no `end_session_endpoint`, so this is the fallback."""
+    client = authenticated_client(site_dir, auth_client=DummyAuthClient())
+
+    response = followed(client)
+
+    assert response.status_code == 200
+    assert methods_of(response) == [
+        ("POST", "/_auth/logout"),
+        ("GET", DEFAULT_POST_LOGOUT_PATH),
+    ]
+
+
+def test_the_session_is_gone_once_the_browser_has_followed(site_dir: Path) -> None:
+    """Judged by the cookie the logout hop handed back, since `TestClient`'s jar
+    keeps a manually injected cookie that a response has since cleared."""
+    client = authenticated_client(site_dir, auth_client=DummyAuthClient())
+
+    response = followed(client)
+
+    assert response.status_code == 200
+    assert not still_signed_in(site_dir, response.history[0])
+
+
+def test_the_rp_initiated_flow_is_also_followed_with_a_get(site_dir: Path) -> None:
+    """The issuer hop matters just as much, and for the same reason.
+
+    Whether an end-session endpoint accepts a `POST` is up to the tenant --
+    the specification allows either and plenty of issuers answer `GET` only --
+    so sending one there is a bet on someone else's deployment. `303` means the
+    browser always arrives with a `GET`.
+
+    The endpoint here is a page this site serves, so the test client can follow
+    the hop and report the method it used. What is being proven is the method
+    and the cleared session, neither of which depends on a real issuer being
+    on the other end.
+    """
+    local_stand_in = f"{OUR_ORIGIN}/terms-of-service/"
+    auth_client = DummyAuthClient(metadata={"end_session_endpoint": local_stand_in})
+    client = authenticated_client(site_dir, auth_client=auth_client)
+
+    response = followed(client)
+
+    assert response.status_code == 200
+    assert auth_client.metadata_requests == 1
+    assert methods_of(response) == [
+        ("POST", "/_auth/logout"),
+        ("GET", "/terms-of-service/"),
+    ]
+    assert not still_signed_in(site_dir, response.history[0])
+
+
+def test_the_body_of_a_see_other_carries_no_protected_content(site_dir: Path) -> None:
+    """A redirect body is not a page, and this one is served to a caller whose
+    session has just been thrown away."""
+    client = authenticated_client(site_dir)
+
+    response = sign_out(client)
+
+    assert "Private home" not in response.text
 
 
 # --- POST from anywhere else is refused ---------------------------------------
