@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from pathlib import Path
 from types import SimpleNamespace
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 import pytest
 
@@ -258,6 +258,81 @@ def test_the_smoke_expects_the_status_the_server_actually_sends() -> None:
 def test_the_smoke_expects_a_see_other() -> None:
     """Spelled out, so changing it is a decision rather than a rename."""
     assert local_smoke.EXPECTED_LOGOUT_STATUS == 303
+
+
+# --- The wrong-port Origin probe ----------------------------------------------
+#
+# The probe used to be built by appending a digit to the origin, which turned
+# `http://localhost:8000` into `http://localhost:80009` -- port 80009, outside
+# the range a port can hold. The server refused it, but for being unparseable
+# rather than for being a different port, so the case the probe existed to cover
+# was never actually exercised.
+
+
+@pytest.mark.parametrize(
+    ("origin", "expected"),
+    [
+        ("http://localhost:8000", "http://localhost:8001"),
+        ("http://127.0.0.1:9001", "http://127.0.0.1:9002"),
+        ("https://docs.example.com:443", "https://docs.example.com:444"),
+        ("http://[::1]:8000", "http://[::1]:8001"),
+    ],
+)
+def test_the_wrong_port_origin_keeps_the_host_and_moves_the_port(
+    origin: str, expected: str
+) -> None:
+    assert local_smoke.origin_on_another_port(origin) == expected
+
+
+def test_the_wrong_port_origin_stays_in_range_at_the_top() -> None:
+    """65535 is the last port there is, so the neighbour has to be below it."""
+    assert local_smoke.origin_on_another_port("http://localhost:65535") == (
+        "http://localhost:65534"
+    )
+
+
+@pytest.mark.parametrize(
+    "origin",
+    ["http://localhost:8000", "http://[::1]:65535", "https://docs.example.com:1024"],
+)
+def test_the_wrong_port_origin_is_always_a_parseable_origin(origin: str) -> None:
+    """The point of the probe: the server must reject it on the port, which it
+    can only do if the value parses as an origin at all."""
+    probe = local_smoke.origin_on_another_port(origin)
+    parts = urlsplit(probe)
+
+    assert parts.scheme == urlsplit(origin).scheme
+    assert parts.hostname == urlsplit(origin).hostname
+    assert 1 <= parts.port <= 65535
+    assert parts.port != urlsplit(origin).port
+
+
+def test_the_wrong_port_origin_of_a_bracketed_host_stays_bracketed() -> None:
+    """`http://::1:8001` is not a URL. The brackets are what make it one."""
+    probe = local_smoke.origin_on_another_port("http://[::1]:8000")
+
+    assert probe.startswith("http://[::1]:")
+    assert urlsplit(probe).hostname == "::1"
+
+
+def test_an_origin_with_no_port_is_moved_off_its_scheme_default() -> None:
+    settings_origin = "https://docs.example.com"
+
+    probe = local_smoke.origin_on_another_port(settings_origin)
+
+    assert urlsplit(probe).hostname == "docs.example.com"
+    assert urlsplit(probe).port not in (None, 443)
+
+
+def test_the_smoke_probes_a_real_different_port(tmp_path: Path) -> None:
+    """End to end through the settings, which is how the probe is built."""
+    settings = resolve_settings(tmp_path, environ={})
+
+    probe = local_smoke.origin_on_another_port(settings.origin)
+
+    assert urlsplit(probe).hostname == urlsplit(settings.origin).hostname
+    assert urlsplit(probe).port != urlsplit(settings.origin).port
+    assert 1 <= urlsplit(probe).port <= 65535
 
 
 # --- Registered post-logout URI ----------------------------------------------

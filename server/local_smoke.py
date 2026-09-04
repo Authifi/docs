@@ -18,6 +18,9 @@ import httpx
 DEFAULT_PUBLIC_PATH = "/terms-of-service/"
 DEFAULT_PROTECTED_PATH = "/"
 DEFAULT_DOCS_PORT = "8000"
+# The port each scheme implies, so an origin written without one still has a
+# number to move away from in `origin_on_another_port`.
+ORIGIN_DEFAULT_PORTS = {"http": 80, "https": 443}
 DEFAULT_MOCK_HOST = "oidc-mock.127.0.0.1.nip.io"
 DEFAULT_MOCK_PORT = "9400"
 DEFAULT_SUBJECT = "alice@example.com"
@@ -35,6 +38,7 @@ DIAGNOSTIC_LOG_LINES = 200
 # bind. 1024 is where binding stops needing them.
 LOWEST_UNPRIVILEGED_PORT = 1024
 HIGHEST_PORT = 65535
+LOWEST_PORT = 1
 LOCAL_URL_SCHEME = "http"
 
 # `303 See Other` is what the logout route answers, so that a browser which had
@@ -602,6 +606,40 @@ def sign_in(client: httpx.Client, settings: SmokeSettings) -> None:
     )
 
 
+def origin_on_another_port(origin: str) -> str:
+    """The same scheme and host as `origin`, on a neighbouring port.
+
+    For the probe that checks a same-site, different-port submission is refused
+    -- the case `SameSite=Lax` treats as its own site and the `Origin` check has
+    to catch. It has to be a *valid* origin: appending a digit, which is what
+    this replaced, turned `http://localhost:8000` into `http://localhost:80009`,
+    and the server then refused it for being unparseable rather than for being
+    the wrong port. The probe passed while testing nothing.
+
+    A host is re-bracketed if it needs it, since `http://::1:8001` is not a URL.
+    The neighbour is one above, or one below at the top of the range, so the
+    result is always a port that could exist.
+    """
+    parts = urlsplit(origin)
+    host = parts.hostname
+    if host is None:
+        raise ValueError(f"cannot build a port probe from {origin!r}: it names no host")
+
+    try:
+        port = parts.port
+    except ValueError:
+        raise ValueError(f"cannot build a port probe from {origin!r}: its port is not a number") from None
+    if port is None:
+        port = ORIGIN_DEFAULT_PORTS.get(parts.scheme, LOWEST_UNPRIVILEGED_PORT)
+
+    other = port - 1 if port >= HIGHEST_PORT else port + 1
+    if other < LOWEST_PORT:
+        other = LOWEST_PORT
+    if ":" in host:
+        host = f"[{host}]"
+    return f"{parts.scheme}://{host}:{other}"
+
+
 def post_logout(client: httpx.Client, settings: SmokeSettings, origin: str | None):
     """Submit the sign-out form, optionally from somewhere else."""
     headers = {} if origin is None else {"Origin": origin}
@@ -627,7 +665,8 @@ def assert_a_foreign_form_cannot_sign_out(client: httpx.Client, settings: SmokeS
     for description, origin in (
         ("another site", "http://attacker.invalid"),
         ("no origin at all", None),
-        ("our host on the wrong port", f"{settings.origin}9"),
+        ("our host on the wrong port", origin_on_another_port(settings.origin)),
+        ("an origin that is not a URL", "definitely not an origin"),
     ):
         response = post_logout(client, settings, origin)
         if response.status_code != 403:
