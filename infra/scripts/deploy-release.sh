@@ -320,7 +320,15 @@ if [[ -e "$current" ]]; then
 fi
 
 if [[ -n "$previous" && "$previous" == "$candidate" ]]; then
-  echo "release $sha is already active" >&2
+  echo "release $sha is already active; reloading runtime configuration" >&2
+  if ! "$systemctl_bin" restart authifi-docs; then
+    echo "active release failed to restart" >&2
+    exit 1
+  fi
+  if ! poll_health "http://127.0.0.1:8080/health" "$active_attempts"; then
+    echo "active release failed health check after configuration reload" >&2
+    exit 1
+  fi
   exit 0
 fi
 

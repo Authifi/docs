@@ -1340,6 +1340,14 @@ def test_teardown_docs_apply_both_deletion_flags_before_destroy() -> None:
     assert apply_pos < destroy_pos
 
 
+def test_teardown_deletes_the_secret_from_the_terraform_region() -> None:
+    assert (
+        '--region "$(terraform -chdir=infra output -raw aws_region)"'
+        in INFRA_README
+    )
+    assert "--region us-east-1" not in INFRA_README
+
+
 # --- The public edge, continued -----------------------------------------------
 
 

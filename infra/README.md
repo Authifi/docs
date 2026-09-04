@@ -222,7 +222,7 @@ Terraform state. Delete that final runtime setting explicitly during teardown:
 
 ```bash
 aws ssm delete-parameter \
-  --region us-east-1 \
+  --region "$(terraform -chdir=infra output -raw aws_region)" \
   --name /authifi-docs/oidc-client-secret
 ```
 

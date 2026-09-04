@@ -1289,17 +1289,20 @@ def test_a_relative_current_symlink_survives_a_failing_deployment(
 def test_redeploying_the_active_release_keeps_the_tree_it_is_serving(
     deploy_harness: DeployHarness,
 ) -> None:
-    """The early exit that reports "already active" returns zero, and the
-    directory it declines to reinstall is the one systemd is running from."""
+    """A same-SHA deployment reloads runtime configuration without replacing
+    the directory systemd is already serving."""
     sha = "7" * 38 + "de"
     deploy_harness.publish_archive(sha)
     assert deploy_harness.run(sha).returncode == 0
+    deploy_harness.events_file.unlink()
 
     deploy_harness.publish_archive(sha)
     result = deploy_harness.run(sha)
 
     assert result.returncode == 0
     assert "already active" in result.stderr
+    assert deploy_harness.events.count("systemctl:restart") == 1
+    assert "active-health" in deploy_harness.events
     assert (deploy_harness.releases / sha / "site" / "index.html").is_file()
     assert deploy_harness.current.resolve().name == sha
 
