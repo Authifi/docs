@@ -177,3 +177,54 @@ server/tests/test_app.py::test_serves_authenticated_root_with_link_headers PASSE
 - Scope stayed narrow: only the release builder, the focused release test file, and the report changed.
 - The new test proves behavior from the extracted artifact rather than from the source tree, so it cannot pass by accidentally reading the repository's own `docs/_headers`.
 - Dockerless contributors can now run the focused file without a hard failure, while Docker-enabled environments still exercise the Linux x86_64 offline-install proof.
+
+## Compliance Fix Addendum
+
+### Issue: unplanned top-level `docs/` archive root
+
+Requirement verified: the release must not add a new top-level `docs/` root just to carry `_headers`; instead it must package the source `docs/_headers` as `site/_headers`, which `header_candidates()` already consumes, and the release layout test must lock the exact allowed root set.
+
+RED command:
+
+```bash
+.venv/bin/python -m pytest server/tests/test_release_artifact.py -v
+```
+
+RED result:
+
+```text
+collected 4 items
+server/tests/test_release_artifact.py::test_release_contains_site_server_lock_and_wheelhouse FAILED
+server/tests/test_release_artifact.py::test_release_preserves_root_link_header_behavior PASSED
+server/tests/test_release_artifact.py::test_release_checksum_matches_archive PASSED
+server/tests/test_release_artifact.py::test_release_dependencies_install_without_an_index PASSED
+AssertionError: assert {'docs', 'requirements.txt', 'server', 'site', 'wheelhouse'} == {'requirements.txt', 'server', 'site', 'wheelhouse'}
+```
+
+Fix:
+
+- `server/tests/test_release_artifact.py` now asserts the exact top-level root set `{"requirements.txt", "server", "site", "wheelhouse"}` and requires `site/_headers` to be present.
+- `scripts/build-release.sh` now copies `docs/_headers` to `site/_headers` after `mkdocs build`, removing the extra top-level `docs/` root while preserving the extracted-app `Link` header behavior proof.
+
+GREEN command:
+
+```bash
+.venv/bin/python -m pytest server/tests/test_release_artifact.py -v server/tests/test_app.py::test_serves_authenticated_root_with_link_headers -v
+```
+
+GREEN result:
+
+```text
+collected 5 items
+server/tests/test_release_artifact.py::test_release_contains_site_server_lock_and_wheelhouse PASSED
+server/tests/test_release_artifact.py::test_release_preserves_root_link_header_behavior PASSED
+server/tests/test_release_artifact.py::test_release_checksum_matches_archive PASSED
+server/tests/test_release_artifact.py::test_release_dependencies_install_without_an_index PASSED
+server/tests/test_app.py::test_serves_authenticated_root_with_link_headers PASSED
+========================= 5 passed, 1 warning in 5.26s =========================
+```
+
+Self-review:
+
+- Scope stayed narrow to the release builder, the focused release test, and this report.
+- The layout test now prevents future top-level root drift while the extracted-app test still proves real root `Link` header behavior from the packaged artifact.

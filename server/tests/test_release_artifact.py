@@ -19,6 +19,7 @@ from server.tests.support import DummyAuthClient, HEADERS_FILE, SESSION_COOKIE_N
 ROOT = Path(__file__).resolve().parents[2]
 BUILDER = ROOT / "scripts" / "build-release.sh"
 DOCKERFILE = ROOT / "Dockerfile"
+ALLOWED_TOP_LEVEL_ROOTS = {"requirements.txt", "server", "site", "wheelhouse"}
 requires_docker = pytest.mark.skipif(shutil.which("docker") is None, reason="docker CLI is not available")
 
 
@@ -81,7 +82,11 @@ def test_release_contains_site_server_lock_and_wheelhouse(
     with tarfile.open(output / f"{sha}.tar.gz") as archive:
         names = set(archive.getnames())
 
+    top_level_roots = {name.split("/", 1)[0] for name in names}
+
+    assert top_level_roots == ALLOWED_TOP_LEVEL_ROOTS
     assert "site/index.html" in names
+    assert "site/_headers" in names
     assert "server/app.py" in names
     assert "server/main.py" in names
     assert "requirements.txt" in names
