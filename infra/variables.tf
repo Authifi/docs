@@ -76,6 +76,30 @@ variable "site_dir" {
   default     = "/app/site"
 }
 
+variable "post_logout_path" {
+  description = "Site-relative path users land on after logout. Must be a publicly served path, and must be registered with Authifi as a post-logout redirect URI."
+  type        = string
+  default     = "/privacy-policy/"
+
+  validation {
+    condition     = startswith(var.post_logout_path, "/") && !startswith(var.post_logout_path, "//")
+    error_message = "post_logout_path must be a site-relative path starting with a single '/'."
+  }
+
+  validation {
+    condition     = length(regexall("[\\\\[:cntrl:]]", var.post_logout_path)) == 0
+    error_message = "post_logout_path must not contain backslashes or control characters."
+  }
+
+  validation {
+    condition = contains(
+      ["/privacy-policy/", "/terms-of-service/", "/sms-opt-in.html", "/robots.txt", "/auth.md", "/sitemap.xml"],
+      var.post_logout_path
+    ) || startswith(var.post_logout_path, "/.well-known/") || startswith(var.post_logout_path, "/assets/") || startswith(var.post_logout_path, "/javascripts/") || startswith(var.post_logout_path, "/stylesheets/")
+    error_message = "post_logout_path must be one of the publicly served paths in the server allowlist, otherwise logout sends users straight back into a login redirect."
+  }
+}
+
 variable "custom_domain_name" {
   description = "App Runner custom domain to associate with the service."
   type        = string

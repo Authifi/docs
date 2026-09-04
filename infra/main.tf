@@ -282,10 +282,11 @@ resource "aws_apprunner_service" "docs" {
         port = "8080"
 
         runtime_environment_variables = {
-          OIDC_CLIENT_ID  = var.oidc_client_id
-          OIDC_ISSUER     = var.oidc_issuer
-          PUBLIC_BASE_URL = var.public_base_url
-          SITE_DIR        = var.site_dir
+          OIDC_CLIENT_ID   = var.oidc_client_id
+          OIDC_ISSUER      = var.oidc_issuer
+          POST_LOGOUT_PATH = var.post_logout_path
+          PUBLIC_BASE_URL  = var.public_base_url
+          SITE_DIR         = var.site_dir
         }
 
         runtime_environment_secrets = {

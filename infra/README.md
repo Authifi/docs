@@ -53,6 +53,7 @@ runtime_secret_kms_key_arns = []
 
 public_base_url    = "https://docs.authifi.io"
 site_dir           = "/app/site"
+post_logout_path   = "/privacy-policy/"
 custom_domain_name = "docs.authifi.io"
 
 existing_github_oidc_provider_arn = null
@@ -204,13 +205,26 @@ terraform -chdir=infra output -raw ecr_repository_url
 
 ## Runtime Configuration
 
-Plain App Runner environment variables:
+Plain App Runner environment variables, all set from Terraform variables of the
+same lowercase name:
 
 - `OIDC_ISSUER`
 - `OIDC_CLIENT_ID`
 - `PUBLIC_BASE_URL`
 - `SITE_DIR`
-- `POST_LOGOUT_PATH` (optional; defaults to `/privacy-policy/`)
+- `POST_LOGOUT_PATH`
+
+`post_logout_path` defaults to `/privacy-policy/` and is validated at plan time:
+it must be site-relative, free of backslashes and control characters, and one of
+the paths the server actually serves publicly. A protected path would send every
+logged-out user straight back into a login redirect, so Terraform rejects it
+rather than letting it reach production. Whatever value you choose must also be
+registered with Authifi as a post-logout redirect URI, because the server sends
+it as `post_logout_redirect_uri` during RP-initiated logout.
+
+If you change `post_logout_path` after the service exists, a normal
+`terraform apply` picks it up — the `ignore_changes` lifecycle rule covers only
+`image_identifier`, not the environment variables.
 
 Secrets injected from Secrets Manager by ARN:
 
