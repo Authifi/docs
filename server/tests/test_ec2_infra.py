@@ -1017,6 +1017,7 @@ def test_terraform_never_accepts_a_public_base_url_the_server_would_refuse(
 OIDC_ISSUERS_THAT_WORK = (
     "https://issuer.example.com",
     "https://issuer.authifi.io/tenants/authifi",
+    "https://a.authifi.io/_api/auth/ls",
     "https://issuer.example.com/",
 )
 

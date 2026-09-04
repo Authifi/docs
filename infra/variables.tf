@@ -146,7 +146,7 @@ variable "oidc_issuer" {
   # discovery URL the issuer never serves. `server/app.py` re-checks the same
   # shapes at startup via `validate_oidc_issuer`.
   validation {
-    condition     = can(regex("^https://[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+(/[a-z0-9][a-z0-9._-]*(/[a-z0-9][a-z0-9._-]*)*)?/?$", var.oidc_issuer))
+    condition     = can(regex("^https://[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+(/[a-z0-9_][a-z0-9._-]*(/[a-z0-9_][a-z0-9._-]*)*)?/?$", var.oidc_issuer))
     error_message = "oidc_issuer must be an https URL naming a lowercase DNS host and an optional path, such as https://issuer.example.com/tenants/acme."
   }
 
