@@ -1459,9 +1459,10 @@ def test_send_command_names_the_one_document_and_the_one_instance() -> None:
 def test_the_deploy_role_trusts_exactly_the_subject_the_workflow_presents() -> None:
     """The job declares `environment: production`, and that changes the token.
 
-    GitHub's default subject names the environment when a job references one,
-    so the subject this workflow actually presents is
-    `repo:<owner>/<name>:environment:<environment>` -- not the `:ref:` form.
+    GitHub's immutable subject names the owner and repository IDs plus the
+    environment when a job references one, so the subject this workflow
+    actually presents is
+    `repo:<owner>@<owner-id>/<name>@<repo-id>:environment:<environment>`.
     A trust policy pinned to the ref form does not fail a plan, a validate, or
     any assertion about IAM shape: it fails the first real deployment with
     `Not authorized to perform sts:AssumeRoleWithWebIdentity`, after the
@@ -1475,13 +1476,11 @@ def test_the_deploy_role_trusts_exactly_the_subject_the_workflow_presents() -> N
 
     assert environment == variable_default("deploy_environment")
 
-    subject = f"repo:{variable_default('github_repository')}:environment:{environment}"
+    subject = variable_default("github_repository_subject")
     assert conditions["sub"] == ("StringEquals", [subject])
 
-    # The obsolete form, named explicitly: it is what this repository had, and
-    # it is the plausible thing for someone to restore while "simplifying".
+    assert subject == "repo:Authifi@37509689/docs@993416679:environment:production"
     assert ":ref:" not in subject
-    assert resolve(attribute(LOCALS, "github_repository_subject") or "") == subject
 
 
 def test_the_deploy_role_binds_the_branch_and_the_repository_identity_too() -> None:

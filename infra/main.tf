@@ -41,20 +41,9 @@ data "aws_ami" "ubuntu" {
 
 locals {
   # The deployment job declares `environment: production`, and that changes the
-  # token it gets: GitHub's default subject names the *environment* when a job
-  # references one, so `repo:<owner>/<name>:ref:refs/heads/main` is not a
-  # subject this workflow can ever present. Pinning the ref form fails nothing
-  # a plan or a validate can see — it fails the first real deployment with
-  # `Not authorized to perform sts:AssumeRoleWithWebIdentity`, after the
-  # release archive is already in S3.
-  #
-  # This is the legacy (mutable) subject format, which is what the repository's
-  # OIDC customisation currently returns: `use_default` is true and
-  # `use_immutable_subject` is false. Turning immutable subjects on for the
-  # org or repository rewrites this claim to the
-  # `repo:<owner>@<owner-id>/<name>@<repo-id>:environment:<env>` form, and this
-  # value has to be updated in the same change.
-  github_repository_subject        = "repo:${var.github_repository}:environment:${var.deploy_environment}"
+  # token it gets. Authifi's GitHub organization issues immutable subjects that
+  # bind both owner and repository IDs:
+  # `repo:<owner>@<owner-id>/<name>@<repo-id>:environment:<env>`.
   github_oidc_provider_arn         = coalesce(var.existing_github_oidc_provider_arn, try(aws_iam_openid_connect_provider.github[0].arn, null))
   release_bucket_name              = coalesce(var.release_bucket_name, "${var.service_name}-releases-${data.aws_caller_identity.current.account_id}")
   oidc_client_secret_parameter_arn = "arn:${data.aws_partition.current.partition}:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${var.oidc_client_secret_parameter_name}"
@@ -837,7 +826,7 @@ data "aws_iam_policy_document" "github_deploy_assume_role" {
     condition {
       test     = "StringEquals"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = [local.github_repository_subject]
+      values   = [var.github_repository_subject]
     }
 
     # The subject is one string, and everything in it is a name someone can
