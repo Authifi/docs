@@ -108,30 +108,167 @@ jobs:
       - name: Publish or verify release
         if: ${{ steps.release.outputs.build == 'true' }}
         shell: bash
+        env:
+          RELEASE_SHA: ${{ steps.release.outputs.sha }}
         run: |
           set -euo pipefail
 
-          sha="${{ steps.release.outputs.sha }}"
-          prefix="s3://$RELEASE_BUCKET_NAME/releases"
-          remote_checksum="dist/releases/remote.sha256"
+          # A release is two objects, and it used to be published by two
+          # unconditional copies with nothing between them. A run cancelled
+          # after the archive landed and before its checksum did left a state
+          # this step then refused on every rerun of the same commit: the
+          # archive was present, so it took the verify branch, and the verify
+          # branch failed on the absent checksum. That commit could never be
+          # deployed through this workflow again without somebody repairing
+          # the bucket by hand.
+          #
+          # So all four presence states are answered here, and the two partial
+          # ones are completed rather than refused -- but only after proving
+          # that what is already published is what this run built. Uploading a
+          # checksum over somebody else's archive would make that archive
+          # verifiable under this commit's SHA, which is the one substitution
+          # the checksum exists to prevent.
 
-          if aws s3api head-object \
-            --bucket "$RELEASE_BUCKET_NAME" \
-            --key "releases/$sha.tar.gz" > /dev/null 2>&1; then
+          prefix="s3://$RELEASE_BUCKET_NAME/releases"
+          archive_key="releases/$RELEASE_SHA.tar.gz"
+          checksum_key="releases/$RELEASE_SHA.tar.gz.sha256"
+          local_archive="dist/releases/$RELEASE_SHA.tar.gz"
+          local_checksum="dist/releases/$RELEASE_SHA.tar.gz.sha256"
+          remote_archive="dist/remote/$RELEASE_SHA.tar.gz"
+          remote_checksum="dist/remote/$RELEASE_SHA.tar.gz.sha256"
+
+          mkdir -p dist/remote
+
+          # Both halves of every comparison are computed by one program, so
+          # neither depends on coreutils being GNU's, and a checksum file that
+          # is not one line of '<sha256>  <filename>' is a refusal rather than
+          # an empty string that compares equal to another empty string.
+          cat > dist/release-digest.py <<'PY'
+          import hashlib
+          import re
+          import sys
+          from pathlib import Path
+
+          mode, path = sys.argv[1:3]
+
+          if mode == "file":
+              print(hashlib.sha256(Path(path).read_bytes()).hexdigest())
+              raise SystemExit(0)
+
+          if mode == "recorded":
+              expected_name = sys.argv[3]
+              parts = Path(path).read_text(encoding="utf-8").split()
+              if len(parts) != 2:
+                  raise SystemExit(f"{path} is not one '<sha256>  <filename>' line")
+              digest, filename = parts
+              if not re.fullmatch(r"[0-9a-f]{64}", digest):
+                  raise SystemExit(f"{path} does not record a sha256 digest")
+              if filename != expected_name:
+                  raise SystemExit(f"{path} names {filename!r}, not {expected_name!r}")
+              print(digest)
+              raise SystemExit(0)
+
+          raise SystemExit(f"unknown digest mode {mode!r}")
+          PY
+
+          digest_of() {
+            python dist/release-digest.py file "$1"
+          }
+
+          recorded_digest_of() {
+            python dist/release-digest.py recorded "$1" "$RELEASE_SHA.tar.gz"
+          }
+
+          remote_object_exists() {
             aws s3api head-object \
               --bucket "$RELEASE_BUCKET_NAME" \
-              --key "releases/$sha.tar.gz.sha256" > /dev/null
-            aws s3 cp "$prefix/$sha.tar.gz.sha256" "$remote_checksum"
-            (
-              cd dist/releases
-              sha256sum --check "$(basename "$remote_checksum")"
-            ) || {
-              echo "checksum mismatch for existing release" >&2
+              --key "$1" > /dev/null 2>&1
+          }
+
+          # `--if-none-match "*"` is what makes "never overwrite a published
+          # release" a property of the request rather than of the presence
+          # check above it. S3 answers 412 when a current version already
+          # exists, so the window between the check and the write is a failed
+          # deployment instead of a silent replacement. The concurrency group
+          # already serialises this workflow's own runs; this is what holds
+          # when the writer is outside it.
+          upload_object() {
+            aws s3api put-object \
+              --bucket "$RELEASE_BUCKET_NAME" \
+              --key "$1" \
+              --body "$2" \
+              --if-none-match "*" > /dev/null
+          }
+
+          local_digest="$(digest_of "$local_archive")"
+          built_digest="$(recorded_digest_of "$local_checksum")"
+
+          if [[ "$built_digest" != "$local_digest" ]]; then
+            echo "This build's archive and its checksum disagree, so there is nothing" >&2
+            echo "trustworthy to publish or to compare a published release against." >&2
+            echo "Archive: $local_archive" >&2
+            exit 1
+          fi
+
+          archive_published=false
+          checksum_published=false
+          if remote_object_exists "$archive_key"; then
+            archive_published=true
+          fi
+          if remote_object_exists "$checksum_key"; then
+            checksum_published=true
+          fi
+
+          echo "Release $RELEASE_SHA in s3://$RELEASE_BUCKET_NAME:" \
+            "archive_published=$archive_published checksum_published=$checksum_published"
+
+          if [[ "$archive_published" == true && "$checksum_published" == true ]]; then
+            aws s3 cp "$prefix/$RELEASE_SHA.tar.gz.sha256" "$remote_checksum"
+            published_digest="$(recorded_digest_of "$remote_checksum")"
+
+            if [[ "$published_digest" != "$local_digest" ]]; then
+              echo "Release $RELEASE_SHA is already published with a different checksum." >&2
+              echo "Published: $published_digest" >&2
+              echo "This build: $local_digest" >&2
+              echo "Releases are immutable, so this needs a new commit, not a repaired bucket." >&2
               exit 1
-            }
+            fi
+
+            echo "Release $RELEASE_SHA is already fully published and matches this build."
+          elif [[ "$archive_published" == true ]]; then
+            aws s3 cp "$prefix/$RELEASE_SHA.tar.gz" "$remote_archive"
+            published_digest="$(digest_of "$remote_archive")"
+
+            if [[ "$published_digest" != "$local_digest" ]]; then
+              echo "Release $RELEASE_SHA has a published archive that is not this build," >&2
+              echo "and no checksum. Publishing this build's checksum over it would" >&2
+              echo "make those bytes verifiable under this SHA, so it is refused." >&2
+              echo "Published archive: $published_digest" >&2
+              echo "This build: $local_digest" >&2
+              exit 1
+            fi
+
+            echo "Completing an interrupted publication of $RELEASE_SHA: uploading its checksum."
+            upload_object "$checksum_key" "$local_checksum"
+          elif [[ "$checksum_published" == true ]]; then
+            aws s3 cp "$prefix/$RELEASE_SHA.tar.gz.sha256" "$remote_checksum"
+            published_digest="$(recorded_digest_of "$remote_checksum")"
+
+            if [[ "$published_digest" != "$local_digest" ]]; then
+              echo "Release $RELEASE_SHA has a published checksum that does not match" >&2
+              echo "this build, and no archive. Uploading this build under that checksum" >&2
+              echo "would publish a release the installer will reject, so it is refused." >&2
+              echo "Published checksum: $published_digest" >&2
+              echo "This build: $local_digest" >&2
+              exit 1
+            fi
+
+            echo "Completing an interrupted publication of $RELEASE_SHA: uploading its archive."
+            upload_object "$archive_key" "$local_archive"
           else
-            aws s3 cp "dist/releases/$sha.tar.gz" "$prefix/$sha.tar.gz"
-            aws s3 cp "dist/releases/$sha.tar.gz.sha256" "$prefix/$sha.tar.gz.sha256"
+            echo "Publishing release $RELEASE_SHA."
+            upload_object "$archive_key" "$local_archive"
+            upload_object "$checksum_key" "$local_checksum"
           fi
 
       - name: Verify existing release for rollback
