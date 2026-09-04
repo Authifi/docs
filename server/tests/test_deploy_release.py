@@ -55,6 +55,8 @@ class DeployHarness:
     fail_candidate_health_file: Path = field(init=False)
     fail_active_health_file: Path = field(init=False)
     fail_first_restart_file: Path = field(init=False)
+    test_pause_hold_file: Path = field(init=False)
+    test_pause_marker_file: Path = field(init=False)
     env: dict[str, str] = field(init=False)
 
     def __post_init__(self) -> None:
@@ -75,6 +77,8 @@ class DeployHarness:
         self.fail_candidate_health_file = self.tmp_path / "fail-candidate-health"
         self.fail_active_health_file = self.tmp_path / "fail-active-health"
         self.fail_first_restart_file = self.tmp_path / "fail-first-restart"
+        self.test_pause_hold_file = self.tmp_path / "test-pause-hold"
+        self.test_pause_marker_file = self.tmp_path / "test-pause-marker"
 
         self.releases.mkdir(parents=True)
         self.incoming_root.mkdir(parents=True)
@@ -115,6 +119,9 @@ class DeployHarness:
             "FAIL_CANDIDATE_HEALTH_FILE": str(self.fail_candidate_health_file),
             "FAIL_ACTIVE_HEALTH_FILE": str(self.fail_active_health_file),
             "FAIL_FIRST_RESTART_FILE": str(self.fail_first_restart_file),
+            "AUTHIFI_DOCS_TEST_PAUSE_POINT": "after_swap",
+            "AUTHIFI_DOCS_TEST_PAUSE_HOLD": str(self.test_pause_hold_file),
+            "AUTHIFI_DOCS_TEST_PAUSE_MARKER": str(self.test_pause_marker_file),
             "PATH": f"{self.fake_bin}:{env['PATH']}",
         }
 
@@ -990,8 +997,49 @@ def test_repeated_failures_never_become_releases_a_prune_would_keep(
     assert deploy_harness.current.resolve().name == successor
 
 
+def wait_for_path(path: Path, timeout: float = 30) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if path.exists():
+            return
+        time.sleep(0.02)
+    raise AssertionError(f"{path} never appeared")
+
+
+def signal_during_deploy(
+    deploy_harness: DeployHarness,
+    sha: str,
+    *,
+    signal_name: str = "SIGTERM",
+) -> subprocess.CompletedProcess[str]:
+    """Drive a deployment to the post-swap pause point, then signal it."""
+    import signal as signal_module
+
+    number = getattr(signal_module, signal_name)
+    deploy_harness.test_pause_hold_file.write_text("1\n", encoding="utf-8")
+
+    process = subprocess.Popen(
+        [str(DEPLOYER), sha],
+        cwd=ROOT,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=deploy_harness.env,
+    )
+    wait_for_path(deploy_harness.test_pause_marker_file)
+    process.send_signal(number)
+    deploy_harness.test_pause_hold_file.unlink(missing_ok=True)
+    stdout, stderr = process.communicate(timeout=60)
+    return subprocess.CompletedProcess(
+        process.args,
+        process.returncode,
+        stdout,
+        stderr,
+    )
+
+
 @pytest.mark.parametrize("signal_name", ["SIGHUP", "SIGINT", "SIGTERM"])
-def test_a_signalled_deployment_cleans_up_and_reports_the_signal(
+def test_a_signalled_deployment_before_swap_cleans_up_and_reports_the_signal(
     deploy_harness: DeployHarness, signal_name: str
 ) -> None:
     """Systems Manager cancels a command by signalling the installer, and a
@@ -1044,6 +1092,67 @@ def test_a_signalled_deployment_cleans_up_and_reports_the_signal(
     # a handler that ran twice would decide twice -- the second time after the
     # first had already changed what it was looking at.
     assert stderr.count("deployment interrupted by SIG") == 1, stderr
+
+
+@pytest.mark.parametrize("signal_name", ["SIGHUP", "SIGINT", "SIGTERM"])
+def test_a_signalled_deployment_after_swap_restores_the_previous_release(
+    deploy_harness: DeployHarness, signal_name: str
+) -> None:
+    """After `current` points at the candidate but before the active health
+    check succeeds, a cancellation must roll back rather than leave the host
+    serving a release that never finished activating."""
+    import signal as signal_module
+
+    number = getattr(signal_module, signal_name)
+    previous_sha = "0" * 40
+    deploy_harness.seed_active_release()
+    sha = "a" * 37 + "bcd"
+    deploy_harness.publish_archive(sha)
+
+    result = signal_during_deploy(
+        deploy_harness,
+        sha,
+        signal_name=signal_name,
+    )
+
+    assert result.returncode != 0, result.stderr
+    assert result.returncode in (128 + number, -number), result.returncode
+    assert not (deploy_harness.releases / sha).exists()
+    assert not (deploy_harness.incoming_root / sha).exists()
+    assert deploy_harness.current.resolve().name == previous_sha
+    assert deploy_harness.service_running
+    assert "systemctl:restart" in deploy_harness.events
+    assert "previous release restored" in result.stderr
+    assert "deployment interrupted by SIG" in result.stderr
+    assert "active-health" not in deploy_harness.events
+
+
+@pytest.mark.parametrize("signal_name", ["SIGHUP", "SIGINT", "SIGTERM"])
+def test_a_signalled_first_deploy_after_swap_leaves_no_active_release(
+    deploy_harness: DeployHarness, signal_name: str
+) -> None:
+    """With no previous release, a post-swap cancellation must remove `current`
+    and stop the unit rather than leave a symlink to an unactivated tree."""
+    import signal as signal_module
+
+    number = getattr(signal_module, signal_name)
+    sha = "b" * 37 + "cde"
+    deploy_harness.publish_archive(sha)
+
+    result = signal_during_deploy(
+        deploy_harness,
+        sha,
+        signal_name=signal_name,
+    )
+
+    assert result.returncode != 0, result.stderr
+    assert result.returncode in (128 + number, -number), result.returncode
+    assert not deploy_harness.current.exists()
+    assert not deploy_harness.service_running
+    assert not (deploy_harness.releases / sha).exists()
+    assert not (deploy_harness.incoming_root / sha).exists()
+    assert "deployment interrupted by SIG" in result.stderr
+    assert "systemctl:stop" in deploy_harness.events
 
 
 def test_the_cleanup_handler_runs_once_even_when_a_signal_precedes_the_exit(

@@ -26,6 +26,17 @@ data "aws_ami" "ubuntu" {
     name   = "architecture"
     values = ["x86_64"]
   }
+
+  lifecycle {
+    # Canonical's owner ID and the GitHub OIDC audience both assume the
+    # standard commercial partition. A syntactically valid China or GovCloud
+    # region passes variable validation and then fails during apply with an
+    # opaque AMI or trust error instead of a plan-time message.
+    precondition {
+      condition     = data.aws_partition.current.partition == "aws"
+      error_message = "This deployment supports the standard commercial aws partition only: the Canonical AMI owner and GitHub OIDC audience assume aws, not aws-cn or aws-us-gov."
+    }
+  }
 }
 
 locals {
@@ -113,6 +124,15 @@ data "aws_subnet" "public" {
       error_message = "Every public subnet must belong to vpc_id."
     }
   }
+}
+
+# The route table each supplied public subnet is actually associated with.
+# `map_public_ip_on_launch` and distinct availability zones are not enough:
+# private subnets in two zones pass those checks while leaving an
+# internet-facing load balancer reachable only from inside the VPC.
+data "aws_route_table" "public" {
+  for_each  = toset(var.public_subnet_ids)
+  subnet_id = each.value
 }
 
 data "aws_subnet" "app" {
@@ -295,6 +315,20 @@ resource "aws_lb" "docs" {
     precondition {
       condition     = length(distinct([for subnet in data.aws_subnet.public : subnet.availability_zone])) == 2
       error_message = "public_subnet_ids must name subnets in two different availability zones."
+    }
+
+    # Both halves, so the check is not vacuous: a default route to a NAT
+    # gateway carries no gateway_id, and a narrower prefix routed to an
+    # internet gateway is not a default route.
+    precondition {
+      condition = alltrue([
+        for subnet_id in var.public_subnet_ids :
+        anytrue([
+          for route in data.aws_route_table.public[subnet_id].routes :
+          route.cidr_block == "0.0.0.0/0" && route.gateway_id != ""
+        ])
+      ])
+      error_message = "Every public_subnet_ids entry's route table must send 0.0.0.0/0 to an internet gateway; an internet-facing load balancer in private subnets is reachable only from inside the VPC."
     }
   }
 }

@@ -310,6 +310,52 @@ def test_the_load_balancer_checks_it_spans_two_zones() -> None:
     assert "== 2" in precondition
 
 
+def test_each_public_subnet_route_table_is_read_from_the_subnet_id() -> None:
+    """The module consumes shared subnets rather than owning them, so whether
+    each one is actually public is an assumption that has to be read back."""
+    lookup = hcl_block(MAIN, 'data "aws_route_table" "public"')
+
+    assert attribute(lookup, "for_each") == "toset(var.public_subnet_ids)"
+    assert attribute(lookup, "subnet_id") == "each.value"
+
+
+def test_the_load_balancer_requires_an_internet_gateway_default_route() -> None:
+    """Two private subnets in different zones satisfy every check this root
+    used to make. An internet-facing load balancer in them is reachable only
+    from inside the VPC, which is not what this deployment is for."""
+    preconditions = nested_blocks(hcl_block(MAIN, 'resource "aws_lb" "docs"'), "precondition")
+    route_precondition = next(
+        block for block in preconditions if "aws_route_table.public" in block
+    )
+
+    assert "alltrue(" in route_precondition
+    assert "data.aws_route_table.public" in route_precondition
+    assert 'route.cidr_block == "0.0.0.0/0"' in route_precondition
+    assert 'route.gateway_id != ""' in route_precondition
+
+    message = (attribute(route_precondition, "error_message") or "").lower()
+    assert "public_subnet_ids" in message
+    assert "internet gateway" in message or "igw" in message
+
+
+def test_the_deployment_requires_the_standard_commercial_aws_partition() -> None:
+    """Canonical's AMI owner and the GitHub OIDC audience both assume the
+    commercial `aws` partition. A syntactically valid China or GovCloud
+    region passes variable validation and then fails during apply with an
+    opaque AMI or trust error."""
+    preconditions = nested_blocks(hcl_block(MAIN, 'data "aws_ami" "ubuntu"'), "precondition")
+    partition_precondition = next(
+        block for block in preconditions if "aws_partition" in block
+    )
+    condition = attribute(partition_precondition, "condition") or ""
+
+    assert condition == 'data.aws_partition.current.partition == "aws"'
+
+    message = (attribute(partition_precondition, "error_message") or "").lower()
+    assert "aws" in message
+    assert "partition" in message or "commercial" in message
+
+
 def test_the_instance_rejects_a_subnet_that_hands_out_public_addresses() -> None:
     """`private_app_subnet_id` is a plain string, and a public subnet ID is a
     valid one. Catching it here fails the plan instead of quietly putting the

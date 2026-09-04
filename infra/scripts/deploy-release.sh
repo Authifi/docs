@@ -99,6 +99,11 @@ candidate_pid=""
 # Whether this candidate became the release the host is serving. Set once, at
 # the point everything that could still roll it back has succeeded.
 candidate_activated=0
+# Whether `current` already points at the candidate. Distinct from activation:
+# a cancellation after the swap but before the active health check must roll
+# back even though the host is not yet serving the release.
+candidate_swapped=0
+release_restored=0
 
 stop_candidate_server() {
   if [[ -n "$candidate_pid" ]]; then
@@ -164,6 +169,9 @@ run_cleanup() {
   cleanup_done=1
 
   stop_candidate_server
+  if (( candidate_swapped == 1 )) && (( candidate_activated == 0 )) && (( release_restored == 0 )); then
+    restore_previous_release "deployment interrupted"
+  fi
   rm -rf "$incoming"
   if (( failed != 0 )) && (( candidate_activated == 0 )); then
     discard_candidate
@@ -536,8 +544,13 @@ stop_candidate_server
 # previous release intact beside it: nothing rolled back, nothing restarted,
 # and the host left on a release that had never started — the one state the
 # two-stage swap exists to prevent.
-abandon_activation() {
+restore_previous_release() {
   local reason="$1"
+
+  if (( release_restored == 1 )); then
+    return 0
+  fi
+  release_restored=1
 
   if [[ -n "$previous" ]]; then
     swap_current "$previous"
@@ -555,11 +568,28 @@ abandon_activation() {
     "$systemctl_bin" stop authifi-docs || true
     echo "$reason; no previous release to restore" >&2
   fi
+}
 
+abandon_activation() {
+  local reason="$1"
+
+  restore_previous_release "$reason"
   exit 1
 }
 
+maybe_test_pause() {
+  [[ "${AUTHIFI_DOCS_TEST_PAUSE_POINT:-}" == "$1" ]] || return 0
+  [[ -n "${AUTHIFI_DOCS_TEST_PAUSE_MARKER:-}" ]] || return 0
+
+  : > "$AUTHIFI_DOCS_TEST_PAUSE_MARKER"
+  while [[ -e "${AUTHIFI_DOCS_TEST_PAUSE_HOLD:-}" ]]; do
+    sleep 0.05
+  done
+}
+
 swap_current "$candidate"
+candidate_swapped=1
+maybe_test_pause after_swap
 
 if ! "$systemctl_bin" restart authifi-docs; then
   abandon_activation "candidate release did not restart under systemd"
