@@ -238,6 +238,44 @@ traffic. `server/tests/test_compose.py` renders the stack and fails if
 `host-gateway` returns, the alias goes missing, or `MOCK_OIDC_PORT` stops
 reaching every place the port appears.
 
+### The Smoke Runner's URL Overrides Configure The Stack
+
+`server/local_smoke.py` takes `--public-base-url` and `--mock-issuer`, and both
+now build the Compose environment rather than only the client that dials it.
+`--public-base-url` sets `PUBLIC_BASE_URL` and derives the published
+`DOCS_PORT`; `--mock-issuer` sets `MOCK_OIDC_HOST` and `MOCK_OIDC_PORT`, which
+is what moves the alias, the published mapping, the provider's `--port`, and the
+`OIDC_ISSUER` the docs container is given. The client's settings are then read
+back out of that environment, one direction only, so the stack cannot be
+configured for one set of URLs while the assertions are written against
+another.
+
+Previously they configured only the client, which made every override a broken
+run: `--public-base-url http://localhost:9001` left the docs container published
+on 8000 and told it its base URL was `http://localhost:8000`, and
+`--mock-issuer` left the provider under its old alias and port. The second shape
+got worse once logout began checking `Origin` against `PUBLIC_BASE_URL` — a
+client dialling 9001 against a server told 8000 has every sign-out refused, and
+the smoke would report a CSRF regression that existed only in the harness. The
+same inconsistency was reachable without the CLI at all, by setting
+`PUBLIC_BASE_URL` in `.env` without a matching `DOCS_PORT`; deriving the port
+fixes that route too.
+
+Both URLs must be something these stacks could answer on: `http://` (neither
+stack terminates TLS), no path, query, fragment, or credentials, an explicit
+port from 1024 to 65535 — it becomes a published mapping and the provider's own
+listen port, and a scheme default of 80 would need privileges to bind — and a
+host resolving only to loopback. Loopback literals and `.localhost` names are
+taken as such without a lookup; anything else is resolved, and one routable
+address is enough to refuse. The default `nip.io` name and CI's `/etc/hosts`
+alias both qualify. Validation runs before Docker is touched and names the
+option in the message.
+
+That last rule is a safety guard, not tidiness. The runner tears its stack down
+with `--volumes` and writes a test user into whatever issuer URL it is handed,
+so being able to point it at a non-local address is not a capability worth
+having.
+
 ### The Default Mock Hostname Needs Public DNS On The Host
 
 `MOCK_OIDC_HOST` defaults to `oidc-mock.127.0.0.1.nip.io`, a public wildcard

@@ -20,6 +20,8 @@ from urllib.parse import urlsplit
 import pytest
 import yaml
 
+from server import local_smoke
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BASE_COMPOSE = REPO_ROOT / "compose.yaml"
 MOCK_COMPOSE = REPO_ROOT / "compose.mock.yaml"
@@ -189,3 +191,111 @@ def test_mock_oidc_port_reaches_every_place_the_port_appears(port: str) -> None:
 
     healthcheck = " ".join(mock["healthcheck"]["test"])
     assert f"127.0.0.1:{port}/" in healthcheck, healthcheck
+
+
+# --- Rendered from what the smoke CLI would actually pass ---------------------
+#
+# The tests above render Compose from hand-written environments. These render it
+# from the environment `server.local_smoke` builds out of its own arguments,
+# which is the thing that was broken: the overrides configured the smoke client
+# and never reached the stack, so `--public-base-url http://localhost:9001`
+# published 8000 and told the container it lived there.
+
+
+
+# RFC 6761 reserves `.localhost` for loopback, so the smoke runner accepts these
+# without a lookup and these tests need no DNS. The default `nip.io` host does
+# need one, so the no-override case stands in for it.
+SMOKE_MOCK_HOST = "oidc-mock.alt.localhost"
+LOOPBACK_ADDRESSES = [(2, 1, 6, "", ("127.0.0.1", 0))]
+
+
+def smoke_args(argv: list[str]):
+    return local_smoke.parse_args(["--project-dir", str(REPO_ROOT), *argv], environ={})
+
+
+def smoke_compose_env(argv: list[str]) -> dict[str, str]:
+    return local_smoke.compose_env_for_args(
+        smoke_args(argv), environ={}, resolve=lambda *args, **kwargs: LOOPBACK_ADDRESSES
+    )
+
+
+@docker_compose
+def test_a_custom_public_base_url_moves_the_published_docs_port() -> None:
+    services = render_compose(smoke_compose_env(["--public-base-url", "http://localhost:9001"]))[
+        "services"
+    ]
+
+    published = [(p["host_ip"], p["published"], str(p["target"])) for p in services["docs"]["ports"]]
+    assert published == [("127.0.0.1", "9001", "8080")]
+
+
+@docker_compose
+def test_a_custom_public_base_url_is_what_the_container_is_told_it_is() -> None:
+    """`PUBLIC_BASE_URL` is what logout checks `Origin` against, so a stack
+    told the default while the client dials 9001 refuses every sign-out."""
+    env = smoke_compose_env(["--public-base-url", "http://localhost:9001"])
+    services = render_compose(env)["services"]
+
+    assert services["docs"]["environment"]["PUBLIC_BASE_URL"] == "http://localhost:9001"
+
+
+@docker_compose
+def test_a_custom_public_base_url_leaves_the_issuer_alone() -> None:
+    services = render_compose(smoke_compose_env(["--public-base-url", "http://localhost:9001"]))[
+        "services"
+    ]
+
+    assert services["docs"]["environment"]["OIDC_ISSUER"] == (
+        f"http://{DEFAULT_MOCK_HOST}:{DEFAULT_MOCK_PORT}"
+    )
+
+
+@docker_compose
+def test_a_custom_mock_issuer_moves_the_alias_the_port_and_the_issuer() -> None:
+    """Every place the issuer appears has to name the same host and port: the
+    container dials it on the Compose network, the host dials the published
+    port, and the provider itself has to be listening on it."""
+    issuer = f"http://{SMOKE_MOCK_HOST}:{CUSTOM_MOCK_PORT}"
+    services = render_compose(smoke_compose_env(["--mock-issuer", issuer]))["services"]
+    mock = services["mock-oidc"]
+
+    assert services["docs"]["environment"]["OIDC_ISSUER"] == issuer
+    assert SMOKE_MOCK_HOST in service_aliases(mock)
+    assert CUSTOM_MOCK_PORT in mock["command"]
+    assert [(p["host_ip"], p["published"], str(p["target"])) for p in mock["ports"]] == [
+        ("127.0.0.1", CUSTOM_MOCK_PORT, CUSTOM_MOCK_PORT)
+    ]
+    assert f"127.0.0.1:{CUSTOM_MOCK_PORT}/" in " ".join(mock["healthcheck"]["test"])
+
+
+@docker_compose
+def test_both_overrides_at_once_render_one_coherent_stack() -> None:
+    issuer = f"http://{SMOKE_MOCK_HOST}:{CUSTOM_MOCK_PORT}"
+    argv = ["--public-base-url", "http://127.0.0.1:9002", "--mock-issuer", issuer]
+    env = smoke_compose_env(argv)
+    settings = local_smoke.settings_for_args(smoke_args(argv), env)
+    services = render_compose(env)["services"]
+
+    # What the smoke client will dial, against what the stack will answer on.
+    assert services["docs"]["environment"]["PUBLIC_BASE_URL"] == settings.public_base_url
+    assert services["docs"]["environment"]["OIDC_ISSUER"] == settings.mock_issuer
+    assert services["docs"]["ports"][0]["published"] == str(
+        urlsplit(settings.public_base_url).port
+    )
+    assert SMOKE_MOCK_HOST in service_aliases(services["mock-oidc"])
+
+
+@docker_compose
+def test_the_rendered_default_stack_still_matches_the_documented_one() -> None:
+    """No overrides: the CLI-built environment must not change today's stack."""
+    services = render_compose(smoke_compose_env([]))["services"]
+
+    assert services["docs"]["environment"]["PUBLIC_BASE_URL"] == "http://localhost:8000"
+    assert [(p["host_ip"], p["published"]) for p in services["docs"]["ports"]] == [
+        ("127.0.0.1", "8000")
+    ]
+    assert DEFAULT_MOCK_HOST in service_aliases(services["mock-oidc"])
+    assert services["docs"]["environment"]["OIDC_ISSUER"] == (
+        f"http://{DEFAULT_MOCK_HOST}:{DEFAULT_MOCK_PORT}"
+    )

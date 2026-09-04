@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import os
+import socket
 import subprocess
 import sys
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import parse_qs, quote, urlparse
+from urllib.parse import SplitResult, parse_qs, quote, urlparse, urlsplit
 
 import httpx
 
@@ -25,6 +27,15 @@ POLL_INTERVAL_SECONDS = 0.5
 COMPOSE_FILES = ("compose.yaml", "compose.mock.yaml")
 DIAGNOSTIC_SERVICES = ("docs", "mock-oidc")
 DIAGNOSTIC_LOG_LINES = 200
+
+# Both stacks publish to `127.0.0.1` only and serve cleartext, so a URL this
+# runner is asked to use has to be one they could answer on. The port must be
+# written out: it becomes a published mapping and the provider's own `--port`,
+# and a scheme default of 80 would render a mapping that needs privileges to
+# bind. 1024 is where binding stops needing them.
+LOWEST_UNPRIVILEGED_PORT = 1024
+HIGHEST_PORT = 65535
+LOCAL_URL_SCHEME = "http"
 
 # httpx normalises literal ".." segments away but leaves "%2e%2e" alone, so
 # these probes reach the server exactly as written and prove that a public
@@ -152,6 +163,147 @@ def build_mock_compose_env(project_dir: Path, environ: dict[str, str] | None = N
     # somewhere else.
     merged_env.setdefault("POST_LOGOUT_PATH", DEFAULT_POST_LOGOUT_PATH)
     return merged_env
+
+
+Resolver = Callable[..., list]
+
+
+def host_is_loopback(host: str, resolve: Resolver = socket.getaddrinfo) -> bool:
+    """Whether `host` names this machine and nothing else.
+
+    Both Compose stacks publish on `127.0.0.1` only, so a host that reaches
+    anywhere else describes a stack that cannot exist here. A literal address is
+    judged as itself, and `localhost` is taken as given -- neither touches the
+    network, which is also what keeps the tests off DNS.
+
+    A name is looked up, because the two loopback names this project actually
+    uses cannot be recognised any other way: `oidc-mock.127.0.0.1.nip.io` by
+    default and `oidc-mock.local.test` from CI's `/etc/hosts`. Every address it
+    resolves to must be loopback -- one routable answer is enough to refuse,
+    since that is the one a client might pick -- and a name that does not
+    resolve is refused rather than assumed.
+    """
+    if host == "localhost" or host.endswith(".localhost"):
+        return True
+
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        pass
+
+    try:
+        addresses = resolve(host, None, 0, socket.SOCK_STREAM)
+    except (OSError, socket.gaierror):
+        return False
+    if not addresses:
+        return False
+    return all(
+        ipaddress.ip_address(entry[4][0]).is_loopback for entry in addresses
+    )
+
+
+def require_local_http_url(
+    value: str,
+    option: str,
+    resolve: Resolver = socket.getaddrinfo,
+) -> SplitResult:
+    """`value` parsed, or a `ValueError` naming the option it came from.
+
+    Refuses anything the local stacks could not serve, rather than letting the
+    run fail later as a connection error or -- worse -- as a stack quietly
+    configured for URLs other than the ones being asserted about. The loopback
+    rule is also what keeps this runner pointed at a throwaway stack: it tears
+    the stack down with `--volumes` when it finishes and it writes a user into
+    the issuer it is given, neither of which belongs anywhere but here.
+    """
+
+    def refuse(reason: str) -> ValueError:
+        return ValueError(f"{option}: {reason}, got {value!r}")
+
+    if not value or any(character in value for character in "\r\n\t"):
+        raise refuse("must be an absolute URL")
+
+    parts = urlsplit(value)
+    if parts.scheme != LOCAL_URL_SCHEME:
+        # No TLS terminator exists in either stack, so `https` would be a URL
+        # nothing here can answer.
+        raise refuse(f"must be a {LOCAL_URL_SCHEME}:// URL")
+    if parts.path not in ("", "/") or parts.query or parts.fragment:
+        raise refuse("must be an origin with no path, query, or fragment")
+    if parts.username or parts.password:
+        raise refuse("must not carry credentials")
+
+    try:
+        host, port = parts.hostname, parts.port
+    except ValueError:
+        raise refuse("has a port that is not a number") from None
+    if not host:
+        raise refuse("must name a host")
+    if port is None:
+        raise refuse("must name a port explicitly")
+    if not LOWEST_UNPRIVILEGED_PORT <= port <= HIGHEST_PORT:
+        raise refuse(
+            f"must name a port between {LOWEST_UNPRIVILEGED_PORT} and {HIGHEST_PORT}"
+        )
+    if not host_is_loopback(host, resolve=resolve):
+        raise refuse("must name a host that resolves only to loopback")
+    return parts
+
+
+def compose_env_for_args(
+    args: argparse.Namespace,
+    environ: dict[str, str] | None = None,
+    resolve: Resolver = socket.getaddrinfo,
+) -> dict[str, str]:
+    """The Compose environment that serves the URLs this run will dial.
+
+    The overrides used to configure only the smoke client: the Compose
+    environment was built separately, so `--public-base-url http://localhost:9001`
+    published 8000 and told the container it lived there. Deriving the
+    environment from the arguments is what makes the stack and the client the
+    same decision, and it fixes the same inconsistency reached through the
+    environment alone -- `PUBLIC_BASE_URL` without a matching `DOCS_PORT`.
+
+    Both directions still work because the arguments default to what `.env` and
+    the process environment say, so CI setting `MOCK_OIDC_HOST` and passing no
+    flags arrives here as an argument and lands back in the environment
+    unchanged.
+    """
+    env = build_mock_compose_env(args.project_dir, environ)
+
+    docs_url = require_local_http_url(args.public_base_url, "--public-base-url", resolve)
+    issuer_url = require_local_http_url(args.mock_issuer, "--mock-issuer", resolve)
+
+    env["PUBLIC_BASE_URL"] = args.public_base_url
+    env["DOCS_PORT"] = str(docs_url.port)
+    # `compose.mock.yaml` builds `OIDC_ISSUER`, the network alias, the published
+    # mapping, and the provider's `--port` out of these two, so setting them is
+    # what makes the container's issuer and the client's the same URL.
+    env["MOCK_OIDC_HOST"] = issuer_url.hostname or ""
+    env["MOCK_OIDC_PORT"] = str(issuer_url.port)
+    return env
+
+
+def settings_for_args(args: argparse.Namespace, compose_env: dict[str, str]) -> SmokeSettings:
+    """The client settings, read back out of the environment the stack got.
+
+    One direction, deliberately: anything the client dials is something the
+    stack was configured for. It matters more since logout began checking
+    `Origin` against `PUBLIC_BASE_URL` -- a client on one origin against a
+    server told another would see every sign-out refused and report a CSRF
+    regression that existed only in the harness.
+    """
+    return SmokeSettings(
+        project_dir=args.project_dir,
+        public_base_url=compose_env["PUBLIC_BASE_URL"],
+        public_path=args.public_path,
+        protected_path=args.protected_path,
+        mock_host=compose_env["MOCK_OIDC_HOST"],
+        mock_port=compose_env["MOCK_OIDC_PORT"],
+        mock_issuer=f"http://{compose_env['MOCK_OIDC_HOST']}:{compose_env['MOCK_OIDC_PORT']}",
+        subject=args.subject,
+        post_logout_path=compose_env["POST_LOGOUT_PATH"],
+    )
 
 
 def resolve_settings(
@@ -514,18 +666,8 @@ def parse_args(
 
 def main() -> int:
     args = parse_args()
-    compose_env = build_mock_compose_env(args.project_dir)
-    settings = SmokeSettings(
-        project_dir=args.project_dir,
-        public_base_url=args.public_base_url,
-        public_path=args.public_path,
-        protected_path=args.protected_path,
-        mock_host=compose_env["MOCK_OIDC_HOST"],
-        mock_port=compose_env["MOCK_OIDC_PORT"],
-        mock_issuer=args.mock_issuer,
-        subject=args.subject,
-        post_logout_path=compose_env["POST_LOGOUT_PATH"],
-    )
+    compose_env = compose_env_for_args(args)
+    settings = settings_for_args(args, compose_env)
     try:
         run_compose(args.project_dir, compose_env, "up", "-d", "--build")
         run_smoke(settings)

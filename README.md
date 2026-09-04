@@ -106,6 +106,17 @@ This starts the docs server plus a local OIDC mock. The companion smoke test exe
 make local-smoke
 ```
 
+The smoke runner brings the stack up, drives login and logout against it, and tears it down again. Both URLs it uses can be moved, which is what you want when 8000 or 9400 is already taken:
+
+```bash
+python -m server.local_smoke --public-base-url http://localhost:9001
+python -m server.local_smoke --mock-issuer http://oidc-mock.127.0.0.1.nip.io:9500
+```
+
+These configure the stack, not just the client: `--public-base-url` sets both `PUBLIC_BASE_URL` and the published `DOCS_PORT`, and `--mock-issuer` sets the provider's network alias, its published port, and the `OIDC_ISSUER` the docs container dials. The client then reads its settings back out of that same environment, so the two halves cannot disagree — which matters because logout checks `Origin` against `PUBLIC_BASE_URL`, and a client dialling an origin the server was not told about would see every sign-out refused. Setting `DOCS_PORT`, `PUBLIC_BASE_URL`, `MOCK_OIDC_HOST`, or `MOCK_OIDC_PORT` in `.env` or the environment works the same way and is what CI uses.
+
+Both URLs have to be something the local stacks could actually answer on: `http://`, an explicit port from 1024 to 65535, and a host that resolves only to loopback. Anything else fails before Docker is touched, with a message naming the option. That is also a guard rather than pedantry — the runner tears the stack down with `--volumes` and writes a test user into whatever issuer it is given, neither of which belongs anywhere but a throwaway local stack.
+
 Shut down either local stack with:
 
 ```bash
