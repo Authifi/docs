@@ -89,14 +89,9 @@ variable "private_app_subnet_id" {
 }
 
 variable "instance_type" {
-  description = "EC2 instance type for the docs server. Must be x86_64: the selected AMI and the Linux wheelhouse built into each release are amd64 only."
+  description = "EC2 instance type for the docs server. Must be x86_64: the selected AMI and the Linux wheelhouse built into each release are amd64 only. Checked at plan time against the EC2 API's supported_architectures."
   type        = string
   default     = "t3.micro"
-
-  validation {
-    condition     = !can(regex("^a1\\.", var.instance_type)) && !can(regex("^[a-z0-9]+g\\.", var.instance_type))
-    error_message = "instance_type must be x86_64: the AMI and Linux wheelhouse are amd64 only. ARM families a1.* and Graviton *g.* (for example t4g, m6g) are not supported."
-  }
 }
 
 variable "root_volume_size_gib" {
@@ -184,61 +179,23 @@ variable "oidc_client_id" {
 }
 
 variable "public_base_url" {
-  description = "Public HTTPS origin users reach the docs through, with no path below the root. Must match the ALB's certificate."
+  description = "Public HTTPS origin for this deployment. Fixed to https://docs.authifi.io because MkDocs output and static agent assets are authored for that origin."
   type        = string
 
-  # The origin and nothing below it. `server/app.py` mounts every route at `/`,
-  # the listener rules strip no prefix, and the server appends to this value
-  # verbatim when it builds the OIDC redirect URI and the post-logout URL, so
-  # `https://host/docs` is a deployment whose callback URL, landing page, and
-  # post-deploy probes all name something nothing serves. The server refuses
-  # the same shapes at startup -- and because this value travels in user data,
-  # which `user_data_replace_on_change` makes part of the instance's identity,
-  # correcting it after an apply costs a destroyed and rebuilt host. So the
-  # plan is where it fails.
-  #
-  # A trailing slash is the one path accepted, because it is the root and it is
-  # how a browser shows the address. Credentials, a port, a query, and a
-  # fragment are all excluded by the same pattern rather than by separate
-  # blacklists: the value either is a bare https origin or it is refused.
   validation {
-    condition     = can(regex("^https://[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+/?$", var.public_base_url))
-    error_message = "public_base_url must be an https URL naming a lowercase DNS host and at most the root path, such as https://docs.authifi.io."
-  }
-
-  # The pattern above accepts digits and dots, so `https://198.51.100.7`
-  # satisfied it while the deploy workflow's probe parser refused the same
-  # value -- and the probe is right. `--connect-to` rewrites the connection and
-  # never the request, so an IP literal sends the load balancer a Host header
-  # the listener rules do not match and the certificate does not cover.
-  #
-  # A final label that is entirely numeric is the standard way to say "this is
-  # an address, not a name", and it is the check the two readers now share.
-  validation {
-    condition     = length(regexall("\\.[0-9]+/?$", var.public_base_url)) == 0
-    error_message = "public_base_url must name a DNS host, not an IP literal: the ALB certificate covers a name and the listener rules match on one."
+    condition     = contains(["https://docs.authifi.io", "https://docs.authifi.io/"], var.public_base_url)
+    error_message = "public_base_url must be https://docs.authifi.io (or the same origin with a trailing slash): MkDocs and static agent assets are authored for that hostname."
   }
 }
 
 variable "site_dir" {
-  description = "Absolute on-host path to the built MkDocs site inside the active release."
+  description = "On-host path to the built MkDocs site inside the active release. Fixed to /opt/authifi-docs/current/site to match the release builder, installer, and systemd unit."
   type        = string
   default     = "/opt/authifi-docs/current/site"
 
   validation {
-    condition     = startswith(var.site_dir, "/")
-    error_message = "site_dir must be an absolute path."
-  }
-
-  # This value and the others that travel in user data end up in a systemd
-  # `EnvironmentFile`, and an assignment there cannot represent a newline: a
-  # value carrying one would silently become a shorter value plus a second
-  # assignment. The bootstrap refuses them on the host as well, but user data
-  # is part of the instance's identity, so a value that fails the boot costs a
-  # replaced host to correct. The plan is the cheaper place to say no.
-  validation {
-    condition     = length(regexall("[[:cntrl:]]", var.site_dir)) == 0
-    error_message = "site_dir must not contain control characters."
+    condition     = contains(["/opt/authifi-docs/current/site"], var.site_dir)
+    error_message = "site_dir must be /opt/authifi-docs/current/site: the release builder, installer, and systemd unit all expect that path."
   }
 }
 
@@ -271,13 +228,13 @@ variable "post_logout_path" {
 }
 
 variable "custom_domain_name" {
-  description = "Domain name the ACM certificate is issued for and the ALB serves."
+  description = "Domain name the ACM certificate is issued for and the ALB serves. Fixed to docs.authifi.io for this single-site deployment."
   type        = string
   default     = "docs.authifi.io"
 
   validation {
-    condition     = can(regex("^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$", var.custom_domain_name))
-    error_message = "custom_domain_name must be a lowercase DNS name such as docs.authifi.io."
+    condition     = contains(["docs.authifi.io"], var.custom_domain_name)
+    error_message = "custom_domain_name must be docs.authifi.io: this root deploys one site whose MkDocs output and static assets target that hostname."
   }
 }
 

@@ -841,6 +841,8 @@ PUBLIC_BASE_URLS_THAT_WORK = ("https://docs.authifi.io", "https://docs.authifi.i
 # targets all name something nothing serves.
 PUBLIC_BASE_URLS_THAT_CANNOT_WORK = (
     "http://docs.authifi.io",
+    "https://docs.example.com",
+    "https://staging.authifi.io",
     "https://docs.authifi.io/docs",
     "https://docs.authifi.io/docs/",
     "https://docs.authifi.io//",
@@ -853,10 +855,86 @@ PUBLIC_BASE_URLS_THAT_CANNOT_WORK = (
     "https://docs.authifi.io/docs?probe=1#fragment",
 )
 
+CUSTOM_DOMAIN_NAMES_THAT_WORK = ("docs.authifi.io",)
+
+CUSTOM_DOMAIN_NAMES_THAT_CANNOT_WORK = (
+    "docs.example.com",
+    "staging.authifi.io",
+    "authifi.io",
+    "DOCS.authifi.io",
+)
+
+SITE_DIRS_THAT_WORK = ("/opt/authifi-docs/current/site",)
+
+SITE_DIRS_THAT_CANNOT_WORK = (
+    "/opt/authifi-docs/current/site/",
+    "/opt/authifi-docs/site",
+    "/opt/a docs/site",
+    "/var/www/docs",
+)
+
 
 @pytest.mark.parametrize("value", PUBLIC_BASE_URLS_THAT_WORK)
 def test_terraform_accepts_the_origin_this_deployment_actually_serves(value: str) -> None:
     assert variable_accepts(VARIABLES, "public_base_url", value)
+
+
+@pytest.mark.parametrize("value", CUSTOM_DOMAIN_NAMES_THAT_WORK)
+def test_terraform_accepts_the_one_hostname_this_site_serves(value: str) -> None:
+    assert variable_accepts(VARIABLES, "custom_domain_name", value)
+
+
+@pytest.mark.parametrize("value", CUSTOM_DOMAIN_NAMES_THAT_CANNOT_WORK)
+def test_terraform_refuses_any_other_custom_domain_name(value: str) -> None:
+    assert not variable_accepts(VARIABLES, "custom_domain_name", value)
+
+
+def test_the_custom_domain_contract_is_documented() -> None:
+    body = hcl_block(VARIABLES, 'variable "custom_domain_name"')
+    description = (attribute(body, "description") or "").lower()
+    messages = " ".join(
+        (attribute(block, "error_message") or "").strip('"')
+        for block in nested_blocks(body, "validation")
+    ).lower()
+
+    assert "docs.authifi.io" in description
+    assert "docs.authifi.io" in messages
+    assert "single" in description or "one site" in description or "fixed" in description
+
+
+def test_the_public_base_url_contract_is_documented() -> None:
+    body = hcl_block(VARIABLES, 'variable "public_base_url"')
+    description = (attribute(body, "description") or "").lower()
+    messages = " ".join(
+        (attribute(block, "error_message") or "").strip('"')
+        for block in nested_blocks(body, "validation")
+    ).lower()
+
+    assert "docs.authifi.io" in description
+    assert "docs.authifi.io" in messages
+    assert "mkdocs" in description or "static" in description or "authored" in description
+
+
+@pytest.mark.parametrize("value", SITE_DIRS_THAT_WORK)
+def test_terraform_accepts_the_release_layout_path(value: str) -> None:
+    assert variable_accepts(VARIABLES, "site_dir", value)
+
+
+@pytest.mark.parametrize("value", SITE_DIRS_THAT_CANNOT_WORK)
+def test_terraform_refuses_any_other_site_dir(value: str) -> None:
+    assert not variable_accepts(VARIABLES, "site_dir", value)
+
+
+def test_the_site_dir_contract_is_documented() -> None:
+    body = hcl_block(VARIABLES, 'variable "site_dir"')
+    description = (attribute(body, "description") or "").lower()
+    messages = " ".join(
+        (attribute(block, "error_message") or "").strip('"')
+        for block in nested_blocks(body, "validation")
+    ).lower()
+
+    assert "/opt/authifi-docs/current/site" in description
+    assert "/opt/authifi-docs/current/site" in messages
 
 
 @pytest.mark.parametrize("value", PUBLIC_BASE_URLS_THAT_CANNOT_WORK)
@@ -923,36 +1001,32 @@ def test_terraform_never_accepts_an_oidc_issuer_the_server_would_refuse(value: s
         validate_oidc_issuer(value)
 
 
-INSTANCE_TYPES_THAT_WORK = ("t3.micro", "t3.small", "m5.large", "c5.xlarge")
-
-ARM_INSTANCE_TYPES = (
-    "a1.medium",
-    "a1.large",
-    "t4g.micro",
-    "m6g.large",
-    "c7g.xlarge",
-    "r6g.4xlarge",
-)
+def test_the_chosen_instance_type_is_checked_against_aws() -> None:
+    """Family-name regex misses oddball types and new families. The EC2 API's
+    `supported_architectures` is the contract the AMI and wheelhouse depend on."""
+    assert 'data "aws_ec2_instance_type" "selected"' in MAIN
+    selected = hcl_block(MAIN, 'data "aws_ec2_instance_type" "selected"')
+    assert attribute(selected, "instance_type") == "var.instance_type"
 
 
-@pytest.mark.parametrize("value", INSTANCE_TYPES_THAT_WORK)
-def test_terraform_accepts_x86_instance_types(value: str) -> None:
-    assert variable_accepts(VARIABLES, "instance_type", value)
+def test_the_instance_refuses_types_whose_architecture_is_not_x86_64() -> None:
+    precondition = next(
+        block
+        for block in instance_preconditions()
+        if "supported_architectures" in block
+    )
+    condition = attribute(precondition, "condition") or ""
+    message = (attribute(precondition, "error_message") or "").lower()
+
+    assert "data.aws_ec2_instance_type.selected.supported_architectures" in condition
+    assert '"x86_64"' in condition
+    assert "x86" in message or "amd64" in message
 
 
-@pytest.mark.parametrize("value", ARM_INSTANCE_TYPES)
-def test_terraform_refuses_arm_instance_types(value: str) -> None:
-    assert not variable_accepts(VARIABLES, "instance_type", value)
-
-
-def test_the_arm_instance_type_refusal_names_the_amd64_contract() -> None:
+def test_the_instance_type_default_is_an_x86_family() -> None:
     body = hcl_block(VARIABLES, 'variable "instance_type"')
-    messages = " ".join(
-        (attribute(block, "error_message") or "").strip('"')
-        for block in nested_blocks(body, "validation")
-    ).lower()
-    assert "a1" in messages
-    assert "x86" in messages or "arm" in messages or "amd64" in messages
+    assert attribute(body, "default") == '"t3.micro"'
+    assert "x86_64" in (attribute(body, "description") or "").lower()
 
 
 def test_the_certificate_is_not_blocked_on_validation_at_apply_time() -> None:
@@ -963,6 +1037,17 @@ def test_the_certificate_is_not_blocked_on_validation_at_apply_time() -> None:
 
 
 # --- Deployment reaches the instance without SSH or a public address ---------
+
+
+def test_ssm_download_urls_use_the_partition_dns_suffix() -> None:
+    """Hard-coding `amazonaws.com` breaks GovCloud and other partitions."""
+    document = hcl_block(MAIN, 'resource "aws_ssm_document" "deploy"')
+    download_paths = re.findall(r'path\s*=\s*"([^"]+\.tar\.gz(?:\.sha256)?)"', document)
+
+    assert len(download_paths) == 2
+    for path in download_paths:
+        assert "amazonaws.com" not in path
+        assert "${data.aws_partition.current.dns_suffix}" in path
 
 
 def test_ssm_document_stages_both_objects_before_running_the_installer() -> None:

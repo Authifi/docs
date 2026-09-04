@@ -54,7 +54,7 @@ Fill in the shared-network and runtime values. The most important ones are:
 - `custom_domain_name`
 - `existing_github_oidc_provider_arn` when the AWS account already has the shared GitHub OIDC provider
 
-`public_base_url` must be the HTTPS origin users reach, and its host must equal `custom_domain_name`. `post_logout_path` must stay on the public allowlist; Terraform validates that at plan time so logout cannot be configured to bounce users straight back into login.
+`public_base_url` is fixed to `https://docs.authifi.io` because MkDocs output and static agent assets are authored for that origin; a trailing slash is the only other accepted spelling. Its host always equals `custom_domain_name`, which is likewise fixed to `docs.authifi.io`. `post_logout_path` must stay on the public allowlist; Terraform validates that at plan time so logout cannot be configured to bounce users straight back into login.
 
 ## Init
 
@@ -381,7 +381,7 @@ Some Terraform changes replace the EC2 instance, notably ones that change user d
 - the host-side session key is generated on first boot, so replacement signs out existing browser sessions
 - `/opt/authifi-docs/releases` starts empty on the new host, so run the deploy workflow after replacement to stage a release on it
 
-`instance_type` must stay on x86_64 families. The Ubuntu AMI filter and the Linux wheelhouse baked into each release archive are both amd64, so Graviton `*g.*` families (for example `t4g`, `m6g`) and `a1.*` are refused at plan time.
+`instance_type` must stay on x86_64. The Ubuntu AMI filter and the Linux wheelhouse baked into each release archive are both amd64, so the plan asks the EC2 API whether the chosen type lists `x86_64` in `supported_architectures` rather than guessing from the family name.
 
 The installer no longer lives in user data, so editing `infra/scripts/deploy-release.sh` updates the SSM document rather than forcing an instance replacement.
 

@@ -416,6 +416,15 @@ def test_a_hostname_that_resolves_off_loopback_still_stops_the_run(
         )
 
 
+def test_localhost_as_the_mock_issuer_stops_the_run(tmp_path: Path) -> None:
+    """`localhost` resolves to loopback from the host, but inside the docs
+    container it is the docs container itself, not the provider."""
+    args = args_for(["--mock-issuer", "http://localhost:9400"], tmp_path)
+
+    with pytest.raises(ValueError, match="--mock-issuer"):
+        compose_env_for_args(args, environ={})
+
+
 @pytest.mark.parametrize(
     ("host", "expected"),
     [
@@ -423,6 +432,7 @@ def test_a_hostname_that_resolves_off_loopback_still_stops_the_run(
         ("oidc-mock", True),
         ("OIDC-Mock.Alt.Localhost", True),
         ("a" * 63 + ".localhost", True),
+        ("localhost", False),
         ("127.0.0.1", False),
         ("::1", False),
         ("fe80::1%en0", False),

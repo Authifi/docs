@@ -6,6 +6,10 @@ data "aws_caller_identity" "current" {}
 
 data "aws_partition" "current" {}
 
+data "aws_ec2_instance_type" "selected" {
+  instance_type = var.instance_type
+}
+
 # Canonical's official images. The account ID is pinned because an AMI name is
 # not a trust boundary: anyone may publish an image called
 # "ubuntu/images/...-server-*".
@@ -644,6 +648,14 @@ resource "aws_instance" "docs" {
       condition     = anytrue([for route in data.aws_route_table.app.routes : route.cidr_block == "0.0.0.0/0" && route.nat_gateway_id != ""])
       error_message = "private_app_subnet_id's route table must send 0.0.0.0/0 to the shared NAT Gateway; the docs server needs that egress for OIDC discovery, the authorization-code exchange, Systems Manager, and first-boot package installation."
     }
+
+    # Family-name regex misses oddball types and new families. The EC2 API's
+    # `supported_architectures` is the contract the Ubuntu AMI filter and the
+    # Linux wheelhouse depend on.
+    precondition {
+      condition     = contains(data.aws_ec2_instance_type.selected.supported_architectures, "x86_64")
+      error_message = "instance_type must be x86_64: the AMI and Linux wheelhouse are amd64 only."
+    }
   }
 
   # First boot does two things that need the network already permitted: it
@@ -695,7 +707,7 @@ resource "aws_ssm_document" "deploy" {
         inputs = {
           sourceType = "S3"
           sourceInfo = jsonencode({
-            path = "https://${aws_s3_bucket.releases.id}.s3.${var.aws_region}.amazonaws.com/releases/{{ ReleaseSha }}.tar.gz"
+            path = "https://${aws_s3_bucket.releases.id}.s3.${var.aws_region}.${data.aws_partition.current.dns_suffix}/releases/{{ ReleaseSha }}.tar.gz"
           })
           destinationPath = "/opt/authifi-docs/incoming/{{ ReleaseSha }}/"
         }
@@ -706,7 +718,7 @@ resource "aws_ssm_document" "deploy" {
         inputs = {
           sourceType = "S3"
           sourceInfo = jsonencode({
-            path = "https://${aws_s3_bucket.releases.id}.s3.${var.aws_region}.amazonaws.com/releases/{{ ReleaseSha }}.tar.gz.sha256"
+            path = "https://${aws_s3_bucket.releases.id}.s3.${var.aws_region}.${data.aws_partition.current.dns_suffix}/releases/{{ ReleaseSha }}.tar.gz.sha256"
           })
           destinationPath = "/opt/authifi-docs/incoming/{{ ReleaseSha }}/"
         }

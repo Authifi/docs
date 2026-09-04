@@ -196,15 +196,18 @@ def host_is_alias_safe_name(host: str) -> bool:
     An address cannot. Inside the docs container `127.0.0.1` is the docs
     container, so discovery would dial the docs server instead of the provider,
     and `::1` is not a legal alias at all -- nor does rebuilding
-    `http://::1:9400` from a host and a port produce a URL. Both are refused
-    here rather than left to fail later as something that looks like a broken
-    issuer.
+    `http://::1:9400` from a host and a port produce a URL. The bare name
+    `localhost` is refused for the same reason: inside the docs container it
+    names the docs container, not the provider. Names ending in `.localhost`
+    are still accepted.
 
     A trailing dot is refused too. It is a legitimate way to write an absolute
     name, but it is not the same string as the name without it, and this value
     is compared as a string in a Compose alias and an issuer URL.
     """
     if not host or len(host) > MAX_HOSTNAME_LENGTH:
+        return False
+    if host.lower() == "localhost":
         return False
     if host.endswith("."):
         return False
