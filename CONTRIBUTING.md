@@ -68,6 +68,10 @@ echo "MOCK_OIDC_HOST=oidc-mock.local.test" >> .env
 
 The network alias follows whatever `MOCK_OIDC_HOST` you set, so the container needs no matching `/etc/hosts` entry. CI does exactly this, which is why the workflow has no `nip.io` dependency. A failed `make local-mock-up` dumps `docs` and `mock-oidc` container logs before tearing the stack down; see [`docs/operations/aws-oidc-hosting.md`](docs/operations/aws-oidc-hosting.md) for the full dual-resolution rationale.
 
+Two things to expect while poking at the login flow by hand. Several tabs can sign in at once — each keeps its own destination and they can finish in any order — but only four pending sign-ins are kept, and a pending sign-in older than an hour is discarded. Any callback that no longer matches a live sign-in answers `400` rather than signing you in somewhere unexpected.
+
+Hitting `/_auth/logout` clears the entire session cookie, including sign-ins still in flight in other tabs. Those tabs cannot resume: their callback answers the same `400`, and you have to start again from the page you wanted. That is intended, not a bug to chase — signing out must not leave a completable transaction behind.
+
 ## Writing And Navigation
 
 - Write documentation in Markdown unless a page intentionally needs raw HTML, such as `docs/sms-opt-in.html`.

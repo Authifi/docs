@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import quote, urlencode, urlsplit, urlunsplit
 
+from authlib.integrations.base_client import MismatchingStateError
 from authlib.integrations.starlette_client import OAuth, StarletteIntegration
 from starlette.applications import Starlette
 from starlette.datastructures import MutableHeaders
@@ -355,22 +356,41 @@ async def login_endpoint(request: Request) -> Response:
     )
 
 
+def unrecognised_login_response() -> Response:
+    """One answer for every callback we cannot match to a live transaction.
+
+    Unknown, forged, replayed, and aged-out states are deliberately
+    indistinguishable to the caller, and none of them reach the issuer.
+    """
+    return PlainTextResponse(
+        "Authentication failed: this sign-in request is unknown or has expired. "
+        "Start again from the page you wanted.",
+        status_code=400,
+    )
+
+
 async def callback_endpoint(request: Request) -> Response:
     set_cache_visibility(request, VISIBILITY_PROTECTED)
 
     next_path = consume_pending_login(request.session, request.query_params.get("state"))
     if next_path is None:
-        # No pending transaction under that state: expired, already used, or
-        # never ours. Refuse before exchanging anything, and leave the other
-        # tabs' transactions alone so a forged callback cannot cancel them.
+        # No pending transaction under that state: already used, or never ours.
+        # Refuse before exchanging anything, and leave the other tabs'
+        # transactions alone so a forged callback cannot cancel them.
         logger.warning("Rejecting Authifi OIDC callback with an unrecognised state")
-        return PlainTextResponse(
-            "Authentication failed: this sign-in request is unknown or has expired. "
-            "Start again from the page you wanted.",
-            status_code=400,
-        )
+        return unrecognised_login_response()
 
-    token = await request.app.state.auth_client.authorize_access_token(request)
+    try:
+        token = await request.app.state.auth_client.authorize_access_token(request)
+    except MismatchingStateError:
+        # Our pending entry outlived Authlib's. Authlib stamps each stored
+        # transaction with an hour's expiry and sweeps the expired ones the
+        # next time any callback completes, so a tab left open long enough
+        # clears our gate and then finds its verifier already gone. Nothing was
+        # exchanged with the issuer and the other transactions are untouched,
+        # so answer exactly as for a state we never issued.
+        logger.warning("Rejecting Authifi OIDC callback whose stored transaction has expired")
+        return unrecognised_login_response()
 
     try:
         user = extract_minimal_user((token or {}).get("userinfo"))

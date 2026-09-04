@@ -31,6 +31,25 @@ logins untouched — a forged callback must not be able to cancel someone else's
 sign-in. Users see this only if they leave more than four sign-ins half-finished
 at once; the fix is to start again from the page they wanted.
 
+A pending login also has a shelf life. Authlib stamps each stored transaction
+with an hour's expiry and sweeps the expired ones the next time any callback
+completes, so a tab left open overnight gets the same `400` rather than a `500`.
+Nothing is exchanged with the issuer in that case, and the other tabs are
+unaffected.
+
+### Signing Out Ends Everything, Not Just This Tab
+
+`/_auth/logout` clears the whole session cookie: the signed-in identity and
+every in-flight sign-in in every other tab. That is deliberate — signing out
+must not leave a half-finished transaction behind that could still be completed
+afterwards.
+
+The visible consequence is that a tab which was mid-login when the user signed
+out elsewhere fails safely with the same `400` when its callback finally
+arrives. It cannot resume, and the user has to start that sign-in again from the
+page they wanted. If you are reproducing a report of "logging out broke my other
+tab", this is the expected behaviour rather than a fault.
+
 ## Local Mock Networking
 
 OIDC requires every party to agree on one issuer URL, so the single hostname in

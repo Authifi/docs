@@ -8,10 +8,13 @@ issuer to talk to.
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
+from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
 
 import pytest
+from authlib.integrations.starlette_client import integration
 from starlette.testclient import TestClient
 
 from server.app import (
@@ -310,3 +313,119 @@ def test_a_pre_existing_user_is_replaced_not_merged(client: TestClient) -> None:
         "email": "code-guide@example.com",
     }
     assert "souvenir" not in session
+
+
+# --- Transactions that aged out ------------------------------------------------
+#
+# Authlib stamps each stored transaction with a one-hour expiry and sweeps the
+# expired ones the next time any callback completes. Our pending entry has no
+# such expiry, so a tab left open long enough passes the app's own state gate
+# and then finds Authlib's half already gone.
+
+
+class FrozenClock:
+    """Stands in for the `time` module inside Authlib's state storage."""
+
+    def __init__(self, value: float) -> None:
+        self.value = value
+
+    def time(self) -> float:
+        return self.value
+
+
+def start_stale_login(client: TestClient, next_path: str, age_seconds: float = 3601) -> str:
+    """Start a login whose stored transaction is already past its expiry."""
+    with patch.object(integration, "time", FrozenClock(time.time() - age_seconds)):
+        return start_login(client, next_path)
+
+
+def test_a_transaction_that_aged_out_is_refused_the_same_way_as_a_forged_one(
+    client: TestClient, token_endpoint: RecordingTokenEndpoint
+) -> None:
+    stale_state = start_stale_login(client, "/guides/sso-integration-guide/")
+    fresh_state = start_login(client, "/security/")
+
+    # Completing any callback is what sweeps expired transactions away.
+    complete_login(client, fresh_state, "code-security")
+    expired = complete_login(client, stale_state, "code-guide")
+    forged = client.get("/_auth/callback?code=abc&state=forged", follow_redirects=False)
+
+    assert expired.status_code == 400
+    assert expired.text == forged.text
+    assert [call["code"] for call in token_endpoint.calls] == ["code-security"]
+
+
+def test_an_aged_out_transaction_exchanges_nothing_and_leaks_nothing(
+    client: TestClient, token_endpoint: RecordingTokenEndpoint
+) -> None:
+    stale_state = start_stale_login(client, "/guides/sso-integration-guide/")
+    fresh_state = start_login(client, "/security/")
+    complete_login(client, fresh_state, "code-security")
+    token_endpoint.calls.clear()
+
+    response = complete_login(client, stale_state, "code-guide")
+
+    assert token_endpoint.calls == []
+    assert stale_state not in response.text
+    assert "code-guide" not in response.text
+    assert "state" not in response.text.lower()
+
+
+def test_an_aged_out_transaction_does_not_take_a_valid_tab_with_it(
+    client: TestClient,
+) -> None:
+    """The whole point: one dead tab must not cost the user a live one."""
+    stale_state = start_stale_login(client, "/guides/sso-integration-guide/")
+    sweeping_state = start_login(client, "/security/")
+    still_valid_state = start_login(client, "/authorization/admin-roles/")
+
+    complete_login(client, sweeping_state, "code-security")
+    assert complete_login(client, stale_state, "code-guide").status_code == 400
+
+    survivor = complete_login(client, still_valid_state, "code-admin")
+    assert survivor.status_code == 307
+    assert survivor.headers["location"] == "/authorization/admin-roles/"
+
+
+def test_an_aged_out_transaction_leaves_no_pending_entry_behind(client: TestClient) -> None:
+    stale_state = start_stale_login(client, "/guides/sso-integration-guide/")
+    fresh_state = start_login(client, "/security/")
+    complete_login(client, fresh_state, "code-security")
+
+    complete_login(client, stale_state, "code-guide")
+
+    session = current_session(client)
+    assert stale_state not in session.get(SESSION_PENDING_LOGINS_KEY, {})
+    assert oauth_state_session_key(stale_state) not in session
+
+
+# --- Explicit logout is a clean slate -----------------------------------------
+
+
+def test_logout_discards_pending_logins_in_other_tabs(client: TestClient) -> None:
+    """Documented in docs/operations/aws-oidc-hosting.md and CONTRIBUTING.md.
+
+    Signing out has to leave nothing behind, in-flight transactions included,
+    so a half-finished sign-in in another tab cannot be completed afterwards.
+    """
+    signed_in_state = start_login(client, "/security/")
+    complete_login(client, signed_in_state, "code-security")
+    other_tab_state = start_login(client, "/guides/sso-integration-guide/")
+
+    client.get("/_auth/logout", follow_redirects=False)
+
+    session = current_session(client)
+    assert session == {}
+    assert oauth_state_session_key(other_tab_state) not in session
+
+
+def test_a_tab_left_mid_login_across_a_logout_fails_safely(client: TestClient) -> None:
+    signed_in_state = start_login(client, "/security/")
+    complete_login(client, signed_in_state, "code-security")
+    other_tab_state = start_login(client, "/guides/sso-integration-guide/")
+
+    client.get("/_auth/logout", follow_redirects=False)
+    stranded = complete_login(client, other_tab_state, "code-guide")
+
+    assert stranded.status_code == 400
+    assert SESSION_USER_KEY not in current_session(client)
