@@ -719,6 +719,9 @@ def test_waiters_and_probes_use_only_the_release_sha_and_structured_checks() -> 
     assert 'deadline=$((SECONDS + 600))' in wait_lines
     assert 'poll_interval_seconds=5' in wait_lines
     assert "Pending|InProgress|Delayed)" in wait_run
+    assert "Failed|TimedOut|Cancelled|Cancelling)" in wait_run
+    assert "get-command-invocation never returned a status." in wait_run
+    assert 'lookup_installer_status() {' in wait_run
     assert 'case "$status" in' in wait_run
     assert 'dump_invocation StandardOutputContent >&2' in wait_lines
     assert 'dump_invocation StandardErrorContent >&2' in wait_lines
@@ -788,6 +791,10 @@ def flags(tokens):
     return parsed
 
 
+LOOKUP_FAILURE = "__lookup_failure__"
+EMPTY_STATUS = "__empty_status__"
+
+
 if arguments[:2] == ["ssm", "get-command-invocation"]:
     parsed = flags(arguments[2:])
     schedule = json.loads(os.environ.get("FAKE_SSM_STATUS_SCHEDULE", '["Success"]'))
@@ -797,13 +804,35 @@ if arguments[:2] == ["ssm", "get-command-invocation"]:
         if json.loads(line)[:2] == ["ssm", "get-command-invocation"]
     ) - 1
     status = schedule[min(poll_index, len(schedule) - 1)]
+    query = parsed.get("--query", "")
+
+    if status == LOOKUP_FAILURE:
+        print(
+            "An error occurred (InvocationDoesNotExist) when calling the "
+            "GetCommandInvocation operation: Invocation does not exist.",
+            file=sys.stderr,
+        )
+        sys.exit(254)
+
+    if status == EMPTY_STATUS:
+        if query == "Status":
+            print("")
+        elif query == "ResponseCode":
+            print("")
+        elif query == "StandardOutputContent":
+            print("")
+        elif query == "StandardErrorContent":
+            print("")
+        else:
+            fail(f"unsupported query {query!r}")
+        sys.exit(0)
+
     payload = {
         "Status": status,
         "ResponseCode": 0 if status == "Success" else 1,
         "StandardOutputContent": "stdout-from-installer",
         "StandardErrorContent": "stderr-from-installer",
     }
-    query = parsed.get("--query", "")
     if query == "Status":
         print(status)
     elif query == "ResponseCode":
@@ -905,6 +934,47 @@ def test_the_installer_wait_step_times_out_with_a_clear_message(tmp_path: Path) 
         in result.stderr
     )
     assert "Installer stdout:" in result.stderr
+
+
+def test_the_installer_wait_step_retries_initial_lookup_failures_until_success(
+    tmp_path: Path,
+) -> None:
+    result = WaitHarness(tmp_path).with_status_schedule(
+        "__lookup_failure__",
+        "__lookup_failure__",
+        "Success",
+    ).run()
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_the_installer_wait_step_times_out_when_lookup_never_succeeds(
+    tmp_path: Path,
+) -> None:
+    harness = WaitHarness(tmp_path)
+    result = harness.with_status_schedule("__lookup_failure__").run()
+
+    assert result.returncode == 1
+    assert (
+        f"SSM command {HARNESS_COMMAND_ID} did not finish within 600 seconds; "
+        "get-command-invocation never returned a status."
+        in result.stderr
+    )
+    assert "last status:" not in result.stderr
+    assert "Installer stdout:" in result.stderr
+
+
+def test_the_installer_wait_step_times_out_when_status_stays_empty(tmp_path: Path) -> None:
+    harness = WaitHarness(tmp_path)
+    result = harness.with_status_schedule("__empty_status__").run()
+
+    assert result.returncode == 1
+    assert (
+        f"SSM command {HARNESS_COMMAND_ID} did not finish within 600 seconds; "
+        "get-command-invocation never returned a status."
+        in result.stderr
+    )
+    assert "last status:" not in result.stderr
 
 
 def test_route_probes_parse_the_canonical_https_origin_and_connect_directly_to_the_alb() -> None:

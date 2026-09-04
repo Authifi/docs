@@ -319,12 +319,20 @@ jobs:
           deadline=$((SECONDS + 600))
           poll_interval_seconds=5
 
+          lookup_installer_status() {
+            aws ssm get-command-invocation \
+              --command-id "$command_id" \
+              --instance-id "$DOCS_INSTANCE_ID" \
+              --query Status \
+              --output text 2>/dev/null
+          }
+
           dump_invocation() {
             aws ssm get-command-invocation \
               --command-id "$command_id" \
               --instance-id "$DOCS_INSTANCE_ID" \
               --query "$1" \
-              --output text || true
+              --output text 2>/dev/null || true
           }
 
           report_installer_failure() {
@@ -339,7 +347,15 @@ jobs:
           }
 
           while :; do
-            status="$(dump_invocation Status)"
+            if ! status="$(lookup_installer_status)" || [[ -z "$status" ]]; then
+              if (( SECONDS >= deadline )); then
+                echo "SSM command $command_id did not finish within 600 seconds; get-command-invocation never returned a status." >&2
+                report_installer_failure
+              fi
+              sleep "$poll_interval_seconds"
+              continue
+            fi
+
             case "$status" in
               Success)
                 break
@@ -350,6 +366,10 @@ jobs:
                   report_installer_failure
                 fi
                 sleep "$poll_interval_seconds"
+                ;;
+              Failed|TimedOut|Cancelled|Cancelling)
+                echo "SSM command $command_id ended with status $status." >&2
+                report_installer_failure
                 ;;
               *)
                 echo "SSM command $command_id ended with status $status." >&2
