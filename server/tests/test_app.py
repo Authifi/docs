@@ -1,6 +1,7 @@
 import importlib
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import parse_qs, quote, urlparse
 from unittest.mock import ANY, patch
 
@@ -16,6 +17,7 @@ from server.app import (
     AppConfig,
     create_app,
     create_auth_client,
+    load_ssm_secure_string,
     MAX_NEXT_PATH_BYTES,
     normalize_next_path,
 )
@@ -1059,6 +1061,26 @@ def test_app_config_resolves_named_oidc_secret(site_dir: Path) -> None:
 
     assert requested == ["/authifi-docs/oidc-client-secret"]
     assert config.oidc_client_secret == "resolved-secret"
+
+
+def test_ssm_secret_loader_supplies_configured_aws_region(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client_calls: list[tuple[str, dict[str, str]]] = []
+
+    class FakeSsmClient:
+        def get_parameter(self, **_kwargs: object) -> dict[str, object]:
+            return {"Parameter": {"Value": "resolved-secret"}}
+
+    def fake_client(service: str, **kwargs: str) -> FakeSsmClient:
+        client_calls.append((service, kwargs))
+        return FakeSsmClient()
+
+    monkeypatch.setenv("AWS_REGION", "us-east-1")
+    monkeypatch.setitem(sys.modules, "boto3", SimpleNamespace(client=fake_client))
+
+    assert load_ssm_secure_string("/authifi-docs/oidc-client-secret") == "resolved-secret"
+    assert client_calls == [("ssm", {"region_name": "us-east-1"})]
 
 
 def test_app_config_rejects_empty_named_oidc_secret_without_exposing_it(

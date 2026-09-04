@@ -174,7 +174,10 @@ SecretParameterLoader = Callable[[str], str]
 def load_ssm_secure_string(name: str) -> str:
     import boto3
 
-    response = boto3.client("ssm").get_parameter(Name=name, WithDecryption=True)
+    response = boto3.client(
+        "ssm",
+        region_name=os.environ["AWS_REGION"],
+    ).get_parameter(Name=name, WithDecryption=True)
     value = response["Parameter"]["Value"]
     if not isinstance(value, str) or not value:
         raise RuntimeError(f"OIDC client secret parameter {name!r} is empty")

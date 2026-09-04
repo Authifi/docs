@@ -71,19 +71,6 @@ jobs:
           role-to-assume: ${{ env.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Synchronize OIDC client secret
-        shell: bash
-        env:
-          OIDC_CLIENT_SECRET: ${{ secrets.OIDC_CLIENT_SECRET }}
-        run: |
-          set -euo pipefail
-          : "${OIDC_CLIENT_SECRET:?Set production environment secret OIDC_CLIENT_SECRET}"
-          aws ssm put-parameter \
-            --name "/authifi-docs/oidc-client-secret" \
-            --type SecureString \
-            --value "$OIDC_CLIENT_SECRET" \
-            --overwrite >/dev/null
-
       - name: Select release
         id: release
         shell: bash
@@ -103,6 +90,13 @@ jobs:
 
           if [[ ! "$sha" =~ ^[0-9a-f]{40}$ ]]; then
             echo "Release SHA must be 40 lowercase hexadecimal characters" >&2
+            exit 1
+          fi
+
+          minimum_compatible_sha="1452ee44025ec71b6253d9807709d1145d9b7634"
+          if ! git cat-file -e "$sha^{commit}" 2>/dev/null ||
+             ! git merge-base --is-ancestor "$minimum_compatible_sha" "$sha"; then
+            echo "Release $sha predates confidential OIDC client support and cannot be deployed." >&2
             exit 1
           fi
 
@@ -307,6 +301,19 @@ jobs:
             echo "Existing release checksum not found in s3://$RELEASE_BUCKET_NAME/$checksum_key" >&2
             exit 1
           fi
+
+      - name: Synchronize OIDC client secret
+        shell: bash
+        env:
+          OIDC_CLIENT_SECRET: ${{ secrets.OIDC_CLIENT_SECRET }}
+        run: |
+          set -euo pipefail
+          : "${OIDC_CLIENT_SECRET:?Set production environment secret OIDC_CLIENT_SECRET}"
+          aws ssm put-parameter \
+            --name "/authifi-docs/oidc-client-secret" \
+            --type SecureString \
+            --value "$OIDC_CLIENT_SECRET" \
+            --overwrite >/dev/null
 
       - name: Install release through SSM
         id: command

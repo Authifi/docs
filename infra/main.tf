@@ -89,6 +89,7 @@ locals {
   # metadata service by anything that can reach it, and it lands in Terraform
   # state. The session secret is generated on the host for exactly that reason.
   host_config = {
+    AWS_REGION                        = var.aws_region
     OIDC_ISSUER                       = var.oidc_issuer
     OIDC_CLIENT_ID                    = var.oidc_client_id
     OIDC_CLIENT_SECRET_PARAMETER_NAME = var.oidc_client_secret_parameter_name

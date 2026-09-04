@@ -129,6 +129,7 @@ def test_deploy_job_uses_pinned_oidc_and_expected_step_shape() -> None:
     assert step_uses("Configure AWS credentials") == (
         "aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a"
     )
+    assert step("Checkout repo")["with"]["fetch-depth"] == 0
 
     assert [candidate["name"] for candidate in STEPS] == [
         "Checkout repo",
@@ -136,11 +137,11 @@ def test_deploy_job_uses_pinned_oidc_and_expected_step_shape() -> None:
         "Install Python dependencies",
         "Verify required repository variables",
         "Configure AWS credentials",
-        "Synchronize OIDC client secret",
         "Select release",
         "Build release",
         "Publish or verify release",
         "Verify existing release for rollback",
+        "Synchronize OIDC client secret",
         "Install release through SSM",
         "Wait for installer",
         "Wait for healthy ALB target",
@@ -175,6 +176,8 @@ def test_environment_secret_is_synchronized_before_the_ssm_deployment() -> None:
     run = step_run(sync_name)
 
     assert step_index("Configure AWS credentials") < step_index(sync_name)
+    assert step_index("Publish or verify release") < step_index(sync_name)
+    assert step_index("Verify existing release for rollback") < step_index(sync_name)
     assert step_index(sync_name) < step_index("Install release through SSM")
     assert sync["env"] == {
         "OIDC_CLIENT_SECRET": "${{ secrets.OIDC_CLIENT_SECRET }}"
@@ -205,6 +208,19 @@ def test_select_release_handles_push_and_workflow_dispatch_safely() -> None:
     assert 'sha="$GITHUB_SHA"' in lines
     assert "build=true" in lines
     assert 'echo "Release SHA must be 40 lowercase hexadecimal characters" >&2' in lines
+    assert (
+        'minimum_compatible_sha="1452ee44025ec71b6253d9807709d1145d9b7634"'
+        in lines
+    )
+    assert any('git cat-file -e "$sha^{commit}"' in line for line in lines)
+    assert any(
+        'git merge-base --is-ancestor "$minimum_compatible_sha" "$sha"' in line
+        for line in lines
+    )
+    assert (
+        'echo "Release $sha predates confidential OIDC client support and cannot be deployed." >&2'
+        in lines
+    )
 
 
 def test_push_and_rerun_build_steps_are_gated_on_having_built() -> None:

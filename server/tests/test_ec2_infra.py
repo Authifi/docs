@@ -1771,6 +1771,7 @@ def test_user_data_no_longer_carries_the_installer() -> None:
 # Values a real deployment uses, and the base every hostile variant below is
 # built from.
 BOOTSTRAP_VALUES = {
+    "aws_region": "us-east-1",
     "oidc_issuer": "https://issuer.authifi.io/tenants/authifi",
     "oidc_client_id": "authifi-docs",
     "oidc_client_secret_parameter_name": "/authifi-docs/oidc-client-secret",
@@ -2051,6 +2052,7 @@ def test_the_template_channel_is_one_json_document_and_the_port() -> None:
     }
     assert attribute(inputs, "config_json") == "jsonencode(local.host_config)"
     assert set(host_config_mapping()) == {
+        "AWS_REGION",
         "OIDC_ISSUER",
         "OIDC_CLIENT_ID",
         "OIDC_CLIENT_SECRET_PARAMETER_NAME",
