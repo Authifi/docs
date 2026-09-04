@@ -11,8 +11,9 @@ from __future__ import annotations
 import time
 from pathlib import Path
 from unittest.mock import patch
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
+import httpx
 import pytest
 from authlib.integrations.starlette_client import integration
 from starlette.testclient import TestClient
@@ -429,3 +430,183 @@ def test_a_tab_left_mid_login_across_a_logout_fails_safely(client: TestClient) -
 
     assert stranded.status_code == 400
     assert SESSION_USER_KEY not in current_session(client)
+
+
+# --- The issuer refuses the authorization --------------------------------------
+#
+# `?error=access_denied` is a normal outcome: the user clicked "no" at the login
+# screen. Authlib raises OAuthError from authorize_access_token before it looks
+# at the state or contacts the token endpoint, so this has to be handled as a
+# failed sign-in rather than escaping as an unhandled exception.
+
+PROTOCOL_ERRORS = ("access_denied", "invalid_scope", "server_error", "temporarily_unavailable")
+
+
+def refuse_login(
+    client: TestClient,
+    state: str,
+    error: str = "access_denied",
+    description: str | None = "user-visible-issuer-text",
+):
+    query = f"error={error}&state={state}"
+    if description is not None:
+        query += f"&error_description={quote(description)}"
+    return client.get(f"/_auth/callback?{query}", follow_redirects=False)
+
+
+@pytest.mark.parametrize("error", PROTOCOL_ERRORS)
+def test_an_issuer_protocol_error_is_a_failed_sign_in_not_a_server_fault(
+    client: TestClient, error: str
+) -> None:
+    state = start_login(client, "/security/")
+
+    response = refuse_login(client, state, error=error)
+
+    assert response.status_code == 400
+
+
+@pytest.mark.parametrize("error", PROTOCOL_ERRORS)
+def test_an_issuer_protocol_error_never_reaches_the_token_endpoint(
+    client: TestClient, token_endpoint: RecordingTokenEndpoint, error: str
+) -> None:
+    """There is no code to exchange, and asking anyway would be a free request."""
+    state = start_login(client, "/security/")
+
+    refuse_login(client, state, error=error)
+
+    assert token_endpoint.calls == []
+
+
+def test_a_refused_sign_in_echoes_nothing_back(client: TestClient) -> None:
+    state = start_login(client, "/security/")
+
+    response = refuse_login(
+        client, state, error="access_denied", description="tenant policy 12345 rejected bob"
+    )
+
+    body = response.text
+    assert state not in body
+    assert "access_denied" not in body
+    assert "12345" not in body and "bob" not in body
+    assert "token" not in body.lower()
+
+
+def test_a_refused_sign_in_is_private_and_uncacheable(client: TestClient) -> None:
+    state = start_login(client, "/security/")
+
+    response = refuse_login(client, state)
+
+    assert response.headers["cache-control"] == "private, no-store"
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["x-frame-options"] == "DENY"
+    assert response.headers["referrer-policy"] == "strict-origin-when-cross-origin"
+    assert response.headers["vary"] == "Cookie"
+
+
+def test_a_refused_sign_in_consumes_only_its_own_transaction(client: TestClient) -> None:
+    refused_state = start_login(client, "/security/")
+    other_state = start_login(client, "/guides/sso-integration-guide/")
+
+    refuse_login(client, refused_state)
+
+    session = current_session(client)
+    assert list(session[SESSION_PENDING_LOGINS_KEY]) == [other_state]
+    assert oauth_state_session_key(refused_state) not in session
+    assert oauth_state_session_key(other_state) in session
+
+
+def test_another_tab_still_completes_after_one_is_refused(client: TestClient) -> None:
+    refused_state = start_login(client, "/security/")
+    other_state = start_login(client, "/guides/sso-integration-guide/")
+
+    refuse_login(client, refused_state)
+    survivor = complete_login(client, other_state, "code-guide")
+
+    assert survivor.status_code == 307
+    assert survivor.headers["location"] == "/guides/sso-integration-guide/"
+
+
+def test_a_refused_sign_in_does_not_sign_the_user_out(client: TestClient) -> None:
+    """Refusing a *new* authorization says nothing about an existing session.
+
+    Ending it here would be a denial of service dressed up as caution.
+    """
+    signed_in_state = start_login(client, "/security/")
+    complete_login(client, signed_in_state, "code-security")
+    second_tab_state = start_login(client, "/guides/sso-integration-guide/")
+
+    refuse_login(client, second_tab_state)
+
+    assert current_session(client)[SESSION_USER_KEY]["sub"] == "user-code-security"
+    assert client.get("/security/", follow_redirects=False).status_code == 200
+
+
+def test_a_refused_sign_in_cannot_be_replayed(client: TestClient) -> None:
+    state = start_login(client, "/security/")
+    refuse_login(client, state)
+
+    assert complete_login(client, state, "code-security").status_code == 400
+
+
+# --- What must stay indistinguishable -----------------------------------------
+
+
+def test_a_protocol_error_on_an_unknown_state_looks_like_any_forged_callback(
+    client: TestClient,
+) -> None:
+    """The state gate runs first, so Authlib is never reached for a state we
+    did not issue -- with or without an error parameter attached."""
+    start_login(client, "/security/")
+
+    with_error = refuse_login(client, "forged-state")
+    without_error = client.get(
+        "/_auth/callback?code=abc&state=forged-state", follow_redirects=False
+    )
+
+    assert with_error.status_code == without_error.status_code == 400
+    assert with_error.text == without_error.text
+
+
+def test_forged_and_aged_out_states_stay_indistinguishable(client: TestClient) -> None:
+    stale_state = start_stale_login(client, "/guides/sso-integration-guide/")
+    sweeping_state = start_login(client, "/security/")
+    complete_login(client, sweeping_state, "code-security")
+
+    aged_out = complete_login(client, stale_state, "code-guide")
+    forged = client.get("/_auth/callback?code=abc&state=forged", follow_redirects=False)
+
+    assert aged_out.status_code == forged.status_code
+    assert aged_out.text == forged.text
+
+
+# --- What must NOT be swallowed -----------------------------------------------
+
+
+def test_an_unreachable_issuer_is_still_a_server_fault(
+    site_dir: Path, token_endpoint: RecordingTokenEndpoint
+) -> None:
+    """Only Authlib's own protocol errors mean "the sign-in failed".
+
+    A connection failure or a bug is not a user-facing authentication outcome
+    and must not be reported as one.
+    """
+    app = create_app(build_config(site_dir, public_base_url="http://testserver"))
+
+    async def metadata() -> dict[str, str]:
+        return {
+            "authorization_endpoint": "https://issuer.example.com/oauth2/authorize",
+            "token_endpoint": "https://issuer.example.com/oauth2/token",
+            "jwks_uri": "https://issuer.example.com/.well-known/jwks.json",
+        }
+
+    async def unreachable(**params):
+        raise httpx.ConnectError("issuer is down")
+
+    app.state.auth_client.load_server_metadata = metadata
+    app.state.auth_client.fetch_access_token = unreachable
+    failing = TestClient(app, raise_server_exceptions=False)
+
+    state = start_login(failing, "/security/")
+    response = complete_login(failing, state, "code-security")
+
+    assert response.status_code == 500

@@ -3,13 +3,14 @@ from __future__ import annotations
 import logging
 import mimetypes
 import os
+import re
 import secrets
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import quote, urlencode, urlsplit, urlunsplit
 
-from authlib.integrations.base_client import MismatchingStateError
+from authlib.integrations.base_client import MismatchingStateError, OAuthError
 from authlib.integrations.starlette_client import OAuth, StarletteIntegration
 from starlette.applications import Starlette
 from starlette.datastructures import MutableHeaders
@@ -50,6 +51,9 @@ OAUTH_CLIENT_NAME = "authifi"
 # are keyed by the same state so the two halves stay in step.
 OAUTH_STATE_SESSION_PREFIX = f"_state_{OAUTH_CLIENT_NAME}_"
 OAUTH_STATE_BYTES = 32
+# An RFC 6749 error code is a short token, but it arrives as a query parameter,
+# so it is only fit to appear in a log line if it actually looks like one.
+OAUTH_ERROR_CODE = re.compile(r"[a-z0-9_-]{1,64}")
 
 # Anyone can open `/_auth/login`, and every pending transaction costs space in
 # a signed cookie the browser will silently drop once it grows past ~4KB. Four
@@ -369,10 +373,51 @@ def unrecognised_login_response() -> Response:
     )
 
 
+def refused_login_response(session: dict[str, Any], state: str, error: OAuthError) -> Response:
+    """Report a sign-in the issuer declined, without repeating anything it said.
+
+    Authlib raises `OAuthError` both for an authorization response carrying
+    `error=...` -- an ordinary outcome, the user pressed "no" -- and for a state
+    that no longer matches its own record. Either way this sign-in is over, and
+    neither means the process is broken.
+    """
+    # Authlib drops its own record when the state mismatches, but not when it
+    # rejects the authorization response, which it does before reading the state
+    # at all. Dropping it here leaves no transaction behind that can never
+    # complete, and reaches no other tab's.
+    session.pop(oauth_state_session_key(state), None)
+
+    if isinstance(error, MismatchingStateError):
+        # Our pending entry outlived Authlib's. Authlib stamps each stored
+        # transaction with an hour's expiry and sweeps the expired ones the next
+        # time any callback completes, so a tab left open long enough clears our
+        # gate and then finds its verifier already gone. Nothing was exchanged
+        # with the issuer, so answer exactly as for a state we never issued.
+        logger.warning("Rejecting Authifi OIDC callback whose stored transaction has expired")
+        return unrecognised_login_response()
+
+    # Neither the error code nor its description is trustworthy: both arrive as
+    # query parameters. The code reaches the log only in the shape it is meant
+    # to have, the free-text description never does, and nothing from the issuer
+    # reaches the response at all.
+    code = getattr(error, "error", None)
+    recognised = isinstance(code, str) and OAUTH_ERROR_CODE.fullmatch(code)
+    logger.warning(
+        "Authifi OIDC issuer declined the authorization: %s",
+        code if recognised else "unrecognised error",
+    )
+    return PlainTextResponse(
+        "Authentication failed: the identity provider did not complete this sign-in. "
+        "Start again from the page you wanted.",
+        status_code=400,
+    )
+
+
 async def callback_endpoint(request: Request) -> Response:
     set_cache_visibility(request, VISIBILITY_PROTECTED)
 
-    next_path = consume_pending_login(request.session, request.query_params.get("state"))
+    state = request.query_params.get("state")
+    next_path = consume_pending_login(request.session, state)
     if next_path is None:
         # No pending transaction under that state: already used, or never ours.
         # Refuse before exchanging anything, and leave the other tabs'
@@ -382,15 +427,11 @@ async def callback_endpoint(request: Request) -> Response:
 
     try:
         token = await request.app.state.auth_client.authorize_access_token(request)
-    except MismatchingStateError:
-        # Our pending entry outlived Authlib's. Authlib stamps each stored
-        # transaction with an hour's expiry and sweeps the expired ones the
-        # next time any callback completes, so a tab left open long enough
-        # clears our gate and then finds its verifier already gone. Nothing was
-        # exchanged with the issuer and the other transactions are untouched,
-        # so answer exactly as for a state we never issued.
-        logger.warning("Rejecting Authifi OIDC callback whose stored transaction has expired")
-        return unrecognised_login_response()
+    except OAuthError as error:
+        # Authlib's own error type and no wider: an unreachable issuer or a
+        # programming fault is not an authentication outcome and must not be
+        # presented to the caller as one.
+        return refused_login_response(request.session, state, error)
 
     try:
         user = extract_minimal_user((token or {}).get("userinfo"))

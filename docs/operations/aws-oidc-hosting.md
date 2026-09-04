@@ -37,6 +37,21 @@ completes, so a tab left open overnight gets the same `400` rather than a `500`.
 Nothing is exchanged with the issuer in that case, and the other tabs are
 unaffected.
 
+### When The Issuer Declines
+
+A user who presses "no" at the login screen, or whose sign-in the issuer refuses
+for any other reason, comes back to `/_auth/callback` with an `error` parameter
+instead of a code. That is an expected outcome, not a fault: it answers `400`,
+no token endpoint is called, and nothing the issuer said — neither the error
+code nor its description — is echoed back to the browser. The error code alone
+is logged, and only when it looks like the short protocol token it should be,
+since both fields arrive as query parameters and are attacker-controlled.
+
+Only that tab's sign-in ends. The other pending logins survive and can still
+complete, and an existing signed-in session is left alone: refusing a *new*
+authorization says nothing about an identity that was already verified, so
+ending that session here would be a denial of service dressed up as caution.
+
 ### Signing Out Ends Everything, Not Just This Tab
 
 `/_auth/logout` clears the whole session cookie: the signed-in identity and
