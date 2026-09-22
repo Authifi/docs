@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import shutil
 import sys
 from pathlib import Path
 
@@ -119,6 +120,37 @@ def test_stale_via_note_is_refused() -> None:
             {"requests": {"certifi"}, "pydantic": {"typing-extensions"}},
             directs={"mkdocs"},
         )
+
+
+def test_active_environment_markers_are_kept() -> None:
+    module = refresh_module()
+    needed = module.needed_from_declared(
+        [
+            'cffi>=1; implementation_name != "pypy"',
+            'pycparser; implementation_name != "pypy"',
+            'typing_extensions>=4.5; python_version < "3.13"',
+            'exceptiongroup>=1.0.2; python_version < "3.11"',
+        ],
+        module.BUILD_ENVIRONMENT,
+    )
+    assert needed == {"cffi", "pycparser", "typing-extensions"}
+
+
+@pytest.mark.skipif(shutil.which("docker") is None, reason="docker CLI is not available")
+def test_server_freeze_keeps_marked_cpython_via_edges() -> None:
+    module = refresh_module()
+    freeze = module.freeze_after_installing(
+        ROOT / "server" / "requirements.in",
+        module.build_image(),
+    )
+    assert "cffi" in freeze.requires["cryptography"]
+    assert "pycparser" in freeze.requires["cffi"]
+    assert "typing-extensions" in freeze.requires["anyio"]
+    module.assert_via_notes(
+        (ROOT / "server" / "requirements.txt").read_text(encoding="utf-8"),
+        freeze.requires,
+        directs=set(module.pinned_directs(ROOT / "server" / "requirements.in")),
+    )
 
 
 def test_refresh_locks_writes_nothing_if_the_second_lock_fails(

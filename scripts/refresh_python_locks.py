@@ -28,37 +28,18 @@ LOCK_PAIRS = (
     (REPO_ROOT / "server" / "requirements.in", REPO_ROOT / "server" / "requirements.txt"),
 )
 REQUIRES_MARKER = "---LOCK-REFRESH-REQUIRES---"
-REQUIRES_DUMP = r"""
-import importlib.metadata as metadata
-import json
-import re
-import sys
-
-def canonical(name: str) -> str:
-    return re.sub(r"[-_.]+", "-", name).lower()
-
-INSTALLER = {"pip", "setuptools", "wheel", "distribute", "pkg-resources"}
-requires = {}
-for dist in metadata.distributions():
-    raw_name = dist.metadata["Name"]
-    if raw_name is None:
-        continue
-    name = canonical(raw_name)
-    if name in INSTALLER:
-        continue
-    needed = set()
-    for declared in dist.requires or []:
-        if ";" in declared:
-            continue
-        dep = declared.split("[", 1)[0]
-        dep = re.split(r"[<>=!~]", dep, maxsplit=1)[0].strip()
-        if dep:
-            needed.add(canonical(dep))
-    requires[name] = sorted(needed)
-sys.stdout.write("---LOCK-REFRESH-REQUIRES---\n")
-json.dump(requires, sys.stdout)
-sys.stdout.write("\n")
-"""
+# Same marker environment as server/tests/test_requirements.py, so via notes
+# accepted here are the ones the PR suite will check.
+BUILD_ENVIRONMENT = {
+    "extra": "",
+    "python_version": "3.12",
+    "python_full_version": "3.12.14",
+    "implementation_name": "cpython",
+    "platform_python_implementation": "CPython",
+    "sys_platform": "linux",
+    "platform_system": "Linux",
+    "os_name": "posix",
+}
 
 
 class PackageSetChanged(Exception):
@@ -85,6 +66,56 @@ class Freeze:
 
 def canonical(name: str) -> str:
     return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def needed_from_declared(declared: list[str], environment: dict[str, str]) -> set[str]:
+    """Requirements that apply in `environment`."""
+    from packaging.requirements import Requirement
+
+    needed: set[str] = set()
+    for raw in declared:
+        requirement = Requirement(raw)
+        if requirement.marker and not requirement.marker.evaluate(environment):
+            continue
+        needed.add(canonical(requirement.name))
+    return needed
+
+
+REQUIRES_DUMP = f"""
+import importlib.metadata as metadata
+import json
+import re
+import sys
+from packaging.requirements import Requirement
+
+BUILD_ENVIRONMENT = {json.dumps(BUILD_ENVIRONMENT)}
+
+def canonical(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+def needed_from_declared(declared, environment):
+    needed = set()
+    for raw in declared:
+        requirement = Requirement(raw)
+        if requirement.marker and not requirement.marker.evaluate(environment):
+            continue
+        needed.add(canonical(requirement.name))
+    return needed
+
+INSTALLER = {set(INSTALLER_PACKAGES)!r}
+requires = {{}}
+for dist in metadata.distributions():
+    raw_name = dist.metadata["Name"]
+    if raw_name is None:
+        continue
+    name = canonical(raw_name)
+    if name in INSTALLER:
+        continue
+    requires[name] = sorted(needed_from_declared(dist.requires or [], BUILD_ENVIRONMENT))
+sys.stdout.write({REQUIRES_MARKER!r} + "\\n")
+json.dump(requires, sys.stdout)
+sys.stdout.write("\\n")
+"""
 
 
 def pinned_from_text(lock_text: str) -> dict[str, str]:
@@ -228,7 +259,9 @@ def freeze_after_installing(direct: Path, image: str) -> Freeze:
             "sh",
             "-c",
             "python -m pip install --quiet --no-cache-dir --root-user-action=ignore "
-            f"-r /repo/{relative} >/dev/null && python -m pip freeze && {dump}",
+            f"-r /repo/{relative} >/dev/null && python -m pip freeze && "
+            "python -m pip install --quiet --no-cache-dir --root-user-action=ignore packaging "
+            f">/dev/null && {dump}",
         ],
         capture_output=True,
         text=True,
