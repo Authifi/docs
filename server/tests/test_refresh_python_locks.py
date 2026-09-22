@@ -136,6 +136,23 @@ def test_active_environment_markers_are_kept() -> None:
     assert needed == {"cffi", "pycparser", "typing-extensions"}
 
 
+def test_machine_specific_markers_are_refused() -> None:
+    module = refresh_module()
+    with pytest.raises(module.MachineSpecificMarker, match="platform_machine"):
+        module.assert_no_machine_markers(
+            "somenet",
+            ['foo>=1; platform_machine == "aarch64"'],
+        )
+
+
+def test_server_freeze_test_is_marked_lock_freshness() -> None:
+    marks = getattr(test_server_freeze_keeps_marked_cpython_via_edges, "pytestmark", [])
+    if not isinstance(marks, list):
+        marks = [marks]
+    assert any(getattr(mark, "name", None) == "lock_freshness" for mark in marks)
+
+
+@pytest.mark.lock_freshness
 @pytest.mark.skipif(shutil.which("docker") is None, reason="docker CLI is not available")
 def test_server_freeze_keeps_marked_cpython_via_edges() -> None:
     module = refresh_module()

@@ -40,6 +40,7 @@ BUILD_ENVIRONMENT = {
     "platform_system": "Linux",
     "os_name": "posix",
 }
+UNPINNED_MARKER_VARIABLES = ("platform_machine", "platform_release", "platform_version")
 
 
 class PackageSetChanged(Exception):
@@ -56,6 +57,10 @@ class LockOverlapConflict(Exception):
 
 class ViaNotesStale(Exception):
     """A `# via` parent no longer requires the transitive."""
+
+
+class MachineSpecificMarker(Exception):
+    """A Requires-Dist edge depends on the machine the lock was resolved on."""
 
 
 @dataclass(frozen=True)
@@ -81,6 +86,16 @@ def needed_from_declared(declared: list[str], environment: dict[str, str]) -> se
     return needed
 
 
+def assert_no_machine_markers(package: str, declared: list[str]) -> None:
+    from packaging.requirements import Requirement
+
+    for raw in declared:
+        marker = str(Requirement(raw).marker or "")
+        for variable in UNPINNED_MARKER_VARIABLES:
+            if variable in marker:
+                raise MachineSpecificMarker(f"{package} requires {raw!r}")
+
+
 REQUIRES_DUMP = f"""
 import importlib.metadata as metadata
 import json
@@ -89,6 +104,7 @@ import sys
 from packaging.requirements import Requirement
 
 BUILD_ENVIRONMENT = {json.dumps(BUILD_ENVIRONMENT)}
+UNPINNED_MARKER_VARIABLES = {list(UNPINNED_MARKER_VARIABLES)!r}
 
 def canonical(name: str) -> str:
     return re.sub(r"[-_.]+", "-", name).lower()
@@ -104,6 +120,7 @@ def needed_from_declared(declared, environment):
 
 INSTALLER = {set(INSTALLER_PACKAGES)!r}
 requires = {{}}
+machine_markers = []
 for dist in metadata.distributions():
     raw_name = dist.metadata["Name"]
     if raw_name is None:
@@ -111,9 +128,15 @@ for dist in metadata.distributions():
     name = canonical(raw_name)
     if name in INSTALLER:
         continue
-    requires[name] = sorted(needed_from_declared(dist.requires or [], BUILD_ENVIRONMENT))
+    declared = list(dist.requires or [])
+    for raw in declared:
+        marker = str(Requirement(raw).marker or "")
+        for variable in UNPINNED_MARKER_VARIABLES:
+            if variable in marker:
+                machine_markers.append(f"{{name}} requires {{raw!r}}")
+    requires[name] = sorted(needed_from_declared(declared, BUILD_ENVIRONMENT))
 sys.stdout.write({REQUIRES_MARKER!r} + "\\n")
-json.dump(requires, sys.stdout)
+json.dump({{"requires": requires, "machine_markers": machine_markers}}, sys.stdout)
 sys.stdout.write("\\n")
 """
 
@@ -287,10 +310,15 @@ def freeze_after_installing(direct: Path, image: str) -> Freeze:
             continue
         installed[name] = match["version"]
 
-    raw_requires = json.loads(requires_text.strip())
+    payload = json.loads(requires_text.strip())
+    if not isinstance(payload, dict) or "requires" not in payload:
+        raise SystemExit(f"clean install of {relative} dumped an unexpected Requires-Dist payload")
+    machine_markers = payload.get("machine_markers") or []
+    if machine_markers:
+        raise MachineSpecificMarker("; ".join(str(item) for item in machine_markers))
     requires = {
         canonical(package): {canonical(dep) for dep in deps}
-        for package, deps in raw_requires.items()
+        for package, deps in payload["requires"].items()
     }
     return Freeze(versions=installed, requires=requires)
 
@@ -326,7 +354,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.parse_args(argv)
     try:
         updated = refresh_locks()
-    except (PackageSetChanged, DirectPinDrift, LockOverlapConflict, ViaNotesStale) as error:
+    except (
+        PackageSetChanged,
+        DirectPinDrift,
+        LockOverlapConflict,
+        ViaNotesStale,
+        MachineSpecificMarker,
+    ) as error:
         print(error, file=sys.stderr)
         return 1
     if updated:
