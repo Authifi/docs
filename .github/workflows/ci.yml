@@ -2,6 +2,9 @@ name: CI
 
 on:
   pull_request:
+  schedule:
+    - cron: "17 12 * * 1"
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -18,6 +21,7 @@ env:
 jobs:
   validate:
     name: Validate
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repo
@@ -42,7 +46,7 @@ jobs:
       - name: Run server tests
         run: |
           set -euo pipefail
-          python -m pytest server/tests
+          python -m pytest server/tests -m "not lock_freshness"
 
       - name: Build MkDocs site
         run: |
@@ -226,3 +230,35 @@ jobs:
             -w /workspace/infra \
             "$TERRAFORM_IMAGE" \
             validate
+
+  refresh-locks:
+    name: Refresh Python locks
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Refresh lock files from current PyPI resolution
+        run: |
+          set -euo pipefail
+          python3 scripts/refresh_python_locks.py
+
+      - name: Open or update the lock refresh pull request
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          branch: chore/refresh-python-locks
+          delete-branch: true
+          commit-message: "build: refresh Python lock files to current PyPI resolution"
+          title: "build: refresh Python lock files to current PyPI resolution"
+          body: |
+            Automated refresh of `requirements.txt` and `server/requirements.txt`
+            from a clean install of the pinned `.in` files in the digest-pinned
+            build image.
+
+            Direct pins are unchanged. Review transitive bumps (especially major
+            versions) before merging.
+
