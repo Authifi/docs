@@ -225,3 +225,9 @@ def test_refresh_locks_job_runs_the_rewriter() -> None:
     job = WORKFLOW["jobs"]["refresh-locks"]
     runs = "\n".join(str(step.get("run", "")) for step in job["steps"])
     assert "scripts/refresh_python_locks.py" in runs
+
+
+def test_refresh_locks_checkout_does_not_persist_credentials() -> None:
+    job = WORKFLOW["jobs"]["refresh-locks"]
+    checkout = next(step for step in job["steps"] if step.get("name") == "Checkout repo")
+    assert checkout.get("with", {}).get("persist-credentials") is False

@@ -241,6 +241,8 @@ jobs:
     steps:
       - name: Checkout repo
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Refresh lock files from current PyPI resolution
         run: |
@@ -250,6 +252,7 @@ jobs:
       - name: Open or update the lock refresh pull request
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
+          token: ${{ secrets.GITHUB_TOKEN }}
           branch: chore/refresh-python-locks
           delete-branch: true
           commit-message: "build: refresh Python lock files to current PyPI resolution"

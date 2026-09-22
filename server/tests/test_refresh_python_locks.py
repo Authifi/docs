@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import sys
 from pathlib import Path
 
 import pytest
@@ -23,6 +24,7 @@ def refresh_module():
     spec = importlib.util.spec_from_file_location("refresh_python_locks", SCRIPT)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 
@@ -98,3 +100,56 @@ def test_a_direct_pin_drift_is_refused() -> None:
             },
             protected={"mkdocs"},
         )
+
+
+def test_overlapping_pins_must_agree() -> None:
+    module = refresh_module()
+    with pytest.raises(module.LockOverlapConflict, match="urllib3"):
+        module.assert_overlapping_versions(
+            "idna==3.20  # via requests\nurllib3==2.8.0  # via requests\n",
+            "idna==3.20  # via httpx\nurllib3==2.7.0  # via botocore\n",
+        )
+
+
+def test_stale_via_note_is_refused() -> None:
+    module = refresh_module()
+    with pytest.raises(module.ViaNotesStale, match="idna"):
+        module.assert_via_notes(
+            SAMPLE_LOCK,
+            {"requests": {"certifi"}, "pydantic": {"typing-extensions"}},
+            directs={"mkdocs"},
+        )
+
+
+def test_refresh_locks_writes_nothing_if_the_second_lock_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = refresh_module()
+    site_in = tmp_path / "requirements.in"
+    site_lock = tmp_path / "requirements.txt"
+    server_dir = tmp_path / "server"
+    server_dir.mkdir()
+    server_in = server_dir / "requirements.in"
+    server_lock = server_dir / "requirements.txt"
+    original_site = "mkdocs==1.6.1\nidna==3.19  # via requests\n"
+    site_in.write_text("mkdocs==1.6.1\n", encoding="utf-8")
+    site_lock.write_text(original_site, encoding="utf-8")
+    server_in.write_text("httpx==0.28.1\n", encoding="utf-8")
+    server_lock.write_text("httpx==0.28.1\nidna==3.19  # via httpx\n", encoding="utf-8")
+
+    def fake_freeze(direct: Path, image: str):
+        del image
+        if direct == server_in:
+            raise module.PackageSetChanged("added: foo")
+        return module.Freeze(
+            versions={"mkdocs": "1.6.1", "idna": "3.20"},
+            requires={"mkdocs": set(), "requests": {"idna"}},
+        )
+
+    monkeypatch.setattr(module, "LOCK_PAIRS", ((site_in, site_lock), (server_in, server_lock)))
+    monkeypatch.setattr(module, "freeze_after_installing", fake_freeze)
+    monkeypatch.setattr(module, "build_image", lambda: "python:3.12-slim")
+
+    with pytest.raises(module.PackageSetChanged, match="foo"):
+        module.refresh_locks()
+    assert site_lock.read_text(encoding="utf-8") == original_site
