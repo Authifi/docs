@@ -30,7 +30,7 @@ charset-normalizer==3.5.1  # via requests
 click==8.5.0  # via mkdocs
 colorama==0.4.6  # via mkdocs-material
 ghp-import==2.1.0  # via mkdocs
-idna==3.19  # via requests
+idna==3.20  # via requests
 Jinja2==3.1.6  # via mkdocs, mkdocs-material -- renders the overridden header
 Markdown==3.10.3  # via mkdocs, mkdocs-material, pymdown-extensions
 MarkupSafe==3.0.3  # via mkdocs, jinja2
@@ -41,11 +41,11 @@ natsort==8.4.0  # via mkdocs-awesome-nav
 packaging==26.3  # via mkdocs
 paginate==0.5.7  # via mkdocs-material
 pathspec==1.1.1  # via mkdocs
-platformdirs==4.11.7  # via mkdocs-get-deps
+platformdirs==4.11.12  # via mkdocs-get-deps
 pydantic==2.13.5  # via mkdocs-awesome-nav
 pydantic_core==2.46.5  # via pydantic
 Pygments==2.21.0  # via mkdocs-material -- code highlighting in built pages
-pymdown-extensions==11.0.2  # via mkdocs-material
+pymdown-extensions==12.0.1  # via mkdocs-material
 python-dateutil==2.9.0.post0  # via ghp-import
 PyYAML==6.0.3  # via mkdocs, mkdocs-get-deps, pymdown-extensions, pyyaml-env-tag
 pyyaml_env_tag==1.1  # via mkdocs
@@ -53,6 +53,6 @@ requests==2.34.2  # via mkdocs-material
 six==1.17.0  # via python-dateutil
 typing-inspection==0.4.4  # via pydantic
 typing_extensions==4.16.0  # via pydantic, pydantic-core, typing-inspection
-urllib3==2.7.0  # via requests
+urllib3==2.8.0  # via requests
 watchdog==6.0.0  # via mkdocs
 wcmatch==11.0.1  # via mkdocs-awesome-nav
