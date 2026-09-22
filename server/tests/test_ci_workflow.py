@@ -182,3 +182,52 @@ def test_bundled_lock_checks_reject_commented_and_inert_mentions() -> None:
         )
     with pytest.raises(AssertionError):
         assert 'body_file="$(mktemp)"' in executable_lines(inert_body)
+
+
+def ci_triggers() -> dict:
+    """YAML 1.1 reads a bare `on` as the boolean `true`."""
+    triggers = WORKFLOW.get("on", WORKFLOW.get(True))
+    assert isinstance(triggers, dict), triggers
+    return triggers
+
+
+def test_pull_request_pytest_skips_lock_freshness() -> None:
+    """Calendar drift of unpinned transitives is not a content-PR failure."""
+    run = step_run("Run server tests")
+    assert any("not lock_freshness" in line for line in executable_lines(run)), executable_lines(run)
+
+
+def test_validate_job_runs_only_on_pull_requests() -> None:
+    assert VALIDATE_JOB.get("if") == "github.event_name == 'pull_request'"
+
+
+def test_workflow_refreshes_locks_on_a_schedule() -> None:
+    triggers = ci_triggers()
+    assert "schedule" in triggers
+    assert "workflow_dispatch" in triggers
+    cron = triggers["schedule"][0]["cron"]
+    assert isinstance(cron, str) and cron.strip()
+
+
+def test_refresh_locks_job_does_not_run_on_pull_requests() -> None:
+    job = WORKFLOW["jobs"]["refresh-locks"]
+    assert job.get("if") == "github.event_name != 'pull_request'"
+
+
+def test_refresh_locks_job_can_open_a_pr() -> None:
+    job = WORKFLOW["jobs"]["refresh-locks"]
+    assert job["permissions"] == {"contents": "write", "pull-requests": "write"}
+    uses = [str(step.get("uses", "")) for step in job["steps"]]
+    assert any("peter-evans/create-pull-request@" in used for used in uses)
+
+
+def test_refresh_locks_job_runs_the_rewriter() -> None:
+    job = WORKFLOW["jobs"]["refresh-locks"]
+    runs = "\n".join(str(step.get("run", "")) for step in job["steps"])
+    assert "scripts/refresh_python_locks.py" in runs
+
+
+def test_refresh_locks_checkout_does_not_persist_credentials() -> None:
+    job = WORKFLOW["jobs"]["refresh-locks"]
+    checkout = next(step for step in job["steps"] if step.get("name") == "Checkout repo")
+    assert checkout.get("with", {}).get("persist-credentials") is False

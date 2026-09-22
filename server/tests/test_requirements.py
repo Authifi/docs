@@ -589,7 +589,20 @@ def freeze_after_installing(*requirements: Path) -> dict[str, str]:
     return installed
 
 
+def test_unconstrained_in_resolve_is_marked_lock_freshness() -> None:
+    """PR CI skips this check; the scheduled refresh job is the gate."""
+    marks = getattr(
+        test_a_clean_install_of_the_direct_file_resolves_to_exactly_the_lock,
+        "pytestmark",
+        [],
+    )
+    if not isinstance(marks, list):
+        marks = [marks]
+    assert any(getattr(mark, "name", None) == "lock_freshness" for mark in marks)
+
+
 @requires_docker
+@pytest.mark.lock_freshness
 @pytest.mark.parametrize("lock", LOCKS, ids=lock_id)
 def test_a_clean_install_of_the_direct_file_resolves_to_exactly_the_lock(lock: Lock) -> None:
     """The lock is derived, and this is the derivation.
