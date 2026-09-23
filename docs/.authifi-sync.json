@@ -7,6 +7,10 @@
       "source": "docs/auth-feature-list.html"
     },
     {
+      "dest": "guides/login-initiation.md",
+      "source": "packages/auth/docs/login-initiation.md"
+    },
+    {
       "dest": "guides/oidc-request-scopes.md",
       "source": "packages/auth/docs/oidc/request-scopes.md"
     },
