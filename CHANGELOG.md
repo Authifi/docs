@@ -1,5 +1,11 @@
 # authifi-docs
 
+## 2.0.1
+
+### Patch Changes
+
+- 3889cb1: Sync public documentation from idbroker.
+
 ## 2.0.0
 
 ### Major Changes
