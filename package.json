@@ -20,6 +20,6 @@
   },
   "homepage": "https://github.com/Authifi/docs#readme",
   "devDependencies": {
-    "@changesets/cli": "^2.29.8"
+    "@changesets/cli": "^3.0.0"
   }
 }
