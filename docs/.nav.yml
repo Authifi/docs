@@ -15,6 +15,7 @@ nav:
     - Tenant Administration: guides/tenant-admin-guide.md
     - Users and Groups: guides/users-groups-admin-guide.md
     - SSO Integration: guides/sso-integration-guide.md
+    - Minimal AWS Web App with Authifi: guides/minimal-aws-web-app-authifi.md
     - Access Requests: guides/access-requests-guide.md
     - License Management: guides/license-management-guide.md
     - Logout Confirmation: guides/logout-confirmation-guide.md
