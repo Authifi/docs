@@ -23,11 +23,11 @@ uvicorn==0.37.0
 # Transitive, resolved above. The `via` notes are the edges that put each one
 # here; they are checked against the installed metadata by test_requirements.
 anyio==4.15.1  # via httpx, starlette
-botocore==1.43.100  # via boto3, s3transfer
+botocore==1.43.108  # via boto3, s3transfer
 certifi==2026.7.22  # via httpcore, httpx -- TLS trust store
 cffi==2.1.1  # via cryptography
 click==8.5.0  # via uvicorn
-cryptography==50.0.1  # via authlib -- JWS/JWT verification
+cryptography==50.0.2  # via authlib -- JWS/JWT verification
 h11==0.16.0  # via httpcore, uvicorn -- HTTP/1.1 parsing
 httpcore==1.0.9  # via httpx -- connection pooling and TLS handshake
 idna==3.20  # via anyio, httpx -- hostname parsing
