@@ -15,6 +15,38 @@
       "source": "packages/auth/docs/oidc/request-scopes.md"
     },
     {
+      "dest": "guides/quickjs-scripts/authorization.md",
+      "source": "packages/ng-auth/src/assets/docs/quickjs-scripts/authorization.md"
+    },
+    {
+      "dest": "guides/quickjs-scripts/batch-invite-job.md",
+      "source": "packages/ng-auth/src/assets/docs/quickjs-scripts/batch-invite-job.md"
+    },
+    {
+      "dest": "guides/quickjs-scripts/generic-job.md",
+      "source": "packages/ng-auth/src/assets/docs/quickjs-scripts/generic-job.md"
+    },
+    {
+      "dest": "guides/quickjs-scripts/map-claims.md",
+      "source": "packages/ng-auth/src/assets/docs/quickjs-scripts/map-claims.md"
+    },
+    {
+      "dest": "guides/quickjs-scripts/map-user-profile.md",
+      "source": "packages/ng-auth/src/assets/docs/quickjs-scripts/map-user-profile.md"
+    },
+    {
+      "dest": "guides/quickjs-scripts/token-claims.md",
+      "source": "packages/ng-auth/src/assets/docs/quickjs-scripts/token-claims.md"
+    },
+    {
+      "dest": "guides/quickjs-scripts/trim-job.md",
+      "source": "packages/ng-auth/src/assets/docs/quickjs-scripts/trim-job.md"
+    },
+    {
+      "dest": "guides/quickjs-scripts/user-info.md",
+      "source": "packages/ng-auth/src/assets/docs/quickjs-scripts/user-info.md"
+    },
+    {
       "dest": "privacy-policy.md",
       "source": "docs/privacy-policy.md"
     },

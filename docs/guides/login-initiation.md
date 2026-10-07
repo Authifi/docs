@@ -14,11 +14,11 @@ All paths below are relative to the Auth API base path (usually `/_api` or `/_ap
 
 ## Choose the start URL by application type
 
-| App type                           | Start here                          | What you get back                                                                                                                |
-| ---------------------------------- | ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| OIDC redirect (web / SPA / native) | `/auth/{tenantId}/authorize`        | Authorization code, then tokens (**recommended**, with PKCE for public clients). Implicit `id_token` still exists for some SPAs. |
-| SAML                               | `/auth/{tenantId}/{clientId}/saml`  | SAML assertion to the service provider                                                                                           |
-| WS-Fed                             | `/auth/{tenantId}/{clientId}/wsfed` | WS-Fed token to the relying party                                                                                                |
+| App type                           | Start here                          | What you get back                                                                                                                                                                       |
+| ---------------------------------- | ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| OIDC redirect (web / SPA / native) | `/auth/{tenantId}/authorize`        | Authorization code, then tokens (**recommended**, with PKCE for public clients). Implicit `id_token` remains available for clients registered with an implicit or hybrid response type. |
+| SAML                               | `/auth/{tenantId}/{clientId}/saml`  | SAML assertion to the service provider                                                                                                                                                  |
+| WS-Fed                             | `/auth/{tenantId}/{clientId}/wsfed` | WS-Fed token to the relying party                                                                                                                                                       |
 
 Device Authorization Grant clients start at `POST /auth/{tenantId}/device/auth`, then the browser opens the returned `/auth/{tenantId}/device` verification URI. They do not start at `/authorize`.
 
@@ -59,7 +59,10 @@ Both public and confidential clients use the authorization-code grant. PKCE bind
 | Confidential (`client_secret_basic`)                        | PKCE is optional                                          | Send `Authorization: Basic` with `base64(client_id:client_secret)`. Do not send a separate `client_id` form field. Also send `code_verifier` if PKCE was used. |
 | Confidential (`client_secret_jwt` or `private_key_jwt`)     | PKCE is optional                                          | Send `client_assertion` and `client_assertion_type`. `private_key_jwt` has no client secret. Also send `code_verifier` if PKCE was used.                       |
 
-Authifi does not currently require PKCE for any client. Public clients should still use it. Only `S256` is supported. Discovery advertises `token_endpoint_auth_methods_supported`; match the method registered on the client.
+The client configuration does not require PKCE for any client. Public clients
+should still use it. Only `S256` is supported. Discovery advertises
+`token_endpoint_auth_methods_supported`; match the method registered on the
+client.
 
 Every token POST also sends `grant_type=authorization_code`, the returned `code`, and the same `redirect_uri` used at `/authorize`. The rows above only list the extra client-authentication and PKCE fields.
 
