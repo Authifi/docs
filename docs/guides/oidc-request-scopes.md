@@ -6,8 +6,6 @@ title: OIDC Request Scopes
 
 # Request Scopes
 
-This document describes each scope listed in the OpenID Provider discovery document and shows how to request it in common OAuth2/OIDC flows.
-
 ## How scopes work in this server
 
 Scopes are requested in the authorization request using the OAuth2/OIDC scope parameter. The server uses scopes to decide which claims can appear in the ID token and/or the UserInfo response. The presence of a scope does not guarantee that a claim will appear in the ID token. Some claims may only be available via the UserInfo endpoint depending on server configuration and token size limits.
