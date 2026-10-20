@@ -16,7 +16,7 @@ from authlib.integrations.base_client import MismatchingStateError, OAuthError
 from authlib.integrations.starlette_client import OAuth, StarletteIntegration
 from starlette.applications import Starlette
 from starlette.datastructures import MutableHeaders
-from starlette.middleware.sessions import SessionMiddleware
+from starlette.middleware.sessions import Session, SessionMiddleware
 from starlette.requests import Request
 from starlette.responses import (
     FileResponse,
@@ -280,6 +280,19 @@ class SecurityHeadersMiddleware:
         await self.app(scope, receive, send_with_security_headers)
 
 
+class SlidingSessionMiddleware:
+    """Keep Starlette's cookie ``max_age`` as a sliding idle timeout."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        session = scope.get("session")
+        if scope["type"] == "http" and isinstance(session, Session) and session:
+            session.mark_modified()
+        await self.app(scope, receive, send)
+
+
 def apply_security_headers(
     headers: MutableHeaders, cache_control: str, enable_hsts: bool
 ) -> None:
@@ -347,6 +360,8 @@ def create_app(config: AppConfig, auth_client: object | None = None) -> Starlett
     app.state.config = config
     app.state.auth_client = auth_client or create_auth_client(config)
     app.state.root_links = load_root_links(config.site_dir)
+    # Added first so SessionMiddleware wraps it and supplies scope["session"].
+    app.add_middleware(SlidingSessionMiddleware)
     app.add_middleware(
         SessionMiddleware,
         secret_key=config.session_secret,
