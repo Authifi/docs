@@ -1,5 +1,38 @@
 # authifi-docs
 
+## 2.0.2
+
+### Patch Changes
+
+- 9b60510: Sync public documentation from idbroker.
+
+## 2.0.1
+
+### Patch Changes
+
+- 3889cb1: Sync public documentation from idbroker.
+
+## 2.0.0
+
+### Major Changes
+
+- 1d23fbf: Move the documentation site to an OIDC-protected application on a private EC2
+  instance behind an AWS Application Load Balancer, deployed through S3 and SSM.
+
+### Patch Changes
+
+- 74d917f: Sync public documentation from idbroker.
+
+## 1.5.0
+
+### Minor Changes
+
+- eeb1238: Add a standalone Authifi SMS opt-in page preview for provider review.
+
+### Patch Changes
+
+- 42e258c: Sync public documentation from idbroker.
+
 ## 1.4.1
 
 ### Patch Changes

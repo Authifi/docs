@@ -1,0 +1,178 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# python3-venv, because the Noble cloud image ships python3 3.12 without
+# `ensurepip` — Ubuntu packages that module separately — so the release
+# installer's `python3 -m venv` would fail on the very first deploy.
+#
+# chrony, because this host's only permitted time source is the link-local one
+# configured below, and the image does not reliably point a daemon at it.
+#
+# Both arrive over the private subnet's shared NAT route. Retried, because this
+# is the first thing on the host to depend on that route and `set -e` would
+# otherwise turn one bad mirror response into an instance with no service unit.
+export DEBIAN_FRONTEND=noninteractive
+for attempt in 1 2 3 4 5; do
+  if apt-get update && apt-get install --yes python3-venv chrony; then
+    break
+  fi
+  if [[ "$attempt" -eq 5 ]]; then
+    echo "could not install python3-venv and chrony" >&2
+    exit 1
+  fi
+  sleep "$((attempt * 5))"
+done
+
+# This instance may send UDP 123 to 169.254.169.123 and nowhere else, and Noble
+# does not reliably use it: Ubuntu's chrony ships the ntp.ubuntu.com NTS pools,
+# which need UDP 123 and TCP 4460 to the internet, and AWS's own Ubuntu
+# instructions are to add the link-local server by hand. Left alone the clock
+# drifts behind a security group that silently drops every packet, and drift on
+# this host is an OIDC failure: `iat` and `exp` are the first things it breaks.
+install -d -m 0755 /etc/chrony/conf.d
+printf 'server 169.254.169.123 prefer iburst minpoll 4 maxpoll 4\n' \
+  > /etc/chrony/conf.d/amazon-time-sync.conf
+
+# Ubuntu gained `confdir` at different times across releases, so this makes the
+# drop-in read rather than assuming it is.
+if ! grep -qE '^[[:space:]]*confdir[[:space:]]+/etc/chrony/conf\.d' /etc/chrony/chrony.conf; then
+  printf 'confdir /etc/chrony/conf.d\n' >> /etc/chrony/chrony.conf
+fi
+
+# The distro pools are unreachable through that rule, so they go rather than
+# time out on every poll. Ubuntu has moved them between chrony.conf and
+# sources.d across releases, so both layouts are handled; emptying the file
+# rather than deleting it keeps a later chrony upgrade from prompting.
+if [[ -e /etc/chrony/sources.d/ubuntu-ntp-pools.sources ]]; then
+  : > /etc/chrony/sources.d/ubuntu-ntp-pools.sources
+fi
+sed -i -E 's,^([[:space:]]*(pool|server)[[:space:]]+[^[:space:]]*ubuntu\.com.*)$,# \1,' \
+  /etc/chrony/chrony.conf
+
+systemctl enable chrony
+systemctl restart chrony
+
+useradd --system --home-dir /opt/authifi-docs --shell /sbin/nologin authifi-docs || true
+
+# Root-owned, and read-only to the service account. Releases are installed by
+# root through Systems Manager and the service only ever reads them, so it has
+# no reason to own the tree its own code is loaded from — and owning it means
+# any bug in the docs server that can write a file becomes persistence rather
+# than a read, by replacing the code systemd loads on the next restart.
+#
+# Modes are explicit rather than left to root's umask. The top of the tree is
+# group-traversable so the service can reach `current/`, and the staging
+# directory is not: only root ever reads from there, and what lands in it comes
+# straight off the network.
+install -d -m 0750 -o root -g authifi-docs /opt/authifi-docs
+install -d -m 0755 -o root -g root /opt/authifi-docs/releases
+install -d -m 0700 -o root -g root /opt/authifi-docs/incoming
+install -d -m 0700 -o root -g root /etc/authifi-docs
+
+# Terraform's values arrive as one JSON document, and neither of the two things
+# that read them evaluates anything.
+#
+# They used to be interpolated into a file that `deploy-release.sh` loaded with
+# `source`, which made every one of them root shell on the deployment path: an
+# accepted absolute `site_dir` containing a space split into an assignment plus
+# a command and aborted every deployment, and a command substitution or a
+# semicolon in any value ran as root. A blacklist of shell metacharacters is
+# the wrong answer -- the list is never complete, and the legitimate values
+# here are URLs and filesystem paths with every right to punctuation. So the
+# format changed instead: JSON, which the installer parses, and a systemd
+# `EnvironmentFile` rendered from it below by one serializer.
+#
+# The heredoc is quoted, so the shell writing this file expands nothing either.
+cat > /etc/authifi-docs/config.json <<'CONFIG'
+${config_json}
+CONFIG
+chmod 0600 /etc/authifi-docs/config.json
+
+# systemd reads `EnvironmentFile` itself and performs no command substitution,
+# but an unquoted value carrying a space or a quote still parses as something
+# other than what Terraform set. Rendered here rather than interpolated a
+# second time, so there is one place where escaping happens and one format to
+# get right.
+#
+# Control characters are refused rather than escaped. An `EnvironmentFile`
+# assignment cannot represent a newline at all, so a value carrying one would
+# become a shorter value and a second assignment; the variables are validated
+# against them at plan time too, and this is the check that does not depend on
+# that one being complete.
+python3 - /etc/authifi-docs/config.json /etc/authifi-docs/environment <<'RENDER'
+import json
+import re
+import sys
+from pathlib import Path
+
+source, destination = (Path(argument) for argument in sys.argv[1:3])
+configuration = json.loads(source.read_text(encoding="utf-8"))
+
+if not isinstance(configuration, dict):
+    raise SystemExit(f"{source} must hold a JSON object")
+
+assignments = []
+for name, value in sorted(configuration.items()):
+    if not re.fullmatch(r"[A-Z][A-Z0-9_]*", name):
+        raise SystemExit(f"{source}: {name!r} is not an environment variable name")
+    if not isinstance(value, str):
+        raise SystemExit(f"{source}: {name} must be a JSON string")
+    if any(character < " " or character == "\x7f" for character in value):
+        raise SystemExit(f"{source}: {name} contains a control character")
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    assignments.append(f'{name}="{escaped}"\n')
+
+destination.write_text("".join(assignments), encoding="utf-8")
+RENDER
+chmod 0600 /etc/authifi-docs/environment
+
+# Generated on the host and never in Terraform state, and deliberately not
+# regenerated: rewriting it on every boot would invalidate every live session
+# cookie, and instances reboot for reasons that have nothing to do with deploys.
+if [[ ! -s /etc/authifi-docs/session.env ]]; then
+  # Scoped to a subshell. A bare `umask 077` stays in effect for the rest of
+  # this script, so the mode of everything written later would depend on where
+  # in the file it happens to appear.
+  (
+    umask 077
+    printf 'SESSION_SECRET=%s\n' "$(openssl rand -hex 32)" \
+      > /etc/authifi-docs/session.env
+  )
+fi
+chmod 0600 /etc/authifi-docs/session.env
+
+# `ProtectSystem=strict` makes the whole filesystem read-only to this service,
+# and the unit deliberately names no writable path. It previously granted
+# `/opt/authifi-docs`, which punched a hole through that protection for the one
+# directory the service must never modify: the release tree it loads its own
+# code from. Uvicorn needs nothing writable, and `PrivateTmp` covers the one
+# place anything might. `ReadOnlyPaths` restates the intent so relaxing
+# `ProtectSystem` later does not silently reopen the tree.
+cat > /etc/systemd/system/authifi-docs.service <<'UNIT'
+[Unit]
+Description=Authifi OIDC-protected documentation
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=authifi-docs
+Group=authifi-docs
+WorkingDirectory=/opt/authifi-docs/current
+EnvironmentFile=/etc/authifi-docs/environment
+EnvironmentFile=/etc/authifi-docs/session.env
+ExecStart=/opt/authifi-docs/current/.venv/bin/uvicorn server.main:app --host 0.0.0.0 --port ${app_port}
+Restart=on-failure
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/opt/authifi-docs
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+systemctl daemon-reload
+# Enabled, not started: there is no release under /opt/authifi-docs/current
+# until the first deploy, so starting here would only log a failure.
+systemctl enable authifi-docs.service

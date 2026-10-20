@@ -1,12 +1,20 @@
 # Authifi Documentation
 
-Authifi is an enterprise identity broker, access management, and application security platform with an emphasis on security, collaboration, and ease of use.
+Authifi is an enterprise identity broker, access management, and application security platform.
+
+## Who Can Read This Site
+
+This documentation is protected by Authifi single sign-on. Any identity your tenant accepts can read every page here; there is no per-page, per-group, or per-role restriction within the site. Access is therefore managed where it is granted — by who can sign in to the tenant and who is assigned the documentation application.
+
+A small set of pages stays public and needs no sign-in: the privacy policy, the terms of service, and the SMS opt-in notice. Every other page redirects to sign-in when you are not signed in.
+
+Sessions last eight hours from the moment you sign in, however active the tab. Use the **Sign out** control in the header to end a session; it signs you out everywhere, not only in the current tab.
 
 ## Getting Started
 
 ### Authorization
 
-Authifi supports admin roles as well as RBAC, OAuth scopes, custom roles and permissions, scripted authorization rules, and fine-grained access control. Use the links below to learn more.
+Authifi supports admin roles, RBAC, OAuth scopes, custom roles and permissions, scripted authorization rules, and fine-grained access control.
 
 - [OAuth Client Authorization](authorization/authorization.md) - User groups, API authorization, and RBAC
 - [Admin Roles](authorization/admin-roles.md) - System admin, tenant admin, and delegated admin roles
@@ -18,7 +26,7 @@ Authifi supports admin roles as well as RBAC, OAuth scopes, custom roles and per
 
 ### Administrator Guides
 
-Step-by-step guides for tenant administrators:
+Guides for tenant administrators:
 
 - [Tenant Administration](guides/tenant-admin-guide.md) - Configure tenant settings, branding, and security
 - [Users and Groups](guides/users-groups-admin-guide.md) - Manage users, groups, roles, and permissions
@@ -31,7 +39,7 @@ Step-by-step guides for tenant administrators:
 
 ### Security
 
-Security configuration and best practices:
+Security configuration:
 
 - [Security Overview](security/README.md) - Security documentation index
 - [Security Admin Guide](security/security-admin-guide.md) - Administrative account lifecycle and security
@@ -39,7 +47,7 @@ Security configuration and best practices:
 
 ## Feature Overview
 
-For a complete list of Authifi capabilities — authentication protocols, MFA, RBAC, secret management, AI agent delegation, GA4GH Passport support, FedRAMP High compliance, and more — see the **[Authifi Identity Broker Feature List](feature-list.html)**.
+See the [Authifi Identity Broker Feature List](feature-list.html) for the full capability list: authentication protocols, MFA, RBAC, secret management, AI agent delegation, GA4GH Passport support, and FedRAMP High compliance.
 
 ## FedRAMP
 
@@ -49,4 +57,4 @@ Authifi is FedRAMP High authorized as a supporting service in the [Palantir Fede
 
 ## Support
 
-For questions or issues, please contact your Authifi administrator or support team.
+For questions or issues, contact your Authifi administrator or support team.

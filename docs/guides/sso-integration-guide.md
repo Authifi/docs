@@ -1,6 +1,6 @@
 # SSO Integration Guide: Managing Applications and Identity Providers
 
-This guide provides comprehensive instructions for tenant administrators on managing SSO integrations, applications, APIs, and identity providers through the Authifi UI.
+Tenant administrators use the Authifi UI to manage SSO integrations, applications, APIs, and identity providers.
 
 ## Table of Contents
 
@@ -31,7 +31,7 @@ This guide provides comprehensive instructions for tenant administrators on mana
 
 ## Overview
 
-The **SSO Integration** section enables you to:
+Use **SSO Integration** to:
 
 - Configure applications (clients) that use your tenant for authentication
 - Manage APIs (resource servers) and their access control
@@ -39,7 +39,7 @@ The **SSO Integration** section enables you to:
 - Manage **Access Roles** and **Resource Server Permissions** for client-linked and standalone resource servers
 - Manage multi-tenancy and namespace isolation
 
-**Security context**: Proper SSO configuration is critical for security. Misconfigured clients can lead to token theft, unauthorized access, or data leakage.
+Misconfigured clients can lead to token theft, unauthorized access, or data leakage.
 
 ---
 
@@ -49,7 +49,7 @@ The **SSO Integration** section enables you to:
 
 **Location**: SSO Integration > App Dashboard
 
-**Purpose**: Central management console for all applications (OAuth 2.0/OIDC clients and SAML service providers) integrated with your tenant.
+Use the App Dashboard to manage OAuth 2.0/OIDC clients and SAML service providers in your tenant.
 
 #### What you can do
 
@@ -95,7 +95,7 @@ The **SSO Integration** section enables you to:
 
 **Location**: SSO Integration > Contacts
 
-**Purpose**: Manage contact persons and associate them with applications for support and operational communications.
+Manage contact persons and associate them with applications for support and operational communications.
 
 #### What you can do
 
@@ -120,14 +120,14 @@ The **SSO Integration** section enables you to:
 
 **Location**: SSO Integration > Access Roles (some screens still label these **API Roles**)
 
-**Purpose**: Define authorization roles that bundle Resource Server Permissions within a resource-server authorization context. Authifi uses one Access Role model for both:
+Define authorization roles that bundle Resource Server Permissions within a resource-server authorization context. Authifi uses one Access Role model for:
 
 - **Client-linked resource servers** — including the auto-generated placeholder resource server associated with an OAuth client (application authorization context)
 - **Standalone API resource servers** — registered APIs (API authorization context)
 
-**Client permissions** means Resource Server Permissions on an OAuth client's auto-generated placeholder resource server. Define and assign those permissions (and Access Roles that include them) when the application needs its own authorization context.
+**Client permissions** are Resource Server Permissions on an OAuth client's auto-generated placeholder resource server. Define and assign those permissions (and Access Roles that include them) when the application needs its own authorization context.
 
-**Client credential roles and permissions** means Access Roles marked for client credential grants, their Resource Server Permissions, and the associated client — authorization assigned to applications rather than users.
+**Client credential roles and permissions** mean Access Roles marked for client credential grants, their Resource Server Permissions, and the associated client. This authorization is assigned to applications rather than users.
 
 #### What you can do
 
@@ -200,7 +200,7 @@ Example UserInfo / session claim shape:
 
 **Location**: SSO Integration > Permissions (or the Permissions tab on a resource server / API)
 
-**Purpose**: Define fine-grained permissions bound to a resource server. These map to OAuth 2.0 scopes that appear in API access tokens.
+Define fine-grained permissions for a resource server. They map to OAuth 2.0 scopes in API access tokens.
 
 #### What you can do
 
@@ -225,7 +225,7 @@ Resource Server Permissions map to OAuth 2.0 scopes. When authorizing API calls,
 
 **Security recommendations**:
 
-- Use descriptive, clear permission names
+- Use clear, descriptive permission names
 - Avoid overly broad permissions (e.g., `admin:*`)
 - Prefer separate permission sets per resource server to avoid name collisions across APIs
 - Audit permission grants regularly
@@ -236,7 +236,7 @@ Resource Server Permissions map to OAuth 2.0 scopes. When authorizing API calls,
 
 **Location**: SSO Integration > API Dashboard
 
-**Purpose**: Manage resource servers (APIs) that applications can access on behalf of users.
+Manage resource servers (APIs) that applications can access on behalf of users.
 
 #### What you can do
 
@@ -245,7 +245,7 @@ Resource Server Permissions map to OAuth 2.0 scopes. When authorizing API calls,
 - **Assign clients**: Control which apps can access the API
 - **Define Access Roles and Resource Server Permissions**: Create RBAC for each API resource server
 - **Add custom claims**: Include additional data in access tokens
-- **Export configuration**: Backup or migrate API settings
+- **Export configuration**: Back up or migrate API settings
 
 #### Creating a New API
 
@@ -253,7 +253,7 @@ Resource Server Permissions map to OAuth 2.0 scopes. When authorizing API calls,
 - Enter API details:
     - **Name**: Human-readable name (e.g., "User Management API")
     - **Identifier**: Unique URI (e.g., "https://api.example.com/users")
-        - **Important**: This becomes the `aud` (audience) claim in tokens and the key for `resource_roles`
+        - This value becomes the `aud` (audience) claim in tokens and the key for `resource_roles`
     - **Access Token Duration**: Token lifetime in seconds (default: 86400 = 24 hours)
 - Assign client applications that should have access
 - Configure custom claims (optional, super admin only)
@@ -273,7 +273,7 @@ Resource Server Permissions map to OAuth 2.0 scopes. When authorizing API calls,
 
 **Location**: SSO Integration > Providers
 
-**Purpose**: Configure identity providers (IdPs) that users can authenticate with (Google, Azure AD, SAML, etc.).
+Configure identity providers (IdPs) for user authentication, including Google, Azure AD, and SAML providers.
 
 #### What you can do
 
@@ -351,7 +351,7 @@ Resource Server Permissions map to OAuth 2.0 scopes. When authorizing API calls,
 - **AAL Override**: Override Authenticator Assurance Level
   - **Super admin only**: Requires elevated privilege
 - **Claims Scripting**: Custom JavaScript for claims transformation
-  - **Super admin only**: Powerful but risky feature
+  - **Super admin only**: High-risk feature
 
 **Security recommendations**:
 
@@ -370,7 +370,7 @@ Resource Server Permissions map to OAuth 2.0 scopes. When authorizing API calls,
 
 **Location**: SSO Integration > Issuers
 
-**Purpose**: Manage OAuth 2.0/OIDC issuer configurations that determine how tokens are generated and validated.
+Manage OAuth 2.0/OIDC issuer configurations for token generation and validation.
 
 #### What you can do
 
@@ -399,7 +399,7 @@ An issuer defines:
 
 **Location**: SSO Integration > Namespaces
 
-**Purpose**: Logical isolation boundaries for organizing resources in multi-tenant or multi-environment setups.
+Use namespaces as logical isolation boundaries for multi-tenant or multi-environment resources.
 
 #### What you can do
 
@@ -441,11 +441,11 @@ root
 
 ## Application (Client) Configuration Reference
 
-When creating or editing an application via **App Dashboard**, you'll encounter a multi-section configuration dialog. This section details each part.
+When you create or edit an application in the **App Dashboard**, its configuration dialog contains these sections.
 
 ### Settings Section
 
-**Purpose**: Core application configuration including client type, authentication flows, and token settings.
+Configure the client type, authentication flows, and token settings.
 
 #### Basic Settings
 
@@ -575,7 +575,7 @@ When creating or editing an application via **App Dashboard**, you'll encounter 
 
 ### Metadata Section
 
-**Purpose**: Additional client information for documentation and management.
+Add client information for documentation and management.
 
 - **Description**: Detailed description of the application's purpose
 - **Client Type**: Categorization (internal, external, partner)
@@ -587,7 +587,7 @@ When creating or editing an application via **App Dashboard**, you'll encounter 
 
 ### Default User Groups
 
-**Purpose**: Automatically assign users to groups upon first authentication via this application.
+Assign users to groups automatically after their first authentication through this application.
 
 #### Configuration
 
@@ -602,7 +602,7 @@ When creating or editing an application via **App Dashboard**, you'll encounter 
 
 ### Custom Integrations
 
-**Purpose**: Configure application-specific integrations and extensions.
+Configure application-specific integrations and extensions.
 
 **Available integrations** (varies by application type):
 
@@ -617,7 +617,7 @@ When creating or editing an application via **App Dashboard**, you'll encounter 
 
 ### Certificates
 
-**Purpose**: Manage X.509 certificates for SAML and mutual TLS authentication.
+Manage X.509 certificates for SAML and mutual TLS authentication.
 
 #### SAML Certificates
 
@@ -645,7 +645,7 @@ When creating or editing an application via **App Dashboard**, you'll encounter 
 
 ### Groups
 
-**Purpose**: Assign user groups that have access to this application.
+Assign user groups that have access to this application.
 
 #### Configuration
 
@@ -663,7 +663,7 @@ When creating or editing an application via **App Dashboard**, you'll encounter 
 
 ### Contacts (Application-Specific)
 
-**Purpose**: Assign contacts responsible for this specific application.
+Assign contacts responsible for this application.
 
 - **Technical Contact**: Person who maintains the application
 - **Security Contact**: Person to notify about security issues
@@ -675,7 +675,7 @@ When creating or editing an application via **App Dashboard**, you'll encounter 
 
 ### Allowed Origins (Application-Specific)
 
-**Purpose**: Configure CORS allowed origins for this application.
+Configure CORS allowed origins for this application.
 
 **Note**: Typically managed at the tenant level (see Tenant Settings guide). Application-specific origins are less common.
 
@@ -685,7 +685,7 @@ When creating or editing an application via **App Dashboard**, you'll encounter 
 
 ### Script
 
-**Purpose**: Custom claims mapping and transformation using JavaScript.
+Map and transform custom claims with JavaScript.
 
 **Availability**: System admin or users with `admin::clients:edit` only.
 
@@ -714,9 +714,7 @@ When creating or editing an application via **App Dashboard**, you'll encounter 
 
 ## Identity Provider Configuration
 
-_(This section would cover the detailed IdP configuration dialog with all provider types, claims mapping, MFA settings, etc. - expanding on the Providers section above)_
-
-**Note**: Due to the complexity and variety of IdP configurations, refer to provider-specific documentation:
+Provider configurations vary by identity provider. Refer to the provider-specific documentation:
 
 - **Google**: See "Configuring Google OAuth" guide
 - **Azure AD**: See "Configuring Azure AD OIDC" guide
@@ -762,7 +760,7 @@ _(This section would cover the detailed IdP configuration dialog with all provid
 ### Identity Provider Security
 
 - **Vet providers carefully**
-    - Only mark truly trustworthy IdPs as "Is Trusted"
+    - Only mark IdPs as "Is Trusted" when they are enterprise-managed and secured
     - Prefer enterprise IdPs over social for sensitive applications
     - Validate IdP certificates (SAML)
     - Test thoroughly before production

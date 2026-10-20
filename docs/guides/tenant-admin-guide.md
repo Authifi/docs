@@ -1,6 +1,6 @@
 # Tenant Administrator Guide: Managing Tenant Settings
 
-This guide provides comprehensive instructions for tenant administrators on managing tenant settings through the Authifi UI.
+Tenant administrators manage tenant settings through the Authifi UI.
 
 ## Table of Contents
 
@@ -31,9 +31,9 @@ This guide provides comprehensive instructions for tenant administrators on mana
 
 ## Overview
 
-As a **tenant administrator**, you have comprehensive control over your tenant's authentication and authorization settings, branding, and user experience. This guide covers all configuration options available through the Authifi UI.
+**Tenant administrators** manage authentication and authorization settings, branding, and the user experience through the Authifi UI.
 
-**Note**: Some features may be restricted to super administrators only, or may require elevated admin scopes. These restrictions are noted throughout this guide.
+Some features require Super Administrator privileges or elevated admin scopes. The guide identifies those restrictions.
 
 ---
 
@@ -61,7 +61,7 @@ The **Tenant** menu includes:
 
 **Location**: Tenant > Dashboard
 
-**Purpose**: Provides an overview of your tenant's current status and key metrics.
+View your tenant's current status and key metrics.
 
 **What you can do**:
 
@@ -75,7 +75,7 @@ The **Tenant** menu includes:
 
 **Location**: Tenant > Expiring Items
 
-**Purpose**: Monitor items that are approaching expiration to ensure continuity of service.
+Monitor items approaching expiration.
 
 **What you can monitor**:
 
@@ -83,7 +83,7 @@ The **Tenant** menu includes:
 - Expiring access grants
 - Other time-sensitive configurations
 
-**Best practice**: Review this page regularly to avoid service disruptions from expired credentials.
+Review this page regularly to avoid service disruptions from expired credentials.
 
 ---
 
@@ -91,9 +91,9 @@ The **Tenant** menu includes:
 
 **Location**: Tenant > Settings
 
-**Purpose**: Comprehensive tenant configuration via a multi-tab dialog.
+Configure tenant settings in a multi-tab dialog.
 
-Click the **Edit** button on the Tenant Details page to open the tenant settings dialog, which contains 11 configuration tabs (detailed below).
+Click **Edit** on the Tenant Details page to open the tenant settings dialog. It contains 11 configuration tabs.
 
 ---
 
@@ -101,7 +101,7 @@ Click the **Edit** button on the Tenant Details page to open the tenant settings
 
 **Location**: Tenant > System Notifications
 
-**Purpose**: Manage tenant-wide system notifications displayed to users.
+Manage tenant-wide system notifications displayed to users.
 
 **What you can do**:
 
@@ -117,7 +117,7 @@ Click the **Edit** button on the Tenant Details page to open the tenant settings
 
 **Location**: Tenant > Login Metrics
 
-**Purpose**: View real-time and historical login metrics powered by Grafana.
+View real-time and historical login metrics from Grafana.
 
 **What you can see**:
 
@@ -126,7 +126,7 @@ Click the **Edit** button on the Tenant Details page to open the tenant settings
 - Geographic distribution of logins
 - Time-series charts and trends
 
-**Use case**: Monitor for unusual authentication patterns that may indicate security issues.
+Use this page to monitor unusual authentication patterns.
 
 ---
 
@@ -134,7 +134,7 @@ Click the **Edit** button on the Tenant Details page to open the tenant settings
 
 **Location**: Tenant > Usage Report
 
-**Purpose**: View detailed usage statistics for your tenant's SSO integrations.
+View usage statistics for your tenant's SSO integrations.
 
 **What you can see**:
 
@@ -143,13 +143,13 @@ Click the **Edit** button on the Tenant Details page to open the tenant settings
 - Identity provider usage
 - Session statistics
 
-**Use case**: Optimize your SSO configuration based on actual usage patterns.
+Use this page to tune SSO configuration based on usage patterns.
 
 ---
 
 ## Edit Tenant Dialog - Tab Reference
 
-Access the Edit Tenant dialog by navigating to **Tenant > Settings** and clicking the **Edit** button.
+Open the Edit Tenant dialog from **Tenant > Settings** by clicking **Edit**.
 
 ### Settings Tab
 
@@ -284,7 +284,7 @@ Access the Edit Tenant dialog by navigating to **Tenant > Settings** and clickin
 
 ### Branding Tab
 
-**Purpose**: Customize the visual appearance of your tenant's authentication pages and email communications.
+Customize the visual appearance of your tenant's authentication pages and email communications.
 
 **Availability**: Requires tenant admin or super admin privileges.
 
@@ -344,7 +344,7 @@ Configure the appearance of system-generated emails sent to users.
 
 ### Login Page Tab
 
-**Purpose**: Customize the login page appearance and behavior.
+Customize the login page appearance and behavior.
 
 **Availability**: Requires `auth.clients.list` or `auth.clients.update` scope (or tenant admin bypass).
 
@@ -429,7 +429,7 @@ Configure the appearance of system-generated emails sent to users.
 
 ### Landing Page Tab
 
-**Purpose**: Configure the post-authentication landing page users see after successful login.
+Configure the post-authentication landing page.
 
 **Availability**:
 
@@ -474,7 +474,7 @@ Configure the appearance of system-generated emails sent to users.
 
 ### Allowed Origins Tab
 
-**Purpose**: Manage Cross-Origin Resource Sharing (CORS) allowed origins for your tenant.
+Manage Cross-Origin Resource Sharing (CORS) allowed origins for your tenant.
 
 **Critical security feature**: Only origins listed here can make authenticated API requests to the Authifi from browser-based applications.
 
@@ -533,7 +533,7 @@ The system enforces strict origin validation:
 
 ### User Alert Settings Tab
 
-**Purpose**: Configure which login events trigger user email notifications.
+Configure which login events trigger user email notifications.
 
 **What you can configure**:
 
@@ -557,7 +557,7 @@ The system enforces strict origin validation:
 
 ### Email Settings Tab
 
-**Purpose**: Configure SMTP settings for sending tenant-specific emails.
+Configure SMTP settings for tenant-specific email.
 
 **Availability**: **Tenant admin or super admin only** (tab is hidden for non-admin users).
 
@@ -623,7 +623,7 @@ Available when "Use Default Email Settings" is disabled:
 
 ### Tenant SAML Certificates Tab
 
-**Purpose**: Manage X.509 certificates used for SAML authentication.
+Manage X.509 certificates used for SAML authentication.
 
 **What you can do**:
 
@@ -657,7 +657,7 @@ Available when "Use Default Email Settings" is disabled:
 
 ### Tenant JWKS Key Set Tab
 
-**Purpose**: Manage JSON Web Key Sets (JWKS) used for JWT signing and verification.
+Manage JSON Web Key Sets (JWKS) used for JWT signing and verification.
 
 **What you can do**:
 
@@ -696,7 +696,7 @@ Available when "Use Default Email Settings" is disabled:
 
 ### Cookie Consent Banner Tab
 
-**Purpose**: Configure GDPR/privacy-compliant cookie consent banners.
+Configure cookie consent banners for GDPR and privacy requirements.
 
 **Compliance context**: Required for GDPR, ePrivacy Directive, and similar privacy regulations.
 
@@ -745,7 +745,7 @@ Available when "Use Default Email Settings" is disabled:
 
 ### Contacts Tab
 
-**Purpose**: Manage contact information associated with the tenant.
+Manage contact information associated with the tenant.
 
 **Availability**: View-only for regular users; **editing requires tenant admin or super admin**.
 
@@ -834,7 +834,7 @@ Available when "Use Default Email Settings" is disabled:
 **Annually**:
 
 - Review and update all branding and communications for accuracy
-- Comprehensive security audit of tenant configuration
+- Audit the tenant's security configuration
 - Review and update cookie consent messaging for regulatory changes
 
 ---

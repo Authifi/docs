@@ -1,0 +1,98 @@
+{#
+  Vendored from mkdocs-material's `partials/header.html`, which this file
+  shadows. It is that template byte for byte apart from two changes, and
+  `server/tests/test_public_boundary.py` re-derives both from the installed
+  theme, so a theme upgrade that reshapes the header fails a test rather than
+  drifting silently.
+
+  1. Material's search control queries `/search/search_index.json`, which is
+     protected. On a public page that control can only ever fail, and Material
+     requests the index only when a `<form name="search">` is in the document,
+     so omitting the block is also what stops the failing request.
+  2. Protected pages carry a sign-out control. It is a form, not a link:
+     `/_auth/logout` changes state and answers `POST` only, so an anchor there
+     would be a control that answers `405`. A public page has no session to
+     end, and offering one there would be a control that does nothing.
+     `docs/stylesheets/authifi.css` is what makes the button look like the
+     header's other controls instead of an OS push button.
+
+  Both hang off the same flag. `hide: search` is set on public pages by
+  `docs/hooks/agent_assets.py`, which is the one place that knows which sources
+  are served anonymously.
+#}
+{% set authifi_public_page = page.meta and page.meta.hide and "search" in page.meta.hide %}
+{# --- vendored mkdocs-material header follows --- #}
+{#-
+  This file was automatically generated - do not edit
+-#}
+{% set class = "md-header" %}
+{% if "navigation.tabs.sticky" in features %}
+  {% set class = class ~ " md-header--shadow md-header--lifted" %}
+{% elif "navigation.tabs" not in features %}
+  {% set class = class ~ " md-header--shadow" %}
+{% endif %}
+<header class="{{ class }}" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="{{ lang.t('header') }}">
+    <a href="{{ config.extra.homepage | d(nav.homepage.url, true) | url }}" title="{{ config.site_name | e }}" class="md-header__button md-logo" aria-label="{{ config.site_name }}" data-md-component="logo">
+      {% include "partials/logo.html" %}
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      {% set icon = config.theme.icon.menu or "material/menu" %}
+      {% include ".icons/" ~ icon ~ ".svg" %}
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            {{ config.site_name }}
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            {% if page.meta and page.meta.title %}
+              {{ page.meta.title }}
+            {% else %}
+              {{ page.title }}
+            {% endif %}
+          </span>
+        </div>
+      </div>
+    </div>
+    {% if config.theme.palette %}
+      {% if not config.theme.palette is mapping %}
+        {% include "partials/palette.html" %}
+      {% endif %}
+    {% endif %}
+    {% if not config.theme.palette is mapping %}
+      {% include "partials/javascripts/palette.html" %}
+    {% endif %}
+    {% if config.extra.alternate %}
+      {% include "partials/alternate.html" %}
+    {% endif %}
+    {% if "material/search" in config.plugins and not authifi_public_page %}
+      {% set search = config.plugins["material/search"] | attr("config") %}
+      {% if search.enabled %}
+        <label class="md-header__button md-icon" for="__search">
+          {% set icon = config.theme.icon.search or "material/magnify" %}
+          {% include ".icons/" ~ icon ~ ".svg" %}
+        </label>
+        {% include "partials/search.html" %}
+      {% endif %}
+    {% endif %}
+    {% if not authifi_public_page %}
+      <form class="md-header__signout" method="post" action="/_auth/logout">
+        <button class="md-header__button" type="submit">Sign out</button>
+      </form>
+    {% endif %}
+    {% if config.repo_url %}
+      <div class="md-header__source">
+        {% include "partials/source.html" %}
+      </div>
+    {% endif %}
+  </nav>
+  {% if "navigation.tabs.sticky" in features %}
+    {% if "navigation.tabs" in features %}
+      {% include "partials/tabs.html" %}
+    {% endif %}
+  {% endif %}
+</header>

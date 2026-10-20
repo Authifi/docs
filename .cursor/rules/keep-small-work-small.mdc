@@ -1,0 +1,20 @@
+---
+description: Keeps small repository changes and deployments within an explicit complexity budget
+alwaysApply: true
+---
+
+# Keep Small Work Small
+
+Before designing or implementing a small change:
+
+1. Inspect relevant repository and organization precedents first. For infrastructure or CI, find one or two comparable internal deployments before designing from scratch.
+2. Confirm the existing environment, authentication model, availability needs, deployment convention, acceptance criteria, and effort budget. Ask only questions that materially change the solution.
+3. Propose the fewest new components. State operational cost and meaningful trade-offs before implementation.
+4. Agree on a test budget based on user-visible behavior and critical security boundaries. Do not add tests for prose, configuration substrings, hypothetical mutations, or implementation details unless they protect a demonstrated risk.
+5. Agree on a review budget. Default to one focused review; fix release blockers and record lower-severity hardening separately.
+
+For a low-volume AWS web app, first consider existing shared networking, a public ALB, one private compute target, ACM, the established runtime convention, artifact-based deployment, and focused smoke tests. Deviate when requirements demand it.
+
+Ask before adding an AWS service, substantially exceeding the agreed test budget, or starting another review cycle.
+
+When architecture changes, stop and revise the plan. Remove superseded code, tests, and documentation instead of accumulating both designs.

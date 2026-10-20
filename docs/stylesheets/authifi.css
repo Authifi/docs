@@ -1,0 +1,26 @@
+/* The sign-out control in the Material header.
+ *
+ * Signing out changes state, so the control is a `<form>` posting to
+ * `/_auth/logout` rather than a link. That means a `<button>`, which arrives
+ * with the operating system's own push-button chrome: a grey face, a border,
+ * and the platform UI font. These rules take that away so the control looks
+ * and behaves like the palette toggle and search buttons beside it.
+ *
+ * Everything visual is inherited rather than restated. `md-header__button`
+ * already carries the header's foreground colour in both the default and slate
+ * schemes and Material's own `:focus-visible` outline, so there is no contrast
+ * or focus styling here to drift out of step with the theme. */
+
+.md-header__signout {
+  display: flex;
+  align-items: center;
+  margin: 0;
+}
+
+.md-header__signout .md-header__button {
+  background: none;
+  border: 0;
+  font: inherit;
+  line-height: inherit;
+  cursor: pointer;
+}

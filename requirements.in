@@ -1,0 +1,11 @@
+# The site build's direct dependencies -- what mkdocs.yml actually asks for.
+# Edit this file, then regenerate the closure in `requirements.txt` using the
+# command in that file's header.
+#
+# Pinned rather than ranged on purpose: a range here means the lock's contents
+# depend on when it was last regenerated, and a theme or plugin bump changes the
+# published HTML, so it is a review rather than a side effect.
+
+mkdocs==1.6.1  # site generator
+mkdocs-material==9.7.7  # theme, search index, and the header this repo overrides
+mkdocs-awesome-nav==3.3.0  # per-directory navigation ordering

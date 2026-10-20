@@ -6,14 +6,14 @@
       "type": "skill-md",
       "description": "Navigate the Authifi documentation site information architecture and find relevant guides.",
       "url": "https://docs.authifi.io/.well-known/agent-skills/authifi-docs-navigation/SKILL.md",
-      "digest": "sha256:16f79ea8608638a635fe3e56717940243ca1d0b1d8a69f91c39740bbc891878e"
+      "digest": "sha256:b3b5aa5dab40b8687df6a5c66f2b5675cb9cb2fa27173c2ebc84b6f54ada019c"
     },
     {
       "name": "authifi-oauth-concepts",
       "type": "skill-md",
       "description": "Understand Authifi OAuth 2.0 and OIDC concepts as documented, without calling live product APIs.",
       "url": "https://docs.authifi.io/.well-known/agent-skills/authifi-oauth-concepts/SKILL.md",
-      "digest": "sha256:249d40a7000230b758d75e06c293a8af3b6b9ee47df15928acea1d0b5f406de6"
+      "digest": "sha256:41317e74bd6fb2046e372e3660035a42db277b5ca0af22cdf9d45965ae0566a9"
     }
   ]
 }

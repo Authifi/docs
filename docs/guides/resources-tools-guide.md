@@ -1,6 +1,6 @@
 # Resources and Tools Guide
 
-This guide provides comprehensive instructions for tenant administrators on managing templates, images, secrets, and scheduled jobs through the Authifi UI.
+Tenant administrators use the Authifi UI to manage templates, images, secrets, and scheduled jobs.
 
 ## Table of Contents
 
@@ -20,19 +20,12 @@ This guide provides comprehensive instructions for tenant administrators on mana
 
 ## Overview
 
-The **Resources and Tools** section provides centralized management of reusable resources:
+Use **Resources and Tools** to manage reusable resources:
 
 - **Templates**: Customize email and HTML templates for branding and user experience
 - **Images**: Centralized image storage with CDN delivery
 - **Secrets**: Secure storage for API keys, credentials, and configuration values
 - **Jobs**: Automated maintenance tasks and scheduled operations
-
-**Key capabilities**:
-
-- Consistent branding across all user communications
-- Secure credential management with encryption
-- Automated system maintenance and cleanup
-- Centralized resource sharing across applications
 
 ---
 
@@ -42,7 +35,7 @@ The **Resources and Tools** section provides centralized management of reusable 
 
 **Location**: Resources and Tools > Email Templates
 
-**Purpose**: Customize email communications sent by the Authifi system (invitations, password resets, notifications, etc.).
+Customize Authifi email communications, including invitations, password resets, and notifications.
 
 #### What You Can Do
 
@@ -177,7 +170,7 @@ This link expires in
 
 **Location**: Resources and Tools > HTML Templates
 
-**Purpose**: Customize HTML pages displayed during authentication flows (login pages, confirmation pages, error pages).
+Customize HTML pages used during authentication flows, including login, confirmation, and error pages.
 
 #### What You Can Do
 
@@ -296,7 +289,7 @@ This link expires in
 
 **Location**: Resources and Tools > Images
 
-**Purpose**: Centralized image storage and management for use in login pages, emails, and branding.
+Manage images used in login pages, emails, and branding.
 
 #### What You Can Do
 
@@ -409,7 +402,7 @@ This link expires in
 
 **Location**: Resources and Tools > Secrets
 
-**Purpose**: Secure storage for API keys, passwords, tokens, and other sensitive configuration values.
+Store API keys, passwords, tokens, and other sensitive configuration values securely.
 
 #### What You Can Do
 
@@ -548,7 +541,7 @@ const response = await fetch(apiUrl, {
 
 **Location**: Resources and Tools > Jobs
 
-**Purpose**: Schedule automated maintenance tasks, data processing, and system cleanup operations.
+Schedule automated maintenance, data processing, and cleanup tasks.
 
 #### What You Can Do
 
@@ -644,7 +637,7 @@ const response = await fetch(apiUrl, {
 
 #### Generic Job (Custom Script)
 
-**Purpose**: Execute custom JavaScript for any automated task.
+Run custom JavaScript for an automated task.
 
 **Script template**:
 
@@ -681,7 +674,7 @@ try {
 
 #### Trim Job
 
-**Purpose**: Automatic cleanup of old audit logs, event logs, notification logs.
+Clean up old audit, event, and notification logs automatically.
 
 **Configuration**:
 
@@ -699,11 +692,11 @@ Trim Ratio: 0.5 (50%)
 Result: Check 10,000 oldest logs, delete those older than 365 days (up to 50% of checked logs per run)
 ```
 
-**Use case**: Maintain database size and comply with retention policies.
+Use this job to maintain database size and apply retention policies.
 
 #### Batch Invite Users
 
-**Purpose**: Bulk invite users to groups from JavaScript array.
+Bulk invite users to groups from a JavaScript array.
 
 **Configuration**:
 
@@ -723,7 +716,7 @@ return [
 ];
 ```
 
-**Use case**: Automated onboarding based on external data source.
+Use this job to automate onboarding from an external data source.
 
 #### Job Execution History
 
@@ -1017,12 +1010,12 @@ Expiration: Never
 - **Notifications**:
     - Send success notification for critical jobs
     - Always send failure notifications
-    - Include actionable error information
+    - Include error details
     - Set appropriate recipient groups
 
 ### Example Generic Job
 
-**Purpose**: Sync users from external HR system to Authifi tenant.
+Sync users from an external HR system to an Authifi tenant.
 
 ```javascript
 const { logger, secrets, config } = context;

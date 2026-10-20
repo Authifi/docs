@@ -1,0 +1,793 @@
+"""Concurrent OAuth logins from one browser session.
+
+Two tabs on two gated pages produce two logins against one cookie. These tests
+drive the real Authlib client so its own per-state PKCE and nonce bookkeeping is
+exercised alongside ours; only the token endpoint is faked, because there is no
+issuer to talk to.
+"""
+
+from __future__ import annotations
+
+import time
+from pathlib import Path
+from unittest.mock import patch
+from urllib.parse import parse_qs, quote, urlparse
+
+import httpx
+import pytest
+from authlib.integrations.starlette_client import integration
+from starlette.testclient import TestClient
+
+from server.app import (
+    MAX_EMAIL_BYTES,
+    MAX_NAME_BYTES,
+    MAX_NEXT_PATH_BYTES,
+    MAX_PENDING_LOGINS,
+    MAX_SUBJECT_BYTES,
+    SESSION_AUTHENTICATED_AT_KEY,
+    SESSION_PENDING_LOGINS_KEY,
+    SESSION_USER_KEY,
+    create_app,
+    oauth_state_session_key,
+)
+from server.tests.support import (
+    build_config,
+    sign_out,
+    decode_session_cookie,
+    encode_session_cookie,
+    extract_cookie_value,
+    write_site,
+)
+
+SESSION_COOKIE_NAME = "authifi-session"
+# Plain http, so the session cookie is not marked Secure: these tests depend on
+# the client returning it across several requests, which is the whole point of a
+# shared browser session. Signing out has to come from this same origin.
+PUBLIC_BASE_URL = "http://testserver"
+
+
+@pytest.fixture
+def site_dir(tmp_path: Path) -> Path:
+    return write_site(tmp_path / "site")
+
+
+class RecordingTokenEndpoint:
+    """Stands in for the issuer's token endpoint.
+
+    Authlib still does the real work under test: looking up the state entry,
+    clearing exactly that one, and passing the matching PKCE verifier through.
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    async def __call__(self, **params):
+        self.calls.append(params)
+        code = params.get("code")
+        return {
+            "access_token": f"access-token-for-{code}",
+            "userinfo": {"sub": f"user-{code}", "email": f"{code}@example.com"},
+        }
+
+
+@pytest.fixture
+def token_endpoint() -> RecordingTokenEndpoint:
+    return RecordingTokenEndpoint()
+
+
+@pytest.fixture
+def client(site_dir: Path, token_endpoint: RecordingTokenEndpoint) -> TestClient:
+    app = create_app(build_config(site_dir, public_base_url=PUBLIC_BASE_URL))
+
+    async def metadata() -> dict[str, str]:
+        return {
+            "authorization_endpoint": "https://issuer.example.com/oauth2/authorize",
+            "token_endpoint": "https://issuer.example.com/oauth2/token",
+            "jwks_uri": "https://issuer.example.com/.well-known/jwks.json",
+        }
+
+    app.state.auth_client.load_server_metadata = metadata
+    app.state.auth_client.fetch_access_token = token_endpoint
+    return TestClient(app)
+
+
+def start_login(client: TestClient, next_path: str) -> str:
+    """Begin a login and return the OAuth state Authlib was handed."""
+    response = client.get(f"/_auth/login?next={next_path}", follow_redirects=False)
+
+    assert response.status_code == 302
+    return parse_qs(urlparse(response.headers["location"]).query)["state"][0]
+
+
+def current_session(client: TestClient) -> dict:
+    cookie = client.cookies.get(SESSION_COOKIE_NAME)
+    return decode_session_cookie(cookie) if cookie else {}
+
+
+def complete_login(client: TestClient, state: str, code: str):
+    return client.get(f"/_auth/callback?code={code}&state={state}", follow_redirects=False)
+
+
+# --- Two tabs, completed out of order -----------------------------------------
+
+
+def test_two_logins_keep_separate_destinations(client: TestClient) -> None:
+    guide_state = start_login(client, "/guides/sso-integration-guide/")
+    security_state = start_login(client, "/security/")
+
+    pending = current_session(client)[SESSION_PENDING_LOGINS_KEY]
+
+    assert guide_state != security_state
+    assert pending == {
+        guide_state: "/guides/sso-integration-guide/",
+        security_state: "/security/",
+    }
+
+
+def test_the_second_login_survives_the_first_completing(client: TestClient) -> None:
+    """A callback used to `session.clear()`, taking every other tab with it."""
+    guide_state = start_login(client, "/guides/sso-integration-guide/")
+    security_state = start_login(client, "/security/")
+
+    first = complete_login(client, guide_state, "code-guide")
+    assert first.headers["location"] == "/guides/sso-integration-guide/"
+
+    session = current_session(client)
+    assert list(session[SESSION_PENDING_LOGINS_KEY]) == [security_state]
+    assert oauth_state_session_key(security_state) in session
+    assert oauth_state_session_key(guide_state) not in session
+
+    second = complete_login(client, security_state, "code-security")
+    assert second.status_code == 307
+    assert second.headers["location"] == "/security/"
+
+
+def test_callbacks_completed_out_of_order_each_land_on_their_own_page(
+    client: TestClient,
+) -> None:
+    guide_state = start_login(client, "/guides/sso-integration-guide/")
+    security_state = start_login(client, "/security/")
+
+    newest_first = complete_login(client, security_state, "code-security")
+    oldest_second = complete_login(client, guide_state, "code-guide")
+
+    assert newest_first.headers["location"] == "/security/"
+    assert oldest_second.headers["location"] == "/guides/sso-integration-guide/"
+
+
+def test_each_callback_uses_its_own_pkce_verifier(
+    client: TestClient, token_endpoint: RecordingTokenEndpoint
+) -> None:
+    """Proof that Authlib consumed the right state entry, not just any entry."""
+    guide_state = start_login(client, "/guides/sso-integration-guide/")
+    security_state = start_login(client, "/security/")
+    verifiers = {
+        state: current_session(client)[oauth_state_session_key(state)]["data"]["code_verifier"]
+        for state in (guide_state, security_state)
+    }
+
+    complete_login(client, security_state, "code-security")
+    complete_login(client, guide_state, "code-guide")
+
+    used = {call["code"]: call["code_verifier"] for call in token_endpoint.calls}
+    assert used["code-security"] == verifiers[security_state]
+    assert used["code-guide"] == verifiers[guide_state]
+    assert used["code-security"] != used["code-guide"]
+
+
+def test_the_last_completed_login_owns_the_signed_in_user(client: TestClient) -> None:
+    guide_state = start_login(client, "/guides/sso-integration-guide/")
+    security_state = start_login(client, "/security/")
+
+    complete_login(client, guide_state, "code-guide")
+    complete_login(client, security_state, "code-security")
+
+    assert current_session(client)[SESSION_USER_KEY]["sub"] == "user-code-security"
+
+
+# --- Unknown, missing, and replayed state -------------------------------------
+
+
+@pytest.mark.parametrize("query", ["code=abc", "code=abc&state=", "code=abc&state=not-a-state"])
+def test_a_callback_without_a_known_state_fails_closed(client: TestClient, query: str) -> None:
+    response = client.get(f"/_auth/callback?{query}", follow_redirects=False)
+
+    assert response.status_code == 400
+    assert "user-" not in response.text
+    assert SESSION_USER_KEY not in current_session(client)
+
+
+def test_an_unknown_state_leaves_other_pending_logins_alone(client: TestClient) -> None:
+    """Otherwise anyone could invalidate a victim's in-flight login."""
+    guide_state = start_login(client, "/guides/sso-integration-guide/")
+
+    client.get("/_auth/callback?code=abc&state=forged", follow_redirects=False)
+
+    assert list(current_session(client)[SESSION_PENDING_LOGINS_KEY]) == [guide_state]
+    assert complete_login(client, guide_state, "code-guide").headers["location"] == (
+        "/guides/sso-integration-guide/"
+    )
+
+
+def test_a_state_cannot_be_replayed(client: TestClient) -> None:
+    guide_state = start_login(client, "/guides/sso-integration-guide/")
+    complete_login(client, guide_state, "code-guide")
+
+    replay = complete_login(client, guide_state, "code-guide")
+
+    assert replay.status_code == 400
+
+
+def test_a_failed_callback_does_not_take_down_other_tabs(
+    client: TestClient, token_endpoint: RecordingTokenEndpoint
+) -> None:
+    guide_state = start_login(client, "/guides/sso-integration-guide/")
+    security_state = start_login(client, "/security/")
+
+    async def issuer_omits_the_subject(**params):
+        return {"access_token": "opaque", "userinfo": {"email": "user@example.com"}}
+
+    client.app.state.auth_client.fetch_access_token = issuer_omits_the_subject
+    failed = client.get(
+        f"/_auth/callback?code=bad&state={guide_state}", follow_redirects=False
+    )
+    assert failed.status_code == 500
+    assert SESSION_USER_KEY not in current_session(client)
+
+    client.app.state.auth_client.fetch_access_token = token_endpoint
+    recovered = complete_login(client, security_state, "code-security")
+    assert recovered.headers["location"] == "/security/"
+
+
+# --- Cookie growth ------------------------------------------------------------
+
+
+def test_pending_logins_are_capped(client: TestClient) -> None:
+    """Anyone can open `/_auth/login`; the signed cookie must stay bounded."""
+    states = [start_login(client, f"/guides/guide-{index}/") for index in range(MAX_PENDING_LOGINS + 3)]
+
+    session = current_session(client)
+    pending = session[SESSION_PENDING_LOGINS_KEY]
+
+    assert len(pending) == MAX_PENDING_LOGINS
+    assert list(pending) == states[-MAX_PENDING_LOGINS:]
+
+
+def test_capping_also_drops_the_authlib_entry_for_the_evicted_login(
+    client: TestClient,
+) -> None:
+    """The PKCE verifier and nonce are the bulky half of each transaction."""
+    states = [start_login(client, f"/guides/guide-{index}/") for index in range(MAX_PENDING_LOGINS + 1)]
+
+    session = current_session(client)
+    state_keys = [key for key in session if key.startswith("_state_authifi_")]
+
+    assert oauth_state_session_key(states[0]) not in session
+    assert len(state_keys) == MAX_PENDING_LOGINS
+
+
+def test_the_evicted_login_fails_closed_rather_than_landing_anywhere(
+    client: TestClient,
+) -> None:
+    states = [start_login(client, f"/guides/guide-{index}/") for index in range(MAX_PENDING_LOGINS + 1)]
+
+    assert complete_login(client, states[0], "code-0").status_code == 400
+    assert complete_login(client, states[-1], "code-last").headers["location"] == (
+        f"/guides/guide-{MAX_PENDING_LOGINS}/"
+    )
+
+
+# Browsers keep 4096 bytes per cookie and silently drop anything larger, which
+# would take the session with it. The cap on a stored return path is what makes
+# the worst case measurable rather than caller-controlled.
+BROWSER_COOKIE_LIMIT = 4096
+
+
+def test_the_session_cookie_stays_well_under_the_browser_limit(client: TestClient) -> None:
+    for index in range(MAX_PENDING_LOGINS + 5):
+        start_login(client, f"/guides/guide-{index}/")
+
+    assert len(client.cookies[SESSION_COOKIE_NAME]) < 3000
+
+
+def test_the_worst_case_cookie_is_measured_and_fits(client: TestClient) -> None:
+    """Every pending slot filled with the longest return path allowed.
+
+    This is the whole point of the cap: the number below is an upper bound
+    rather than something a caller chooses. At the time of writing it measures
+    about 3.1KB, leaving roughly a kilobyte of headroom.
+    """
+    for index in range(MAX_PENDING_LOGINS):
+        at_cap = f"/{index}" + "a" * (MAX_NEXT_PATH_BYTES - len(f"/{index}"))
+        assert len(at_cap.encode("utf-8")) == MAX_NEXT_PATH_BYTES
+        start_login(client, at_cap)
+
+    pending = current_session(client)[SESSION_PENDING_LOGINS_KEY]
+    assert len(pending) == MAX_PENDING_LOGINS
+    assert all(len(path.encode("utf-8")) == MAX_NEXT_PATH_BYTES for path in pending.values())
+
+    measured = len(client.cookies[SESSION_COOKIE_NAME])
+    assert measured < 3500, measured
+    assert measured < BROWSER_COOKIE_LIMIT - 500, measured
+
+
+def test_a_crafted_next_path_cannot_inflate_the_cookie(client: TestClient) -> None:
+    """The attack the cap closes: without it this cookie was over 7KB."""
+    for index in range(MAX_PENDING_LOGINS):
+        start_login(client, f"/{index}" + "a" * 8192)
+
+    assert len(client.cookies[SESSION_COOKIE_NAME]) < BROWSER_COOKIE_LIMIT - 500
+
+
+def test_an_oversized_next_path_is_stored_as_the_site_root(client: TestClient) -> None:
+    state = start_login(client, "/guides/" + "a" * MAX_NEXT_PATH_BYTES)
+
+    assert current_session(client)[SESSION_PENDING_LOGINS_KEY][state] == "/"
+
+
+def test_an_oversized_next_path_lands_on_the_site_root(client: TestClient) -> None:
+    """Safely, not partially: no truncated path to redirect to."""
+    state = start_login(client, "/guides/" + "a" * MAX_NEXT_PATH_BYTES)
+
+    response = complete_login(client, state, "code-oversized")
+
+    assert response.status_code == 307
+    assert response.headers["location"] == "/"
+
+
+def test_a_tampered_pending_entry_is_re_normalised_on_the_way_out(
+    client: TestClient, site_dir: Path
+) -> None:
+    """The callback re-normalises, so a forged cookie cannot smuggle one back.
+
+    The stored path is only ever written by `normalize_next_path`, but the
+    cookie is decodable by anyone holding the session secret, so the redirect
+    target is normalised again at the point of use.
+    """
+    state = start_login(client, "/guides/sso-integration-guide/")
+    session = current_session(client)
+    session[SESSION_PENDING_LOGINS_KEY][state] = "/" + "a" * (MAX_NEXT_PATH_BYTES * 4)
+
+    tampered = TestClient(client.app, cookies={SESSION_COOKIE_NAME: encode_session_cookie(session)})
+    response = complete_login(tampered, state, "code-tampered")
+
+    assert response.status_code == 307
+    assert response.headers["location"] == "/"
+
+
+# --- Session fixation ---------------------------------------------------------
+
+
+def test_a_successful_login_discards_everything_but_pending_transactions(
+    client: TestClient,
+) -> None:
+    """Anything planted in the cookie before login must not outlive it."""
+    guide_state = start_login(client, "/guides/sso-integration-guide/")
+    security_state = start_login(client, "/security/")
+
+    complete_login(client, guide_state, "code-guide")
+
+    session = current_session(client)
+    assert set(session) == {
+        SESSION_USER_KEY,
+        SESSION_AUTHENTICATED_AT_KEY,
+        SESSION_PENDING_LOGINS_KEY,
+        oauth_state_session_key(security_state),
+    }
+
+
+def test_a_pre_existing_user_is_replaced_not_merged(client: TestClient) -> None:
+    guide_state = start_login(client, "/guides/sso-integration-guide/")
+    planted = current_session(client)
+    planted[SESSION_USER_KEY] = {"sub": "attacker", "email": "attacker@example.com"}
+    planted["souvenir"] = "should not survive"
+
+    # A separate client, so the planted cookie is the only one in the jar.
+    tampered = TestClient(client.app)
+    tampered.cookies.set(SESSION_COOKIE_NAME, encode_session_cookie(planted))
+    response = complete_login(tampered, guide_state, "code-guide")
+
+    session = decode_session_cookie(extract_cookie_value(response.headers["set-cookie"]))
+    assert session[SESSION_USER_KEY] == {
+        "sub": "user-code-guide",
+        "email": "code-guide@example.com",
+    }
+    assert "souvenir" not in session
+
+
+# --- Transactions that aged out ------------------------------------------------
+#
+# Authlib stamps each stored transaction with a one-hour expiry and sweeps the
+# expired ones the next time any callback completes. Our pending entry has no
+# such expiry, so a tab left open long enough passes the app's own state gate
+# and then finds Authlib's half already gone.
+
+
+class FrozenClock:
+    """Stands in for the `time` module inside Authlib's state storage."""
+
+    def __init__(self, value: float) -> None:
+        self.value = value
+
+    def time(self) -> float:
+        return self.value
+
+
+def start_stale_login(client: TestClient, next_path: str, age_seconds: float = 3601) -> str:
+    """Start a login whose stored transaction is already past its expiry."""
+    with patch.object(integration, "time", FrozenClock(time.time() - age_seconds)):
+        return start_login(client, next_path)
+
+
+def test_a_transaction_that_aged_out_is_refused_the_same_way_as_a_forged_one(
+    client: TestClient, token_endpoint: RecordingTokenEndpoint
+) -> None:
+    stale_state = start_stale_login(client, "/guides/sso-integration-guide/")
+    fresh_state = start_login(client, "/security/")
+
+    # Completing any callback is what sweeps expired transactions away.
+    complete_login(client, fresh_state, "code-security")
+    expired = complete_login(client, stale_state, "code-guide")
+    forged = client.get("/_auth/callback?code=abc&state=forged", follow_redirects=False)
+
+    assert expired.status_code == 400
+    assert expired.text == forged.text
+    assert [call["code"] for call in token_endpoint.calls] == ["code-security"]
+
+
+def test_an_aged_out_transaction_exchanges_nothing_and_leaks_nothing(
+    client: TestClient, token_endpoint: RecordingTokenEndpoint
+) -> None:
+    stale_state = start_stale_login(client, "/guides/sso-integration-guide/")
+    fresh_state = start_login(client, "/security/")
+    complete_login(client, fresh_state, "code-security")
+    token_endpoint.calls.clear()
+
+    response = complete_login(client, stale_state, "code-guide")
+
+    assert token_endpoint.calls == []
+    assert stale_state not in response.text
+    assert "code-guide" not in response.text
+    assert "state" not in response.text.lower()
+
+
+def test_an_aged_out_transaction_does_not_take_a_valid_tab_with_it(
+    client: TestClient,
+) -> None:
+    """The whole point: one dead tab must not cost the user a live one."""
+    stale_state = start_stale_login(client, "/guides/sso-integration-guide/")
+    sweeping_state = start_login(client, "/security/")
+    still_valid_state = start_login(client, "/authorization/admin-roles/")
+
+    complete_login(client, sweeping_state, "code-security")
+    assert complete_login(client, stale_state, "code-guide").status_code == 400
+
+    survivor = complete_login(client, still_valid_state, "code-admin")
+    assert survivor.status_code == 307
+    assert survivor.headers["location"] == "/authorization/admin-roles/"
+
+
+def test_an_aged_out_transaction_leaves_no_pending_entry_behind(client: TestClient) -> None:
+    stale_state = start_stale_login(client, "/guides/sso-integration-guide/")
+    fresh_state = start_login(client, "/security/")
+    complete_login(client, fresh_state, "code-security")
+
+    complete_login(client, stale_state, "code-guide")
+
+    session = current_session(client)
+    assert stale_state not in session.get(SESSION_PENDING_LOGINS_KEY, {})
+    assert oauth_state_session_key(stale_state) not in session
+
+
+# --- Explicit logout is a clean slate -----------------------------------------
+
+
+def test_logout_discards_pending_logins_in_other_tabs(client: TestClient) -> None:
+    """Documented in operations/aws-oidc-hosting.md and CONTRIBUTING.md.
+
+    Signing out has to leave nothing behind, in-flight transactions included,
+    so a half-finished sign-in in another tab cannot be completed afterwards.
+    """
+    signed_in_state = start_login(client, "/security/")
+    complete_login(client, signed_in_state, "code-security")
+    other_tab_state = start_login(client, "/guides/sso-integration-guide/")
+
+    sign_out(client, public_base_url=PUBLIC_BASE_URL)
+
+    session = current_session(client)
+    assert session == {}
+    assert oauth_state_session_key(other_tab_state) not in session
+
+
+def test_a_tab_left_mid_login_across_a_logout_fails_safely(client: TestClient) -> None:
+    signed_in_state = start_login(client, "/security/")
+    complete_login(client, signed_in_state, "code-security")
+    other_tab_state = start_login(client, "/guides/sso-integration-guide/")
+
+    sign_out(client, public_base_url=PUBLIC_BASE_URL)
+    stranded = complete_login(client, other_tab_state, "code-guide")
+
+    assert stranded.status_code == 400
+    assert SESSION_USER_KEY not in current_session(client)
+
+
+# --- The issuer refuses the authorization --------------------------------------
+#
+# `?error=access_denied` is a normal outcome: the user clicked "no" at the login
+# screen. Authlib raises OAuthError from authorize_access_token before it looks
+# at the state or contacts the token endpoint, so this has to be handled as a
+# failed sign-in rather than escaping as an unhandled exception.
+
+PROTOCOL_ERRORS = ("access_denied", "invalid_scope", "server_error", "temporarily_unavailable")
+
+
+def refuse_login(
+    client: TestClient,
+    state: str,
+    error: str = "access_denied",
+    description: str | None = "user-visible-issuer-text",
+):
+    query = f"error={error}&state={state}"
+    if description is not None:
+        query += f"&error_description={quote(description)}"
+    return client.get(f"/_auth/callback?{query}", follow_redirects=False)
+
+
+@pytest.mark.parametrize("error", PROTOCOL_ERRORS)
+def test_an_issuer_protocol_error_is_a_failed_sign_in_not_a_server_fault(
+    client: TestClient, error: str
+) -> None:
+    state = start_login(client, "/security/")
+
+    response = refuse_login(client, state, error=error)
+
+    assert response.status_code == 400
+
+
+@pytest.mark.parametrize("error", PROTOCOL_ERRORS)
+def test_an_issuer_protocol_error_never_reaches_the_token_endpoint(
+    client: TestClient, token_endpoint: RecordingTokenEndpoint, error: str
+) -> None:
+    """There is no code to exchange, and asking anyway would be a free request."""
+    state = start_login(client, "/security/")
+
+    refuse_login(client, state, error=error)
+
+    assert token_endpoint.calls == []
+
+
+def test_a_refused_sign_in_echoes_nothing_back(client: TestClient) -> None:
+    state = start_login(client, "/security/")
+
+    response = refuse_login(
+        client, state, error="access_denied", description="tenant policy 12345 rejected bob"
+    )
+
+    body = response.text
+    assert state not in body
+    assert "access_denied" not in body
+    assert "12345" not in body and "bob" not in body
+    assert "token" not in body.lower()
+
+
+def test_a_refused_sign_in_is_private_and_uncacheable(client: TestClient) -> None:
+    state = start_login(client, "/security/")
+
+    response = refuse_login(client, state)
+
+    assert response.headers["cache-control"] == "private, no-store"
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["x-frame-options"] == "DENY"
+    assert response.headers["referrer-policy"] == "strict-origin-when-cross-origin"
+    assert response.headers["vary"] == "Cookie"
+
+
+def test_a_refused_sign_in_consumes_only_its_own_transaction(client: TestClient) -> None:
+    refused_state = start_login(client, "/security/")
+    other_state = start_login(client, "/guides/sso-integration-guide/")
+
+    refuse_login(client, refused_state)
+
+    session = current_session(client)
+    assert list(session[SESSION_PENDING_LOGINS_KEY]) == [other_state]
+    assert oauth_state_session_key(refused_state) not in session
+    assert oauth_state_session_key(other_state) in session
+
+
+def test_another_tab_still_completes_after_one_is_refused(client: TestClient) -> None:
+    refused_state = start_login(client, "/security/")
+    other_state = start_login(client, "/guides/sso-integration-guide/")
+
+    refuse_login(client, refused_state)
+    survivor = complete_login(client, other_state, "code-guide")
+
+    assert survivor.status_code == 307
+    assert survivor.headers["location"] == "/guides/sso-integration-guide/"
+
+
+def test_a_refused_sign_in_does_not_sign_the_user_out(client: TestClient) -> None:
+    """Refusing a *new* authorization says nothing about an existing session.
+
+    Ending it here would be a denial of service dressed up as caution.
+    """
+    signed_in_state = start_login(client, "/security/")
+    complete_login(client, signed_in_state, "code-security")
+    second_tab_state = start_login(client, "/guides/sso-integration-guide/")
+
+    refuse_login(client, second_tab_state)
+
+    assert current_session(client)[SESSION_USER_KEY]["sub"] == "user-code-security"
+    assert client.get("/security/", follow_redirects=False).status_code == 200
+
+
+def test_a_refused_sign_in_cannot_be_replayed(client: TestClient) -> None:
+    state = start_login(client, "/security/")
+    refuse_login(client, state)
+
+    assert complete_login(client, state, "code-security").status_code == 400
+
+
+# --- What must stay indistinguishable -----------------------------------------
+
+
+def test_a_protocol_error_on_an_unknown_state_looks_like_any_forged_callback(
+    client: TestClient,
+) -> None:
+    """The state gate runs first, so Authlib is never reached for a state we
+    did not issue -- with or without an error parameter attached."""
+    start_login(client, "/security/")
+
+    with_error = refuse_login(client, "forged-state")
+    without_error = client.get(
+        "/_auth/callback?code=abc&state=forged-state", follow_redirects=False
+    )
+
+    assert with_error.status_code == without_error.status_code == 400
+    assert with_error.text == without_error.text
+
+
+def test_forged_and_aged_out_states_stay_indistinguishable(client: TestClient) -> None:
+    stale_state = start_stale_login(client, "/guides/sso-integration-guide/")
+    sweeping_state = start_login(client, "/security/")
+    complete_login(client, sweeping_state, "code-security")
+
+    aged_out = complete_login(client, stale_state, "code-guide")
+    forged = client.get("/_auth/callback?code=abc&state=forged", follow_redirects=False)
+
+    assert aged_out.status_code == forged.status_code
+    assert aged_out.text == forged.text
+
+
+# --- What must NOT be swallowed -----------------------------------------------
+
+
+def test_an_unreachable_issuer_is_still_a_server_fault(
+    site_dir: Path, token_endpoint: RecordingTokenEndpoint
+) -> None:
+    """Only Authlib's own protocol errors mean "the sign-in failed".
+
+    A connection failure or a bug is not a user-facing authentication outcome
+    and must not be reported as one.
+    """
+    app = create_app(build_config(site_dir, public_base_url=PUBLIC_BASE_URL))
+
+    async def metadata() -> dict[str, str]:
+        return {
+            "authorization_endpoint": "https://issuer.example.com/oauth2/authorize",
+            "token_endpoint": "https://issuer.example.com/oauth2/token",
+            "jwks_uri": "https://issuer.example.com/.well-known/jwks.json",
+        }
+
+    async def unreachable(**params):
+        raise httpx.ConnectError("issuer is down")
+
+    app.state.auth_client.load_server_metadata = metadata
+    app.state.auth_client.fetch_access_token = unreachable
+    failing = TestClient(app, raise_server_exceptions=False)
+
+    state = start_login(failing, "/security/")
+    response = complete_login(failing, state, "code-security")
+
+    assert response.status_code == 500
+
+
+# --- The worst cookie this design can produce ---------------------------------
+#
+# The measurement that justifies every cap: the largest session the server will
+# ever sign is one login just completed with all three claims at their ceiling,
+# while the remaining tabs still hold pending logins at the return-path cap and
+# Authlib's own per-state verifier and nonce. If that fits under 4096 bytes with
+# room to spare, no caller can construct a cookie the browser will drop.
+
+
+def maxed_claims() -> dict[str, str]:
+    def sized(prefix: str, size: int) -> str:
+        value = prefix + "a" * (size - len(prefix))
+        assert len(value.encode("utf-8")) == size
+        return value
+
+    return {
+        "sub": sized("sub-", MAX_SUBJECT_BYTES),
+        "email": sized("email-", MAX_EMAIL_BYTES),
+        "name": sized("name-", MAX_NAME_BYTES),
+    }
+
+
+def test_the_worst_case_cookie_is_measured_and_fits_with_maximal_claims(
+    site_dir: Path, token_endpoint: RecordingTokenEndpoint
+) -> None:
+    """Every cap at once, measured on the header the browser actually receives.
+
+    `Set-Cookie` is what has the 4096-byte budget, not the value: the name,
+    `Path`, `SameSite`, `HttpOnly` and `Max-Age` all come out of it. At the
+    time of writing it measures 3282 bytes, so there is a little over 800 to
+    spare.
+    """
+    claims = maxed_claims()
+
+    async def maximal_token(**params):
+        return {"access_token": "opaque", "userinfo": claims}
+
+    app = create_app(build_config(site_dir, public_base_url=PUBLIC_BASE_URL))
+
+    async def metadata() -> dict[str, str]:
+        return {
+            "authorization_endpoint": "https://issuer.example.com/oauth2/authorize",
+            "token_endpoint": "https://issuer.example.com/oauth2/token",
+            "jwks_uri": "https://issuer.example.com/.well-known/jwks.json",
+        }
+
+    app.state.auth_client.load_server_metadata = metadata
+    app.state.auth_client.fetch_access_token = maximal_token
+    client = TestClient(app)
+
+    states = []
+    for index in range(MAX_PENDING_LOGINS):
+        at_cap = f"/{index}" + "a" * (MAX_NEXT_PATH_BYTES - len(f"/{index}"))
+        states.append(start_login(client, at_cap))
+
+    response = complete_login(client, states[0], "code-maximal")
+    assert response.status_code == 307
+
+    session = decode_session_cookie(extract_cookie_value(response.headers["set-cookie"]))
+    assert session[SESSION_USER_KEY] == claims
+    assert len(session[SESSION_PENDING_LOGINS_KEY]) == MAX_PENDING_LOGINS - 1
+
+    measured = len(response.headers["set-cookie"])
+    assert measured < BROWSER_COOKIE_LIMIT - 500, measured
+
+
+def test_an_issuer_cannot_inflate_the_cookie_past_the_browser_limit(
+    site_dir: Path,
+) -> None:
+    """The claims are the issuer's to choose, so the ceiling is not negotiable.
+
+    Without the per-claim bounds this cookie was over 20KB, which a browser
+    discards silently: the user would sign in successfully and still be
+    anonymous on the next request.
+    """
+    huge = {"sub": "s" * 9000, "email": "e" * 9000, "name": "n" * 9000}
+
+    async def enormous_token(**params):
+        return {"access_token": "opaque", "userinfo": {**huge, "sub": "user-123"}}
+
+    app = create_app(build_config(site_dir, public_base_url=PUBLIC_BASE_URL))
+
+    async def metadata() -> dict[str, str]:
+        return {
+            "authorization_endpoint": "https://issuer.example.com/oauth2/authorize",
+            "token_endpoint": "https://issuer.example.com/oauth2/token",
+            "jwks_uri": "https://issuer.example.com/.well-known/jwks.json",
+        }
+
+    app.state.auth_client.load_server_metadata = metadata
+    app.state.auth_client.fetch_access_token = enormous_token
+    client = TestClient(app)
+
+    state = start_login(client, "/security/")
+    response = complete_login(client, state, "code-enormous")
+
+    assert response.status_code == 307
+    session = decode_session_cookie(extract_cookie_value(response.headers["set-cookie"]))
+    assert session[SESSION_USER_KEY] == {"sub": "user-123"}
+    assert len(response.headers["set-cookie"]) < BROWSER_COOKIE_LIMIT - 500

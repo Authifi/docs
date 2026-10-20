@@ -6,8 +6,6 @@ title: OIDC Request Scopes
 
 # Request Scopes
 
-This document describes each scope listed in the OpenID Provider discovery document and shows how to request it in common OAuth2/OIDC flows.
-
 ## How scopes work in this server
 
 Scopes are requested in the authorization request using the OAuth2/OIDC scope parameter. The server uses scopes to decide which claims can appear in the ID token and/or the UserInfo response. The presence of a scope does not guarantee that a claim will appear in the ID token. Some claims may only be available via the UserInfo endpoint depending on server configuration and token size limits.
@@ -74,6 +72,26 @@ GET /_api/auth/{tenantId}/authorize?
 Set it to `true` when an app should mint least-privilege tokens (for example, only `read` even though the user also has `write`). Leave it `false` when clients should not have to enumerate every API permission on each request.
 
 Configure it via the client API (`config.featureToggles.requireAuthorizationScopesInRequest`) or in the Auth admin UI under the client's feature toggles (**Require Resource Indicator scopes**).
+
+### Which API a client may request
+
+For a **custom** resource server, the client must be associated with that API (Manage APIs → clients on the resource server) before the issuer will mint a user or client-credentials access token whose `aud` matches that identifier. An unassigned `resource` value is rejected (`invalid_target`).
+
+The tenant **default** management audience (`https://{issuer}/_api/auth/{tenantId}`) is the exception: if the request omits `resource`, or sends that default identifier, the issuer does **not** require a client–API association unless `requireResourceIndicatorInRequest` is on.
+
+That association is **all-or-nothing per API**. It does not choose _which_ resource scopes a **user** access token receives. Those come from the signed-in user's RBAC on that resource server (then optionally narrowed by `requireAuthorizationScopesInRequest`).
+
+**Client credential roles and permissions** (Access Roles with `isClientRole`) are what the **client credentials** grant resolves. They are not intersected into a user access token: enabling them on an app does not cap what a logged-in user can do through that app.
+
+The flag is not an exclusion, though. Neither group assignment (`TenantGroupController.assignAccessRoleToGroup`) nor user-scope resolution (`UserRepository.resourceServerPermissions` → `getScopes`) filters on `isClientRole`, so a client-credential role that is also assigned to a user group contributes its permissions to that group's members' user tokens for the same API. Enabling the toggle in the admin UI clears the role's group assignments, but the API accepts them, so keep M2M roles out of user groups if they must stay machine-only.
+
+A client-credential role may be created on an API with no Application (`clientId` null) so you can define M2M permissions before the client exists. `getClientScopes` includes that role once `clientId` is set. In the admin UI: API Roles → optional Application picker, or the client’s **Link existing role** action.
+
+When `requireAuthorizationScopesInRequest` is **on**, client-credentials scope resolution calls `getClientScopes` with the target resource server. That filters both the client's AccessRoles and the permissions linked to those roles by `resourceServerId`. A permission from another API that was linked onto a role for this API is not issued. The client–API association still gates whether a custom-API audience can be requested at all. When the audience is the tenant default management API, that list also includes the client's generated placeholder resource server, because roles created through `/roles` are stored there.
+
+When the toggle is **off**, `getClientScopes` unions every client-credential role attached to the client and does not re-check the requested `resource`. Removing a client–API association then stops the client from obtaining a token audienced to that custom API, but it does not strip the role's permission names from a client-credentials token issued for the default management audience. To revoke M2M permissions in that mode, clear `clientId` on the role (or delete the role), rather than unlinking the API.
+
+If two applications must call the same physical API but with different privilege for the same user, use separate resource servers (distinct identifiers) and authorize on `aud`, or enforce `azp` (authorized party / client) in the API. Do not expect client-credential roles to create that split. See [Scope resolution and token issuance](https://github.com/Authifi/idbroker/blob/main/packages/auth/docs/oidc/scope-resolution-and-token-issuance.md#user-tokens-vs-client-credential-roles).
 
 ## Supported scopes (scopes_supported)
 
@@ -153,6 +171,37 @@ grant_type=refresh_token
 &refresh_token=REFRESH_TOKEN
 &client_id=YOUR_CLIENT_ID
 ```
+
+#### Targeting several APIs with one grant (RFC 8707)
+
+A single grant can cover more than one API. Repeat the `resource` parameter on the **authorize** request, once per API identifier:
+
+```http
+GET https://{host}/_api/auth/{tenantId}/authorize
+  ?client_id=YOUR_CLIENT_ID
+  &response_type=code
+  &scope=openid%20offline_access
+  &resource=https%3A%2F%2Fapi.example%2Fa
+  &resource=https%3A%2F%2Fapi.example%2Fb
+```
+
+Then send exactly **one** `resource` on every token and refresh request; an access token has a single audience, so a request naming several is rejected. Each token carries that API's `aud` and only the scopes the user holds on it:
+
+```http
+POST https://{host}/_api/auth/{tenantId}/oidc/token
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=refresh_token
+&refresh_token=REFRESH_TOKEN
+&client_id=YOUR_CLIENT_ID
+&resource=https%3A%2F%2Fapi.example%2Fb
+```
+
+Notes:
+
+- When the grant covers several APIs, always send `resource`; do not rely on defaulting. If you omit it the issuer falls back to the tenant management audience (or, with `enableLegacyApplicationCompatibility` on, the client's first non-placeholder API). You get a token for that audience if it happens to be part of the grant, and otherwise `invalid_target` listing the granted identifiers. A grant covering a single API can omit `resource` when the configured default selects that API; otherwise send it explicitly.
+- A refresh token cannot reach an API that was not named on the original authorize request, even when the client is associated with it. Requesting one returns `invalid_target`; start a new authorization instead.
+- The APIs must all be associated with the client before the authorize request (see [Which API a client may request](#which-api-a-client-may-request)).
 
 ### 4 Device Authorization Flow (for CLIs and TVs)
 

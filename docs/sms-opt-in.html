@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SMS Notifications — Authifi</title>
+  <meta name="description" content="Opt in to Authifi account and security SMS alerts.">
+  <link rel="icon" href="assets/authifi-logo.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=Source+Serif+4:opsz,wght@8..60,500;8..60,600&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --ink: #0a1628;
+      --ink-soft: #243447;
+      --muted: #5a6b7d;
+      --paper: #f7f9fc;
+      --line: #d5dee8;
+      --accent: #0f6e6a;
+      --accent-deep: #0a5250;
+      --accent-soft: #d8f0ee;
+      --focus: #1a6cff;
+      --danger: #9b1c1c;
+      --radius: 10px;
+      --font-sans: "Instrument Sans", system-ui, sans-serif;
+      --font-display: "Source Serif 4", Georgia, serif;
+      --shadow: 0 18px 50px rgba(10, 22, 40, 0.12);
+      accent-color: var(--accent);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      color-scheme: light;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: var(--font-sans);
+      font-size: 1rem;
+      line-height: 1.55;
+      color: var(--ink);
+      background:
+        radial-gradient(1200px 700px at 12% -10%, rgba(15, 110, 106, 0.18), transparent 55%),
+        radial-gradient(900px 600px at 100% 0%, rgba(26, 108, 255, 0.12), transparent 50%),
+        linear-gradient(180deg, #eef3f8 0%, var(--paper) 42%, #e8eef5 100%);
+    }
+
+    .page {
+      width: min(560px, calc(100% - 2rem));
+      margin: 0 auto;
+      padding: clamp(2.5rem, 8vh, 4.5rem) 0 3rem;
+      animation: rise 700ms cubic-bezier(0.22, 1, 0.36, 1) both;
+    }
+
+    @keyframes rise {
+      from {
+        opacity: 0;
+        transform: translateY(14px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      margin-bottom: 2rem;
+      text-decoration: none;
+      color: inherit;
+    }
+
+    .brand img {
+      width: 44px;
+      height: 44px;
+      display: block;
+    }
+
+    .brand span {
+      font-family: var(--font-display);
+      font-size: 1.65rem;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+      line-height: 1;
+    }
+
+    h1 {
+      margin: 0 0 0.65rem;
+      font-family: var(--font-display);
+      font-size: clamp(2rem, 5vw, 2.55rem);
+      font-weight: 600;
+      letter-spacing: -0.03em;
+      line-height: 1.15;
+      color: var(--ink);
+    }
+
+    .lede {
+      margin: 0 0 1.75rem;
+      color: var(--ink-soft);
+      font-size: 1.05rem;
+      max-width: 36ch;
+    }
+
+    form {
+      display: grid;
+      gap: 1.25rem;
+      padding: 1.5rem 0 0;
+      animation: rise 900ms 80ms cubic-bezier(0.22, 1, 0.36, 1) both;
+    }
+
+    .field {
+      display: grid;
+      gap: 0.4rem;
+    }
+
+    label {
+      font-weight: 600;
+      font-size: 0.95rem;
+      color: var(--ink);
+    }
+
+    .hint {
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+
+    input[type="tel"] {
+      width: 100%;
+      min-height: 48px;
+      padding: 0.75rem 0.9rem;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: #fff;
+      color: var(--ink);
+      font: inherit;
+      font-size: 1rem;
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
+      transition: border-color 160ms ease, box-shadow 160ms ease;
+    }
+
+    input[type="tel"]:hover {
+      border-color: #b7c5d4;
+    }
+
+    input[type="tel"]:focus-visible {
+      outline: 3px solid color-mix(in srgb, var(--focus) 55%, white);
+      outline-offset: 2px;
+      border-color: var(--focus);
+    }
+
+    input[type="tel"]:user-invalid {
+      border-color: var(--danger);
+    }
+
+    .consent {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 0.75rem;
+      align-items: start;
+      padding: 1rem;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: rgba(255, 255, 255, 0.72);
+    }
+
+    .consent input[type="checkbox"] {
+      width: 1.25rem;
+      height: 1.25rem;
+      margin-top: 0.15rem;
+      flex-shrink: 0;
+      cursor: pointer;
+    }
+
+    .consent label {
+      font-weight: 500;
+      font-size: 0.95rem;
+      line-height: 1.5;
+      cursor: pointer;
+    }
+
+    .messages {
+      margin: 0;
+      padding: 1rem 1.1rem;
+      border-left: 3px solid var(--accent);
+      background: color-mix(in srgb, var(--accent-soft) 70%, white);
+      border-radius: 0 var(--radius) var(--radius) 0;
+      color: var(--ink-soft);
+      font-size: 0.95rem;
+    }
+
+    .messages strong {
+      color: var(--ink);
+      font-weight: 600;
+    }
+
+    .disclosures {
+      display: grid;
+      gap: 0.65rem;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+
+    .disclosures a {
+      color: var(--accent-deep);
+      font-weight: 600;
+      text-underline-offset: 0.15em;
+    }
+
+    .disclosures a:hover {
+      color: var(--accent);
+    }
+
+    .disclosures a:focus-visible {
+      outline: 3px solid color-mix(in srgb, var(--focus) 55%, white);
+      outline-offset: 2px;
+      border-radius: 2px;
+    }
+
+    button[type="submit"] {
+      min-height: 52px;
+      margin-top: 0.25rem;
+      padding: 0.85rem 1.25rem;
+      border: 0;
+      border-radius: 999px;
+      background: linear-gradient(180deg, #14807b 0%, var(--accent) 100%);
+      color: #fff;
+      font: inherit;
+      font-size: 1.05rem;
+      font-weight: 700;
+      letter-spacing: -0.01em;
+      cursor: pointer;
+      box-shadow: 0 10px 24px rgba(15, 110, 106, 0.28);
+      transition: transform 140ms ease, box-shadow 140ms ease, filter 140ms ease;
+    }
+
+    button[type="submit"]:hover {
+      filter: brightness(1.05);
+      box-shadow: 0 14px 28px rgba(15, 110, 106, 0.34);
+      transform: translateY(-1px);
+    }
+
+    button[type="submit"]:active {
+      transform: translateY(0);
+    }
+
+    button[type="submit"]:focus-visible {
+      outline: 3px solid color-mix(in srgb, var(--focus) 55%, white);
+      outline-offset: 3px;
+    }
+
+    .status {
+      min-height: 1.4em;
+      margin: 0;
+      color: var(--accent-deep);
+      font-weight: 600;
+      font-size: 0.95rem;
+    }
+
+    .status[hidden] {
+      display: none;
+    }
+
+    .footer-note {
+      margin-top: 2rem;
+      color: var(--muted);
+      font-size: 0.85rem;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .page,
+      form,
+      button[type="submit"] {
+        animation: none;
+        transition: none;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <a class="brand" href="https://www.authifi.com/">
+      <img src="assets/authifi-logo.png" width="44" height="44" alt="">
+      <span>Authifi</span>
+    </a>
+
+    <h1>SMS notifications</h1>
+    <p class="lede">
+      Get Authifi account and security alerts by text message at the number you provide.
+    </p>
+
+    <form id="sms-opt-in" action="#" method="post" novalidate>
+      <div class="field">
+        <label for="phone">Mobile phone number</label>
+        <input
+          id="phone"
+          name="phone"
+          type="tel"
+          autocomplete="tel"
+          inputmode="tel"
+          enterkeyhint="done"
+          placeholder="+1 (555) 555-0100"
+          required
+          aria-describedby="phone-hint"
+        >
+        <span id="phone-hint" class="hint">Include country code for non‑US numbers.</span>
+      </div>
+
+      <p class="messages" id="message-types">
+        <strong>Message types:</strong>
+        Authifi sends account and security alerts only — for example login notifications,
+        multi-factor authentication (MFA) codes, and access or security notices.
+        Authifi does not send marketing texts.
+      </p>
+
+      <div class="consent">
+        <input
+          id="sms-consent"
+          name="sms_consent"
+          type="checkbox"
+          value="yes"
+          required
+          aria-describedby="message-types disclosures"
+        >
+        <label for="sms-consent">
+          I agree to receive Authifi account and security SMS messages at the phone number
+          provided. Consent is not a condition of purchasing any goods or services.
+        </label>
+      </div>
+
+      <ul class="disclosures" id="disclosures">
+        <li><strong>Frequency:</strong> Message frequency varies. You may receive a few messages per month depending on account activity.</li>
+        <li>Msg &amp; data rates may apply.</li>
+        <li>Reply <strong>STOP</strong> to cancel. Reply <strong>HELP</strong> for help.</li>
+        <li>
+          View our
+          <a href="/terms-of-service/">Terms of Service</a>
+          and
+          <a href="/privacy-policy/">Privacy Policy</a>.
+        </li>
+      </ul>
+
+      <button type="submit">Yes, sign me up!</button>
+      <p id="form-status" class="status" role="status" aria-live="polite" hidden></p>
+    </form>
+
+    <p class="footer-note">Authifi · Identity and access management</p>
+  </main>
+
+  <script>
+    (function () {
+      const form = document.getElementById("sms-opt-in");
+      const status = document.getElementById("form-status");
+      const consent = document.getElementById("sms-consent");
+
+      // Guardrail for provider review: consent must never start checked.
+      consent.checked = false;
+      consent.removeAttribute("checked");
+
+      form.addEventListener("submit", function (event) {
+        event.preventDefault();
+        if (!form.checkValidity()) {
+          form.reportValidity();
+          return;
+        }
+        status.hidden = false;
+        status.textContent = "Thanks — your preference has been recorded.";
+      });
+    })();
+  </script>
+</body>
+</html>

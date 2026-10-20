@@ -4,12 +4,12 @@
 
 Most OIDC client libraries (e.g., `oidc-client-ts`, `angular-auth-oidc-client`) clear local token data before redirecting to the identity provider's logout endpoint. This means the user's frontend session is already destroyed by the time the server processes the logout.
 
-To support logout confirmation in your application, you have two options:
+Choose one of two logout confirmation options:
 
 1. **Frontend confirmation** — Show your own dialog before calling `signoutRedirect()` (or equivalent). No server-side setup needed.
 2. **Authifi's `/logout/confirm` endpoint** — Override your client library's default logout to redirect to Authifi's pre-logout confirmation page instead. This preserves the user's session until they confirm.
 
-This guide covers **Option 2** — using Authifi's server-side confirmation endpoint.
+This guide covers **Option 2**, Authifi's server-side confirmation endpoint.
 
 !!! tip "Option 1: Frontend confirmation"
     If you prefer to handle confirmation entirely in your app, simply show a dialog before calling your OIDC library's logout method. If the user confirms, call `signoutRedirect()` (or equivalent). If they cancel, do nothing. No server-side setup is required.
@@ -51,7 +51,7 @@ Configured per-client in the Admin UI under **Login/Logout** settings:
 
 ## Integration Pattern
 
-The same pattern applies regardless of OIDC library.
+Use this flow with any OIDC library.
 
 !!! warning "Important"
     **Do not** call your library's logout method (`signoutRedirect()`, `logoff()`, `signOut()`, etc.) when using this flow. These methods clear local tokens before redirecting, which defeats the purpose of the confirmation.
@@ -74,7 +74,7 @@ function logout() {
 
 ### Step 2: Handle Post-Logout Cleanup
 
-On app initialization, check for the `state` parameter and clean up local session data:
+At app initialization, check for the `state` parameter and clean up local session data:
 
 ```typescript
 function handlePostLogoutCleanup(): boolean {
@@ -119,7 +119,7 @@ If the user clicks "No, stay signed in", the browser navigates back to the appli
 
 ## Skipping the Confirmation
 
-To use the `/logout/confirm` routing without showing the prompt (e.g., during an idle timeout), either:
+To use `/logout/confirm` without showing the prompt, such as during an idle timeout:
 
 - Pass `show_prompt=false` as a query parameter:
 

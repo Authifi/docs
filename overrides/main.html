@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+
+{#
+  Public legal pages are served to anonymous visitors. MkDocs Material's stock
+  `hide: navigation` metadata only marks the primary sidebar with the `hidden`
+  attribute, so every protected guide, authorization, and security title and
+  URL is still present in the delivered HTML. Re-implement the `site_nav` block
+  so the navigation markup is omitted entirely for those pages while the table
+  of contents, layout, and styles stay exactly as Material renders them.
+#}
+{% block site_nav %}
+  {% set hide_navigation = page.meta and page.meta.hide and "navigation" in page.meta.hide %}
+  {% if nav and not hide_navigation %}
+    <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation">
+      <div class="md-sidebar__scrollwrap">
+        <div class="md-sidebar__inner">
+          {% include "partials/nav.html" %}
+        </div>
+      </div>
+    </div>
+  {% endif %}
+  {% if "toc.integrate" not in features %}
+    {% set hide_toc = "hidden" if page.meta and page.meta.hide and "toc" in page.meta.hide %}
+    <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" {{ hide_toc }}>
+      <div class="md-sidebar__scrollwrap">
+        <div class="md-sidebar__inner">
+          {% include "partials/toc.html" %}
+        </div>
+      </div>
+    </div>
+  {% endif %}
+{% endblock %}
