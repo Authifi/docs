@@ -67,7 +67,7 @@ In **SSO Integration → App Dashboard**, create the appropriate client describe
 - S256 PKCE for public browser clients; and
 - only the identity providers and user groups that should access the application.
 
-If the application calls a protected API, also create or select its resource server identifier. Send Authifi's `resource=<RESOURCE_SERVER_IDENTIFIER>` parameter on both the authorization request and token request. Enforce the resulting permission values from the access token's space-separated `scope` claim.
+If the application calls a protected API, also create or select its resource server identifier and associate the client with that API under **Manage APIs → clients**. Identify the API permission scopes that the application needs. Send Authifi's `resource=<RESOURCE_SERVER_IDENTIFIER>` parameter on both the authorization request and token request. When the client's **Require Resource Indicator scopes** toggle is enabled, include the required API permission scopes in the authorization request's `scope` parameter alongside `openid profile email`; adding them only during the token exchange is too late. Enforce the resulting permission values from the access token's space-separated `scope` claim.
 
 See [SSO Integration](sso-integration-guide.md) for client, provider, group, role, and permission configuration.
 
@@ -102,7 +102,7 @@ Reuse a VPC when it already provides:
 
 - DNS resolution and DNS hostnames;
 - two public subnets in different Availability Zones for the ALB;
-- a private application subnet for EC2;
+- a private application subnet for EC2 in an Availability Zone enabled on the ALB;
 - a route from each public subnet to an internet gateway; and
 - outbound DNS and HTTPS from the private subnet.
 
@@ -110,7 +110,7 @@ If those resources do not exist, create them:
 
 1. Create a VPC, for example `10.0.0.0/16`, with DNS resolution and DNS hostnames enabled.
 2. Create two public subnets in different Availability Zones, for example `10.0.0.0/24` and `10.0.1.0/24`.
-3. Create a private application subnet, for example `10.0.10.0/24`.
+3. Create a private application subnet in the same Availability Zone as one of the public ALB subnets, for example `10.0.10.0/24`.
 4. Attach an internet gateway to the VPC.
 5. Create a public route table with `0.0.0.0/0` targeting the internet gateway, and associate both public subnets with it.
 6. Allocate an Elastic IP and create a NAT gateway in one public subnet.
@@ -293,18 +293,21 @@ set -euo pipefail
 release_id="${1:?release ID required}"
 runtime_parameter="${2:?runtime parameter required}"
 app_port="${3:-8000}"
+aws_region="${4:?AWS Region required}"
 app_name="minimal-web-app"
 source_dir="$(cd "$(dirname "$0")" && pwd)"
 app_root="/opt/${app_name}"
 release_dir="${app_root}/releases/${release_id}"
 current="${app_root}/current"
-previous="$(readlink -f "$current" 2>/dev/null || true)"
+env_file="/etc/${app_name}/runtime.env"
+lock_file="${app_root}/deploy.lock"
 env_tmp="$(mktemp)"
+env_backup="$(mktemp)"
 link_tmp="${app_root}/.current-${release_id}"
 staging=""
 
 cleanup() {
-  rm -f "$env_tmp" "$link_tmp"
+  rm -f "$env_tmp" "$env_backup" "$link_tmp"
   if [[ -n "$staging" ]]; then
     rm -rf "$staging"
   fi
@@ -314,6 +317,19 @@ trap cleanup EXIT
 case "$release_id" in
   (*[!A-Za-z0-9._-]*|'') echo "invalid release ID" >&2; exit 2 ;;
 esac
+
+exec 9>"$lock_file"
+if ! flock -n 9; then
+  echo "another deployment is already running" >&2
+  exit 1
+fi
+
+previous="$(readlink -f "$current" 2>/dev/null || true)"
+had_env=false
+if [[ -f "$env_file" ]]; then
+  cp -a "$env_file" "$env_backup"
+  had_env=true
+fi
 
 test -x "${source_dir}/run.sh"
 if [[ ! -e "$release_dir" ]]; then
@@ -330,29 +346,55 @@ fi
 
 aws ssm get-parameter \
   --name "$runtime_parameter" \
+  --region "$aws_region" \
   --with-decryption \
   --query Parameter.Value \
   --output text >"$env_tmp"
 test -s "$env_tmp"
-install -m 0600 -o root -g root "$env_tmp" "/etc/${app_name}/runtime.env"
-
-ln -s "$release_dir" "$link_tmp"
-mv -Tf "$link_tmp" "$current"
-
-if ! systemctl restart "${app_name}.service" ||
+if ! install -m 0600 -o root -g root "$env_tmp" "$env_file" ||
+   ! ln -s "$release_dir" "$link_tmp" ||
+   ! mv -Tf "$link_tmp" "$current" ||
+   ! systemctl restart "${app_name}.service" ||
    ! curl --fail --silent --show-error \
       --connect-timeout 2 --max-time 5 \
       --retry 12 --retry-delay 2 --retry-connrefused \
       "http://127.0.0.1:${app_port}/health" >/dev/null; then
-  if [[ -n "$previous" && -d "$previous" ]]; then
-    ln -s "$previous" "$link_tmp"
-    mv -Tf "$link_tmp" "$current"
-    systemctl restart "${app_name}.service" || true
+  rollback_failed=false
+
+  if [[ "$had_env" == true ]]; then
+    if ! install -m 0600 -o root -g root "$env_backup" "$env_file"; then
+      rollback_failed=true
+    fi
   else
-    rm -f "$current"
-    systemctl stop "${app_name}.service" || true
+    if ! rm -f "$env_file"; then
+      rollback_failed=true
+    fi
   fi
-  echo "release failed; previous release restored" >&2
+
+  if ! rm -f "$link_tmp"; then
+    rollback_failed=true
+  fi
+
+  if [[ -n "$previous" && -d "$previous" ]]; then
+    if ! ln -s "$previous" "$link_tmp" ||
+       ! mv -Tf "$link_tmp" "$current" ||
+       ! systemctl restart "${app_name}.service"; then
+      rollback_failed=true
+    fi
+  else
+    if ! rm -f "$current" ||
+       ! systemctl stop "${app_name}.service"; then
+      rollback_failed=true
+    fi
+  fi
+
+  if [[ "$rollback_failed" == true ]]; then
+    echo "release failed; rollback incomplete" >&2
+  elif [[ -n "$previous" && -d "$previous" ]]; then
+    echo "release failed; previous release restored" >&2
+  else
+    echo "initial release failed; service stopped" >&2
+  fi
   exit 1
 fi
 ```
@@ -373,6 +415,8 @@ Upload the immutable release:
 BUCKET="replace-with-release-bucket"
 INSTANCE_ID="replace-with-ec2-instance-id"
 RUNTIME_PARAMETER="/minimal-web-app/runtime-env"
+AWS_REGION="${AWS_REGION:-$(aws configure get region)}"
+: "${AWS_REGION:?Set AWS_REGION or configure a default AWS CLI Region}"
 
 if aws s3api head-object \
   --bucket "$BUCKET" \
@@ -399,9 +443,9 @@ cat >deploy-parameters.json <<EOF
     "set -euo pipefail",
     "WORK_DIR=\"\$(mktemp -d /opt/minimal-web-app/.deploy.XXXXXX)\"",
     "trap 'rm -rf \"\$WORK_DIR\"' EXIT",
-    "aws s3 cp 's3://${BUCKET}/releases/${RELEASE_ID}.tgz' \"\$WORK_DIR/release.tgz\" --only-show-errors",
+    "aws s3 cp 's3://${BUCKET}/releases/${RELEASE_ID}.tgz' \"\$WORK_DIR/release.tgz\" --region '${AWS_REGION}' --only-show-errors",
     "mkdir \"\$WORK_DIR/release\" && tar -xzf \"\$WORK_DIR/release.tgz\" -C \"\$WORK_DIR/release\"",
-    "bash \"\$WORK_DIR/release/install-release.sh\" '${RELEASE_ID}' '${RUNTIME_PARAMETER}' '8000'"
+    "bash \"\$WORK_DIR/release/install-release.sh\" '${RELEASE_ID}' '${RUNTIME_PARAMETER}' '8000' '${AWS_REGION}'"
   ]
 }
 EOF
@@ -565,6 +609,15 @@ variable "app_port" {
 data "aws_partition" "current" {}
 data "aws_caller_identity" "current" {}
 
+data "aws_subnet" "public" {
+  for_each = toset(var.public_subnet_ids)
+  id       = each.value
+}
+
+data "aws_subnet" "private" {
+  id = var.private_subnet_id
+}
+
 data "aws_ssm_parameter" "al2023" {
   name = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
 }
@@ -627,6 +680,18 @@ resource "aws_lb" "app" {
   internal           = false
   security_groups    = [aws_security_group.alb.id]
   subnets            = var.public_subnet_ids
+
+  lifecycle {
+    precondition {
+      condition     = length(toset([for subnet in data.aws_subnet.public : subnet.availability_zone])) >= 2
+      error_message = "The public ALB subnets must span at least two Availability Zones."
+    }
+
+    precondition {
+      condition     = contains([for subnet in data.aws_subnet.public : subnet.availability_zone], data.aws_subnet.private.availability_zone)
+      error_message = "The private application subnet must be in an Availability Zone enabled on the ALB."
+    }
+  }
 }
 
 resource "aws_lb_target_group" "app" {
@@ -707,7 +772,7 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "releases" {
 
 data "aws_iam_policy_document" "releases_tls_only" {
   statement {
-    effect = "Deny"
+    effect  = "Deny"
     actions = ["s3:*"]
     resources = [
       aws_s3_bucket.releases.arn,
@@ -912,7 +977,7 @@ Then replace the HTTPS listener's `certificate_arn` with:
 certificate_arn = aws_acm_certificate_validation.app.certificate_arn
 ```
 
-Remove `certificate_arn` from `terraform.tfvars`, add `domain_name` and `hosted_zone_id`, and apply again. When DNS is hosted elsewhere, keep the core configuration and manage the certificate-validation and application records at that provider.
+Remove `certificate_arn` from `terraform.tfvars` and remove the required `variable "certificate_arn"` declaration from `main.tf`. Add `domain_name` and `hosted_zone_id`, then apply again. When DNS is hosted elsewhere, keep the core configuration and manage the certificate-validation and application records at that provider.
 
 
 ## References
