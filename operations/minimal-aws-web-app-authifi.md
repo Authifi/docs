@@ -1,5 +1,7 @@
 # Deploy a Minimal AWS Web App with Authifi
 
+**Internal operations material. This file lives outside `docs/` on purpose and is not part of the published site.**
+
 This guide deploys a small web application on AWS and protects it with Authifi. The reference path is:
 
 ```text
@@ -69,7 +71,7 @@ In **SSO Integration → App Dashboard**, create the appropriate client describe
 
 If the application calls a protected API, also create or select its resource server identifier and associate the client with that API under **Manage APIs → clients**. Identify the API permission scopes that the application needs. Send Authifi's `resource=<RESOURCE_SERVER_IDENTIFIER>` parameter on both the authorization request and token request. When the client's **Require Resource Indicator scopes** toggle is enabled, include the required API permission scopes in the authorization request's `scope` parameter alongside `openid profile email`; adding them only during the token exchange is too late. Enforce the resulting permission values from the access token's space-separated `scope` claim.
 
-See [SSO Integration](sso-integration-guide.md) for client, provider, group, role, and permission configuration.
+See [SSO Integration](../docs/guides/sso-integration-guide.md) for client, provider, group, role, and permission configuration.
 
 Keep these values:
 
@@ -232,6 +234,11 @@ Record the EC2 instance ID, release bucket name, application hostname, ACM certi
 For the server-side pattern, generate a session secret and create `runtime.env` locally:
 
 ```bash
+umask 077
+AWS_REGION="${AWS_REGION:-$(aws configure get region)}"
+RUNTIME_PARAMETER="/minimal-web-app/runtime-env"
+: "${AWS_REGION:?Set AWS_REGION or configure a default AWS CLI Region}"
+
 SESSION_SECRET="$(openssl rand -base64 48)"
 
 cat >runtime.env <<'EOF'
@@ -252,7 +259,8 @@ Put the complete environment file in Parameter Store as one `SecureString`:
 
 ```bash
 aws ssm put-parameter \
-  --name /minimal-web-app/runtime-env \
+  --name "$RUNTIME_PARAMETER" \
+  --region "$AWS_REGION" \
   --type SecureString \
   --overwrite \
   --value "$(cat runtime.env)"
@@ -301,18 +309,23 @@ release_dir="${app_root}/releases/${release_id}"
 current="${app_root}/current"
 env_file="/etc/${app_name}/runtime.env"
 lock_file="${app_root}/deploy.lock"
-env_tmp="$(mktemp)"
-env_backup="$(mktemp)"
+env_tmp=""
+env_backup=""
 link_tmp="${app_root}/.current-${release_id}"
 staging=""
 
 cleanup() {
-  rm -f "$env_tmp" "$env_backup" "$link_tmp"
+  if [[ -n "$env_tmp" ]]; then
+    rm -f "$env_tmp"
+  fi
+  if [[ -n "$env_backup" ]]; then
+    rm -f "$env_backup"
+  fi
+  rm -f "$link_tmp"
   if [[ -n "$staging" ]]; then
     rm -rf "$staging"
   fi
 }
-trap cleanup EXIT
 
 case "$release_id" in
   (*[!A-Za-z0-9._-]*|'') echo "invalid release ID" >&2; exit 2 ;;
@@ -323,6 +336,11 @@ if ! flock -n 9; then
   echo "another deployment is already running" >&2
   exit 1
 fi
+
+trap cleanup EXIT
+env_tmp="$(mktemp)"
+env_backup="$(mktemp)"
+rm -f "$link_tmp"
 
 previous="$(readlink -f "$current" 2>/dev/null || true)"
 had_env=false
@@ -419,16 +437,19 @@ AWS_REGION="${AWS_REGION:-$(aws configure get region)}"
 : "${AWS_REGION:?Set AWS_REGION or configure a default AWS CLI Region}"
 
 if aws s3api head-object \
+  --region "$AWS_REGION" \
   --bucket "$BUCKET" \
   --key "releases/${RELEASE_ID}.tgz" >/dev/null 2>&1; then
   echo "Reusing existing immutable release ${RELEASE_ID}"
 else
   aws s3api put-object \
+    --region "$AWS_REGION" \
     --bucket "$BUCKET" \
     --key "releases/${RELEASE_ID}.tgz" \
     --body "${RELEASE_ID}.tgz" \
     --if-none-match "*" >/dev/null ||
     aws s3api head-object \
+      --region "$AWS_REGION" \
       --bucket "$BUCKET" \
       --key "releases/${RELEASE_ID}.tgz" >/dev/null
 fi
@@ -456,6 +477,7 @@ Send the command and wait for it:
 ```bash
 COMMAND_ID="$(
   aws ssm send-command \
+    --region "$AWS_REGION" \
     --instance-ids "$INSTANCE_ID" \
     --document-name AWS-RunShellScript \
     --comment "Deploy ${RELEASE_ID}" \
@@ -468,6 +490,7 @@ STATUS=""
 for attempt in $(seq 1 60); do
   STATUS="$(
     aws ssm get-command-invocation \
+      --region "$AWS_REGION" \
       --command-id "$COMMAND_ID" \
       --instance-id "$INSTANCE_ID" \
       --query Status \
@@ -481,6 +504,7 @@ for attempt in $(seq 1 60); do
 done
 
 aws ssm get-command-invocation \
+  --region "$AWS_REGION" \
   --command-id "$COMMAND_ID" \
   --instance-id "$INSTANCE_ID" \
   --query '{Status:Status,Output:StandardOutputContent,Error:StandardErrorContent}'
@@ -596,16 +620,6 @@ variable "release_bucket_name" {
   type = string
 }
 
-variable "runtime_parameter_name" {
-  type    = string
-  default = "/minimal-web-app/runtime-env"
-}
-
-variable "app_port" {
-  type    = number
-  default = 8000
-}
-
 data "aws_partition" "current" {}
 data "aws_caller_identity" "current" {}
 
@@ -653,16 +667,16 @@ resource "aws_security_group" "app" {
 resource "aws_vpc_security_group_egress_rule" "alb_to_app" {
   security_group_id            = aws_security_group.alb.id
   referenced_security_group_id = aws_security_group.app.id
-  from_port                    = var.app_port
-  to_port                      = var.app_port
+  from_port                    = 8000
+  to_port                      = 8000
   ip_protocol                  = "tcp"
 }
 
 resource "aws_vpc_security_group_ingress_rule" "app_from_alb" {
   security_group_id            = aws_security_group.app.id
   referenced_security_group_id = aws_security_group.alb.id
-  from_port                    = var.app_port
-  to_port                      = var.app_port
+  from_port                    = 8000
+  to_port                      = 8000
   ip_protocol                  = "tcp"
 }
 
@@ -697,7 +711,7 @@ resource "aws_lb" "app" {
 resource "aws_lb_target_group" "app" {
   name        = var.name
   vpc_id      = var.vpc_id
-  port        = var.app_port
+  port        = 8000
   protocol    = "HTTP"
   target_type = "instance"
 
@@ -827,7 +841,7 @@ data "aws_iam_policy_document" "runtime" {
   statement {
     actions = ["ssm:GetParameter"]
     resources = [
-      "arn:${data.aws_partition.current.partition}:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${var.runtime_parameter_name}"
+      "arn:${data.aws_partition.current.partition}:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/minimal-web-app/runtime-env"
     ]
   }
 }
@@ -872,7 +886,7 @@ resource "aws_instance" "app" {
 resource "aws_lb_target_group_attachment" "app" {
   target_group_arn = aws_lb_target_group.app.arn
   target_id        = aws_instance.app.id
-  port             = var.app_port
+  port             = 8000
 }
 
 output "instance_id" {
@@ -982,7 +996,7 @@ Remove `certificate_arn` from `terraform.tfvars` and remove the required `variab
 
 ## References
 
-- [Authifi SSO Integration](sso-integration-guide.md)
+- [Authifi SSO Integration](../docs/guides/sso-integration-guide.md)
 - [Terraform AWS provider](https://registry.terraform.io/providers/hashicorp/aws/latest/docs)
 - [AWS Systems Manager Run Command](https://docs.aws.amazon.com/systems-manager/latest/userguide/run-command.html)
 - [AWS Parameter Store SecureString parameters](https://docs.aws.amazon.com/systems-manager/latest/userguide/secure-string-parameter-kms-encryption.html)
