@@ -32,14 +32,16 @@ Access-token claims scripts have a three-second execution limit.
 
 ## Context
 
-| Member                                       | Description                                                               |
-| -------------------------------------------- | ------------------------------------------------------------------------- |
-| `ctx.secrets.user`                           | `{ id, email, familyName, givenName, middleName }` for the token subject. |
-| `ctx.secrets.claims`                         | An empty object. User fields are under `ctx.secrets.user`.                |
-| `ctx.tenantId`                               | Numeric tenant ID.                                                        |
-| `ctx.namespaceId`                            | API namespace ID or `null`.                                               |
-| `await ctx.getTenantVar(name, isSensitive?)` | Reads a tenant or namespace variable.                                     |
-| `await ctx.getUserSecret(name)`              | Reads the current user's secret and returns its plaintext value.          |
+| Member                                       | Description                                                                                                                                                                                                                                        |
+| -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ctx.secrets.user`                           | `{ id, email, familyName, givenName, middleName }` for the token subject.                                                                                                                                                                          |
+| `ctx.secrets.claims`                         | An empty object. User fields are under `ctx.secrets.user`.                                                                                                                                                                                         |
+| `ctx.tenantId`                               | Numeric tenant ID.                                                                                                                                                                                                                                 |
+| `ctx.namespaceId`                            | API namespace ID or `null`.                                                                                                                                                                                                                        |
+| `ctx.resourceServerId`                       | Numeric ID of the resource server the token is being issued for.                                                                                                                                                                                   |
+| `await ctx.getTenantVar(name, isSensitive?)` | Reads a tenant or namespace variable.                                                                                                                                                                                                              |
+| `await ctx.getUserSecret(name)`              | Reads the current user's secret and returns its plaintext value.                                                                                                                                                                                   |
+| `await ctx.getUmrsGrants()`                  | Active UMRS grants for the token user on this resource server. Each item is `{ roleName, resourceId, expiresAt (ISO or null), source }`. Expired grants, ended group memberships, other resource servers, and Auth-owned policy roles are omitted. |
 
 Job fields and helpers such as `ctx.job`, `ctx.getSecret`, `saveReport`, and key-manager maintenance functions are not available.
 
