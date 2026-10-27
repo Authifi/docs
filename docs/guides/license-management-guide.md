@@ -23,8 +23,8 @@ Super Administrators manage license templates and workspace subscriptions throug
     - [Name](#name)
     - [Slug](#slug)
     - [Term (days)](#term-days)
-    - [Max clients / tenant](#max-clients--tenant)
-    - [Max users / tenant](#max-users--tenant)
+    - [Max clients / tenant](#max-clients-tenant)
+    - [Max users / tenant](#max-users-tenant)
     - [Max child tenants](#max-child-tenants)
     - [Hourly login warning and hourly login limit](#hourly-login-warning-and-hourly-login-limit)
     - [Account holder](#account-holder)
@@ -250,11 +250,11 @@ Remove an unused custom tier.
 **Pre-deletion checklist**:
 
 - [ ] Confirm no license still uses this template
-- [ ] Move those subscriptions onto another template first, when any do
+- [ ] Keep the template while any license still points at it
 - [ ] Document the removal
 - [ ] Tell stakeholders when the tier was published
 
-There is no fallback template. A license keeps its template until a Super Administrator upgrades that sandbox license or the template row is still present. Delete the template only after nothing references it.
+A custom template can be deleted only when no license references it. **Upgrade** can move a Sandbox license onto another template. **Renew** keeps the current template, so a license that is no longer a sandbox stays on its template. There is no other way to reassign a license.
 
 ---
 
@@ -738,7 +738,7 @@ A Super Administrator creates a workspace from the tenants page and is not held 
 - A custom template is still referenced by a license
 - The signed-in user is not a Super Administrator
 
-**Solution**: Move remaining licenses onto another template, then delete the custom template. Leave the built-in rows in place.
+**Solution**: Leave Sandbox and Standard in place. Keep a custom template while any license still references it. **Upgrade** can move a Sandbox license onto another template first. **Renew** does not change the template.
 
 ### Sandbox Was Archived
 
