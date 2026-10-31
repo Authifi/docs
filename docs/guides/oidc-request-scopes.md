@@ -91,6 +91,8 @@ When `requireAuthorizationScopesInRequest` is **on**, client-credentials scope r
 
 When the toggle is **off**, `getClientScopes` unions every client-credential role attached to the client and does not re-check the requested `resource`. Removing a client–API association then stops the client from obtaining a token audienced to that custom API, but it does not strip the role's permission names from a client-credentials token issued for the default management audience. To revoke M2M permissions in that mode, clear `clientId` on the role (or delete the role), rather than unlinking the API.
 
+After that role and permission filter, a live `auth.namespace.group-members.manage.v1` grant on the client appends `auth.groups.manageAssignedNamespaces`. The hint is not `auth.groups.update`. It only admits the route. The database row is what allows the call.
+
 If two applications must call the same physical API but with different privilege for the same user, use separate resource servers (distinct identifiers) and authorize on `aud`, or enforce `azp` (authorized party / client) in the API. Do not expect client-credential roles to create that split. See [Scope resolution and token issuance](https://github.com/Authifi/idbroker/blob/main/packages/auth/docs/oidc/scope-resolution-and-token-issuance.md#user-tokens-vs-client-credential-roles).
 
 ## Supported scopes (scopes_supported)
