@@ -71,10 +71,15 @@ def test_post_build_does_not_require_site_headers_file(tmp_path: Path) -> None:
         site_url="https://docs.authifi.io",
     )
 
+    agent_assets.on_pre_build(config)
     agent_assets.on_post_build(config)
 
     assert (site_dir / "sitemap.xml").exists()
     assert not (site_dir / "_headers").exists()
+    manifest = json.loads(
+        (site_dir / ".well-known" / "public-paths.json").read_text(encoding="utf-8")
+    )
+    assert manifest == {"paths": []}
 
 
 def test_write_sitemap_replaces_the_default_gzipped_sitemap(tmp_path: Path) -> None:
@@ -117,6 +122,81 @@ def test_public_page_hide_metadata_preserves_existing_values() -> None:
     agent_assets.on_page_markdown("# Body", page, config=None, files=None)
 
     assert page.meta["hide"] == ["toc", "navigation", "search"]
+
+
+def test_a_public_page_does_not_point_at_its_nav_neighbors() -> None:
+    page = build_page("guides/example.md", {"public": True})
+    page.previous_page = SimpleNamespace(url="guides/oidc-request-scopes/")
+    page.next_page = SimpleNamespace(url="guides/quickjs-scripts/authorization/")
+
+    returned = agent_assets.on_page_context({}, page, config=None, nav=None)
+
+    assert returned == {}
+    assert page.previous_page is None
+    assert page.next_page is None
+
+
+def test_a_protected_page_keeps_its_nav_neighbors() -> None:
+    page = build_page("guides/sso-integration-guide.md")
+    page.previous_page = SimpleNamespace(url="guides/example/")
+
+    agent_assets.on_page_context({}, page, config=None, nav=None)
+
+    assert page.previous_page.url == "guides/example/"
+
+
+def test_a_public_true_page_hides_protected_chrome() -> None:
+    page = build_page("guides/two-factor-authentication.md", {"public": True, "title": "2FA"})
+
+    agent_assets.on_page_markdown("# Body", page, config=None, files=None)
+
+    assert page.meta["hide"] == ["navigation", "search"]
+    assert agent_assets._public_content_pages["guides/two-factor-authentication.md"] is page
+
+
+def test_public_content_manifest_lists_the_page_and_its_images_but_not_linked_guides(
+    tmp_path: Path,
+) -> None:
+    site = tmp_path / "site"
+    page_dir = site / "guides" / "example"
+    page_dir.mkdir(parents=True)
+    image = site / "guides" / "images" / "shot.png"
+    image.parent.mkdir(parents=True)
+    image.write_bytes(b"png")
+    (page_dir / "index.html").write_text(
+        '<img src="../images/shot.png">'
+        '<a href="/guides/sso-integration-guide/">other</a>'
+        '<script src="/javascripts/app.js"></script>',
+        encoding="utf-8",
+    )
+    page = SimpleNamespace(
+        file=SimpleNamespace(
+            src_uri="guides/example.md",
+            url="guides/example/",
+            dest_path="guides/example/index.html",
+        ),
+        meta={"public": True},
+    )
+    agent_assets._public_content_pages.clear()
+    agent_assets._public_content_pages[page.file.src_uri] = page
+
+    page_paths = agent_assets._write_public_content_manifest(site, "https://docs.authifi.io")
+
+    manifest = json.loads((site / ".well-known" / "public-paths.json").read_text(encoding="utf-8"))
+    assert manifest["paths"] == ["/guides/example/", "/guides/images/shot.png"]
+    assert page_paths == ("/guides/example/",)
+    assert "/guides/sso-integration-guide/" not in manifest["paths"]
+    assert "/javascripts/app.js" not in manifest["paths"]
+
+
+def test_robots_allows_gain_public_content_paths_and_skip_blocked_crawlers() -> None:
+    robots = "User-agent: *\nDisallow: /\nAllow: /privacy-policy/\n\nUser-agent: Bytespider\nDisallow: /\n"
+
+    rewritten = agent_assets._extend_robots_allows(robots, ("/guides/example/", "/guides/images/shot.png"))
+
+    assert rewritten.count("Allow: /guides/example/") == 1
+    assert "User-agent: Bytespider\nDisallow: /\n" in rewritten
+    assert "Allow: /privacy-policy/\nAllow: /guides/example/" in rewritten
 
 
 @pytest.mark.parametrize("src_uri", ["index.md", "guides/sso-integration-guide.md", "security/README.md"])
@@ -273,6 +353,7 @@ def test_post_build_augments_the_artifact_in_the_site_directory(tmp_path: Path) 
 
     source = docs_dir / "feature-list.html"
     source.write_text(UPSTREAM_HEAD, encoding="utf-8")
+    agent_assets.on_pre_build(SimpleNamespace())
     (site_dir / "feature-list.html").write_text(UPSTREAM_HEAD, encoding="utf-8")
 
     agent_assets.on_post_build(

@@ -25,6 +25,8 @@ The following paths are intentionally public:
 - `/javascripts/`
 - `/stylesheets/`
 
+Pages and images named in `/.well-known/public-paths.json` are also fetchable without credentials. A documentation page is added to that file by setting `public: true` in its frontmatter.
+
 All other documentation paths require an interactive browser login through Authifi OIDC. There is no API-token bypass for protected docs.
 
 ## Discovery

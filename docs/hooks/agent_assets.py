@@ -3,14 +3,19 @@
 The hook is also the single source of truth for which built pages are served
 without authentication, so the published sitemap and the rendered navigation
 cannot drift apart from each other.
+
+A page opts out of the login gate with `public: true` in its frontmatter. The
+build records that page, and the images it embeds, in
+`.well-known/public-paths.json`. The server reads that file at startup.
 """
 
 import gzip
 import hashlib
 import json
+import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 from xml.dom import minidom
 
 SKILL_DEFINITIONS = (
@@ -60,6 +65,21 @@ PUBLIC_PAGE_SOURCES = (
 # overrides/partials/header.html, which omits the search control and the
 # sign-out link on those pages.
 PUBLIC_PAGE_HIDDEN_CHROME = ("navigation", "search")
+
+# Written into the built site. `/.well-known/` is already served without a
+# login, so the manifest needs no new allowlist entry. The server unions these
+# paths into the paths it serves anonymously.
+PUBLIC_CONTENT_MANIFEST = ".well-known/public-paths.json"
+
+# Image embeds on a public page have to be fetchable too, or the page is broken
+# for the anonymous reader it was opened for. Scripts and stylesheets are left
+# out: a `src` that is not an image can point at the protected search worker.
+IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".avif"}
+IMG_SRC = re.compile(r"""(?i)\bsrc\s*=\s*["']([^"']+)["']""")
+
+# Pages whose frontmatter set `public: true`, keyed by source path so a rebuild
+# that renders a page twice does not list it twice. `on_pre_build` clears it.
+_public_content_pages: dict[str, object] = {}
 
 # Gated HTML that MkDocs copies verbatim instead of rendering, so it gets none
 # of Material's chrome and no sign-out link from the header partial. These are
@@ -138,7 +158,9 @@ def _page_to_url(site_url: str, page: str) -> str:
     return urljoin(site_url, f"{slug}/")
 
 
-def _write_sitemap(site_dir: Path, site_url: str) -> None:
+def _write_sitemap(
+    site_dir: Path, site_url: str, extra_page_paths: tuple[str, ...] = ()
+) -> None:
     urlset = ET.Element(
         "urlset", xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
     )
@@ -146,6 +168,16 @@ def _write_sitemap(site_dir: Path, site_url: str) -> None:
     seen: set[str] = set()
     for page in PUBLIC_SITEMAP_PATHS:
         loc = _page_to_url(site_url, page)
+        if loc in seen:
+            continue
+        seen.add(loc)
+        url = ET.SubElement(urlset, "url")
+        ET.SubElement(url, "loc").text = loc
+
+    # Content pages follow the fixed legal pages, in path order, so a rebuild
+    # does not reshuffle the sitemap because a page was rendered first.
+    for path in extra_page_paths:
+        loc = urljoin(site_url.rstrip("/") + "/", path.lstrip("/"))
         if loc in seen:
             continue
         seen.add(loc)
@@ -242,14 +274,167 @@ def _augment_copied_artifacts(site_dir: Path) -> None:
         target.write_text(augmented, encoding="utf-8")
 
 
+def on_pre_build(config, **kwargs) -> None:
+    """Drop pages remembered from an earlier build in this process."""
+    _public_content_pages.clear()
+
+
+def _hide_protected_chrome(page) -> None:
+    hidden = list(page.meta.get("hide") or [])
+    for item in PUBLIC_PAGE_HIDDEN_CHROME:
+        if item not in hidden:
+            hidden.append(item)
+    page.meta["hide"] = hidden
+
+
+def _page_url_path(page) -> str:
+    """Site path of a rendered page, with the leading slash MkDocs omits."""
+    url = getattr(page.file, "url", None)
+    if not isinstance(url, str) or not url:
+        raise RuntimeError(
+            f"{page.file.src_uri} sets public: true but MkDocs gave it no URL"
+        )
+    if not url.startswith("/"):
+        url = "/" + url
+    return url
+
+
+def _image_paths(page_path: str, html: str, site_url: str) -> list[str]:
+    """Same-origin image `src` values on a public page.
+
+    Resolved against the page so a relative screenshot link becomes the path
+    the browser requests. A link (`href`) to another guide is not included: that
+    page stays behind the login unless it opts in itself.
+    """
+    base = site_url.rstrip("/") + page_path
+    origin = urlsplit(site_url)
+    found: list[str] = []
+    for raw in IMG_SRC.findall(html):
+        parts = urlsplit(urljoin(base, raw))
+        if parts.scheme and (
+            parts.scheme != origin.scheme or parts.netloc != origin.netloc
+        ):
+            continue
+        path = parts.path
+        if Path(path).suffix.lower() not in IMAGE_SUFFIXES:
+            continue
+        if ".." in path.split("/"):
+            continue
+        found.append(path)
+    return found
+
+
+def _built_file(site_dir: Path, path: str) -> Path | None:
+    """The file a site path names, or None when it escapes the build directory."""
+    relative = path.lstrip("/")
+    if path.endswith("/"):
+        relative = f"{relative}index.html"
+    site_root = site_dir.resolve()
+    try:
+        candidate = (site_root / relative).resolve()
+        candidate.relative_to(site_root)
+    except (OSError, ValueError):
+        return None
+    return candidate
+
+
+def _write_public_content_manifest(site_dir: Path, site_url: str) -> tuple[str, ...]:
+    """Record public content pages and the images they embed.
+
+    Returns the page paths, in order, for the sitemap. The manifest itself also
+    lists the images, which are not pages and so stay out of the sitemap.
+    """
+    paths: set[str] = set()
+    page_paths: list[str] = []
+    for page in _public_content_pages.values():
+        url_path = _page_url_path(page)
+        built = _built_file(site_dir, url_path)
+        if built is None or not built.is_file():
+            raise RuntimeError(
+                f"{url_path} is marked public but {built} is not in the build"
+            )
+        paths.add(url_path)
+        page_paths.append(url_path)
+        html = built.read_text(encoding="utf-8")
+        for image in _image_paths(url_path, html, site_url):
+            image_file = _built_file(site_dir, image)
+            if image_file is None or not image_file.is_file():
+                raise RuntimeError(
+                    f"{url_path} embeds {image}, which was not built. A public "
+                    "page can only embed an image the build actually produced."
+                )
+            paths.add(image)
+
+    manifest = site_dir / PUBLIC_CONTENT_MANIFEST
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    ordered = sorted(paths)
+    manifest.write_text(
+        json.dumps({"paths": ordered}, indent=2) + "\n", encoding="utf-8"
+    )
+    return tuple(sorted(set(page_paths)))
+
+
+def _extend_robots_allows(robots_text: str, paths: tuple[str, ...]) -> str:
+    """Add Allow lines to every user-agent that already publishes some.
+
+    A block with only `Disallow: /` is a crawler that is turned away entirely.
+    Those blocks are left alone. New lines go after the block's last Allow, so
+    they stay with the other grants and ahead of Content-Signal.
+    """
+    if not paths:
+        return robots_text
+
+    lines = robots_text.splitlines()
+    blocks: list[list[str]] = []
+    current: list[str] = []
+    for line in lines:
+        if line.lower().startswith("user-agent:") and current:
+            blocks.append(current)
+            current = [line]
+        else:
+            current.append(line)
+    if current:
+        blocks.append(current)
+
+    rewritten: list[str] = []
+    for block in blocks:
+        allow_at = [
+            index
+            for index, line in enumerate(block)
+            if line.lower().startswith("allow:")
+        ]
+        if allow_at:
+            existing = {block[index].split(":", 1)[1].strip() for index in allow_at}
+            additions = [f"Allow: {path}" for path in paths if path not in existing]
+            insert_at = allow_at[-1] + 1
+            block = block[:insert_at] + additions + block[insert_at:]
+        rewritten.extend(block)
+
+    trailing = "\n" if robots_text.endswith("\n") else ""
+    return "\n".join(rewritten) + trailing
+
+
+def on_page_context(context, page, config, nav, **kwargs):
+    """Drop the previous and next links on a public page.
+
+    Those point at the neighboring entries in the nav, which are gated guides.
+    The links are in the document head, so hiding the sidebar does not remove
+    them, and a public page must not advertise a URL that still requires login.
+    """
+    if page.meta.get("public") is True:
+        page.previous_page = None
+        page.next_page = None
+    return context
+
+
 def on_page_markdown(markdown, page, config, files, **kwargs):
     """Hide protected chrome from pages that anonymous visitors can read."""
-    if page.file.src_uri in PUBLIC_PAGE_SOURCES:
-        hidden = list(page.meta.get("hide") or [])
-        for item in PUBLIC_PAGE_HIDDEN_CHROME:
-            if item not in hidden:
-                hidden.append(item)
-        page.meta["hide"] = hidden
+    # `public: true` is how a content page opts in. The fixed legal pages stay
+    # listed in PUBLIC_PAGE_SOURCES because they predate that flag.
+    if page.file.src_uri in PUBLIC_PAGE_SOURCES or page.meta.get("public") is True:
+        _hide_protected_chrome(page)
+    if page.meta.get("public") is True:
+        _public_content_pages[page.file.src_uri] = page
     return markdown
 
 
@@ -260,5 +445,15 @@ def on_post_build(config, **kwargs) -> None:
 
     _copy_static_files(docs_dir, site_dir)
     _augment_copied_artifacts(site_dir)
-    _write_sitemap(site_dir, site_url)
+    page_paths = _write_public_content_manifest(site_dir, site_url)
+    _write_sitemap(site_dir, site_url, page_paths)
+    manifest = json.loads(
+        (site_dir / PUBLIC_CONTENT_MANIFEST).read_text(encoding="utf-8")
+    )
+    robots = site_dir / "robots.txt"
+    if robots.is_file():
+        robots.write_text(
+            _extend_robots_allows(robots.read_text(encoding="utf-8"), tuple(manifest["paths"])),
+            encoding="utf-8",
+        )
     _write_agent_skills_index(site_dir, site_url, docs_dir)

@@ -89,14 +89,16 @@ Keep the access model in mind while editing:
 - Protected: the main product documentation, including guides, authorization content, security pages, and the home page
 - Authorization is authentication only: any identity the configured Authifi tenant accepts can read every protected page. There is no group, role, or domain filtering in v1.
 
-If you add a new public page or public machine-readable asset, update these together:
+A rendered page is served without a login when its frontmatter sets `public: true`. The build writes that page, and the images it embeds, to `/.well-known/public-paths.json`. The server reads the file at startup, and the built `robots.txt` and sitemap pick the paths up. Nothing in the lists below changes for that. The page is built without navigation or search, and it may not link to a page that still requires a login; the public-boundary tests reject the build if it does.
+
+The lists below are the fixed infrastructure paths: legal pages, discovery files, and static assets. Adding one of those, rather than a content page, means updating them together:
 
 - `PUBLIC_EXACT_PATHS` / `PUBLIC_PREFIXES` in `server/app.py`
 - the public path list in `docs/auth.md`
 - every `Allow:` block in `docs/robots.txt`
 - `PUBLIC_SITEMAP_PATHS` and, for rendered Markdown pages, `PUBLIC_PAGE_SOURCES` in `docs/hooks/agent_assets.py`
 
-`server/tests/test_public_boundary.py` compares those sources against each other and against the built site, so leaving one behind fails CI. A new public Markdown page must be listed in `PUBLIC_PAGE_SOURCES`, which marks it `hide: [navigation, search]`. `overrides/main.html` reads that metadata and removes two pieces of chrome that would otherwise reach into protected territory: the navigation, which would advertise every protected guide by title and URL, and the search control, which can only ever fail because the search index is protected.
+`server/tests/test_public_boundary.py` compares those sources against each other and against the built site, so leaving one behind fails CI. A fixed public Markdown page must be listed in `PUBLIC_PAGE_SOURCES`, which marks it `hide: [navigation, search]`. A `public: true` page gets the same metadata from the hook. `overrides/main.html` reads that metadata and removes two pieces of chrome that would otherwise reach into protected territory: the navigation, which would advertise every protected guide by title and URL, and the search control, which can only ever fail because the search index is protected.
 
 Search on public pages is removed by the gated logic in `overrides/partials/header.html`, while protected pages keep the normal Material search control. A `mkdocs-material` upgrade that changes the vendored header fails `server/tests/test_public_boundary.py`, which re-derives the expected upstream header from the installed theme and checks that our copy still differs only in the documented auth-related insertions.
 

@@ -26,17 +26,43 @@ from server.app import (
     PUBLIC_EXACT_PATHS,
     PUBLIC_PREFIXES,
     is_public_path,
+    load_public_content_paths,
     normalize_next_path,
 )
+from server.tests.support import build_client
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SITE_URL = "https://docs.authifi.io"
 SITEMAP_NAMESPACE = {"sm": "http://www.sitemaps.org/schemas/sitemap/0.9"}
 
+
+def markdown_public_pages() -> dict[str, str]:
+    """Built HTML path to canonical URL for every doc with `public: true`.
+
+    Read from the sources rather than a hand-maintained list, so marking another
+    page public puts it through the same checks without editing this file.
+    """
+    pages: dict[str, str] = {}
+    docs_dir = REPO_ROOT / "docs"
+    for path in sorted(docs_dir.rglob("*.md")):
+        text = path.read_text(encoding="utf-8")
+        if not text.startswith("---\n"):
+            continue
+        end = text.find("\n---\n", 4)
+        if end == -1:
+            continue
+        if re.search(r"(?m)^public:\s*true\s*$", text[4:end]) is None:
+            continue
+        slug = path.relative_to(docs_dir).as_posix().removesuffix(".md")
+        pages[f"{slug}/index.html"] = f"{SITE_URL}/{slug}/"
+    return pages
+
+
 PUBLIC_PAGE_URLS = {
     "logged-off/index.html": f"{SITE_URL}/logged-off/",
     "privacy-policy/index.html": f"{SITE_URL}/privacy-policy/",
     "terms-of-service/index.html": f"{SITE_URL}/terms-of-service/",
+    **markdown_public_pages(),
 }
 
 PROTECTED_CONTENT_PREFIXES = (
@@ -82,7 +108,14 @@ def resolved_link_paths(html: str, page_url: str) -> Iterator[str]:
             yield urlsplit(absolute).path
 
 
-def is_protected_content_path(path: str) -> bool:
+def is_protected_content_path(path: str, extra: set[str] | frozenset[str] = frozenset()) -> bool:
+    """A link a public page must not advertise.
+
+    A path the server serves without a login is not one of those, including a
+    content page and its images named in the public-content manifest.
+    """
+    if is_public_path(path, extra):
+        return False
     return path in PROTECTED_CONTENT_PATHS or path.startswith(PROTECTED_CONTENT_PREFIXES)
 
 
@@ -92,9 +125,14 @@ def is_protected_content_path(path: str) -> bool:
 @pytest.mark.parametrize("relative_path", sorted(PUBLIC_PAGE_URLS))
 def test_public_pages_link_to_no_protected_content(built_site: Path, relative_path: str) -> None:
     html = (built_site / relative_path).read_text(encoding="utf-8")
+    extra = load_public_content_paths(built_site)
 
     leaked = sorted(
-        {path for path in resolved_link_paths(html, PUBLIC_PAGE_URLS[relative_path]) if is_protected_content_path(path)}
+        {
+            path
+            for path in resolved_link_paths(html, PUBLIC_PAGE_URLS[relative_path])
+            if is_protected_content_path(path, extra)
+        }
     )
 
     assert leaked == []
@@ -296,6 +334,7 @@ def test_sitemap_lists_only_public_urls(built_site: Path) -> None:
         f"{SITE_URL}/privacy-policy/",
         f"{SITE_URL}/terms-of-service/",
         f"{SITE_URL}/sms-opt-in.html",
+        *sorted(markdown_public_pages().values()),
     ]
 
 
@@ -305,14 +344,54 @@ def test_gzipped_sitemap_cannot_contain_gated_urls(built_site: Path) -> None:
     assert sitemap_locations(gzipped) == sitemap_locations(
         (built_site / "sitemap.xml").read_text(encoding="utf-8")
     )
-    for path in PROTECTED_CONTENT_PREFIXES:
-        assert path not in gzipped
+    # A public content page can live under a prefix that is otherwise gated, so
+    # the prefix string itself may appear. What must not appear is a location
+    # the server would still refuse anonymously.
+    extra = load_public_content_paths(built_site)
+    for location in sitemap_locations(gzipped):
+        path = urlsplit(location).path
+        assert is_public_path(path, extra), location
 
 
 def test_every_sitemap_url_is_served_publicly(built_site: Path) -> None:
+    extra = load_public_content_paths(built_site)
     for location in sitemap_locations((built_site / "sitemap.xml").read_text(encoding="utf-8")):
         path = urlsplit(location).path
-        assert is_public_path(path), f"sitemap advertises non-public path {path}"
+        assert is_public_path(path, extra), f"sitemap advertises non-public path {path}"
+
+
+def test_anonymous_request_for_a_public_content_page_returns_it(built_site: Path) -> None:
+    """A `public: true` page is readable with no docs session.
+
+    The two-factor guide is the one linked from the TOTP screens. It is synced
+    from idbroker, so this checks it whenever that file is in the tree.
+    """
+    client = build_client(built_site)
+    pages = markdown_public_pages()
+    guide = REPO_ROOT / "docs" / "guides" / "two-factor-authentication.md"
+    if guide.is_file():
+        assert "guides/two-factor-authentication/index.html" in pages
+
+    for built_path, url in pages.items():
+        path = urlsplit(url).path
+        response = client.get(path, follow_redirects=False)
+        assert response.status_code == 200, path
+        assert response.headers["cache-control"] == "public, max-age=300"
+        if path == "/guides/two-factor-authentication/":
+            assert "Two-Factor Authentication" in response.text
+            bare = client.get(path.rstrip("/"), follow_redirects=False)
+            assert bare.status_code == 308
+            assert bare.headers["location"] == path
+        assert (built_site / built_path).is_file()
+
+
+def test_anonymous_request_for_an_unflagged_guide_still_requires_login(built_site: Path) -> None:
+    client = build_client(built_site)
+
+    response = client.get("/guides/sso-integration-guide/", follow_redirects=False)
+
+    assert response.status_code == 307
+    assert response.headers["location"].startswith("/_auth/login?next=")
 
 
 def test_hook_source_is_not_published(built_site: Path) -> None:
@@ -357,14 +436,19 @@ def robots_allow_blocks(robots_text: str) -> dict[str, set[str]]:
 
 
 def test_auth_md_documents_exactly_the_server_allowlist() -> None:
-    documented = documented_public_paths((REPO_ROOT / "docs" / "auth.md").read_text(encoding="utf-8"))
+    text = (REPO_ROOT / "docs" / "auth.md").read_text(encoding="utf-8")
+    documented = documented_public_paths(text)
 
     assert documented == PUBLIC_EXACT_PATHS | set(PUBLIC_PREFIXES)
+    assert "/.well-known/public-paths.json" in text
+    assert "public: true" in text
 
 
 def test_robots_allow_lists_match_the_server_allowlist(built_site: Path) -> None:
     robots_text = (built_site / "robots.txt").read_text(encoding="utf-8")
-    expected = PUBLIC_EXACT_PATHS | set(PUBLIC_PREFIXES)
+    # The built file gains one Allow per path a `public: true` page opened up.
+    # The source robots.txt stays the fixed infrastructure list.
+    expected = PUBLIC_EXACT_PATHS | set(PUBLIC_PREFIXES) | load_public_content_paths(built_site)
 
     blocks = robots_allow_blocks(robots_text)
 
@@ -534,6 +618,7 @@ PUBLIC_BUILT_PAGES = (
     "privacy-policy/index.html",
     "terms-of-service/index.html",
     "sms-opt-in.html",
+    *markdown_public_pages(),
 )
 
 # Hand-written HTML copied into the site rather than rendered by Material, so
@@ -1101,6 +1186,7 @@ def test_every_public_skill_lists_exactly_the_server_public_allowlist(skill: Pat
     assert listed == PUBLIC_EXACT_PATHS | set(PUBLIC_PREFIXES)
     for path in listed:
         assert is_public_path(path), path
+    assert "/.well-known/public-paths.json" in skill.read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize("path", NAVIGATION_SKILL_PRODUCT_PATHS)

@@ -3,6 +3,38 @@
   "note": "Files listed here are synced from idbroker. Edit them upstream, not in this repo.",
   "files": [
     {
+      "dest": "assets/synced/packages/auth/docs/images/2fa/totp-generate-recovery-codes.png",
+      "source": "packages/auth/docs/images/2fa/totp-generate-recovery-codes.png"
+    },
+    {
+      "dest": "assets/synced/packages/auth/docs/images/2fa/totp-login.png",
+      "source": "packages/auth/docs/images/2fa/totp-login.png"
+    },
+    {
+      "dest": "assets/synced/packages/auth/docs/images/2fa/totp-recovery-code-login.png",
+      "source": "packages/auth/docs/images/2fa/totp-recovery-code-login.png"
+    },
+    {
+      "dest": "assets/synced/packages/auth/docs/images/2fa/totp-recovery-codes.png",
+      "source": "packages/auth/docs/images/2fa/totp-recovery-codes.png"
+    },
+    {
+      "dest": "assets/synced/packages/auth/docs/images/2fa/totp-register-new-device.png",
+      "source": "packages/auth/docs/images/2fa/totp-register-new-device.png"
+    },
+    {
+      "dest": "assets/synced/packages/auth/docs/images/2fa/totp-setup.png",
+      "source": "packages/auth/docs/images/2fa/totp-setup.png"
+    },
+    {
+      "dest": "assets/synced/packages/auth/docs/images/2fa/totp-unable-to-get-code.png",
+      "source": "packages/auth/docs/images/2fa/totp-unable-to-get-code.png"
+    },
+    {
+      "dest": "assets/synced/packages/auth/docs/images/2fa/totp-user-portal-mfa.png",
+      "source": "packages/auth/docs/images/2fa/totp-user-portal-mfa.png"
+    },
+    {
       "dest": "feature-list.html",
       "source": "docs/auth-feature-list.html"
     },
@@ -45,6 +77,10 @@
     {
       "dest": "guides/quickjs-scripts/user-info.md",
       "source": "packages/ng-auth/src/assets/docs/quickjs-scripts/user-info.md"
+    },
+    {
+      "dest": "guides/two-factor-authentication.md",
+      "source": "packages/auth/docs/two-factor-authentication.md"
     },
     {
       "dest": "privacy-policy.md",
