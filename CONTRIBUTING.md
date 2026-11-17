@@ -91,6 +91,8 @@ Keep the access model in mind while editing:
 
 A rendered page is served without a login when its frontmatter sets `public: true`. The build writes that page, and the images it embeds, to `/.well-known/public-paths.json`. The server reads the file at startup, and the built `robots.txt` and sitemap pick the paths up. Nothing in the lists below changes for that. The page is built without navigation or search, and it may not link to a page that still requires a login; the public-boundary tests reject the build if it does.
 
+Readers who are signed in get the same URL rendered with the full navigation, search, and previous/next links. The build writes that second copy to `_signed-in/<page path>/index.html`, and `site_endpoint` serves it instead of the public copy when the request carries a valid session. The public copy shows a "Sign in" link that returns the reader to the page. The copy is not a public path, and its response is marked uncacheable by shared caches.
+
 The lists below are the fixed infrastructure paths: legal pages, discovery files, and static assets. Adding one of those, rather than a content page, means updating them together:
 
 - `PUBLIC_EXACT_PATHS` / `PUBLIC_PREFIXES` in `server/app.py`

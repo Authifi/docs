@@ -920,8 +920,22 @@ GATED_HEADER_SEARCH_CONDITION = (
     '    {% if "material/search" in config.plugins and not authifi_public_page %}\n'
 )
 
+MATERIAL_HEADER_DRAWER_BUTTON = """    <label class="md-header__button md-icon" for="__drawer">
+      {% set icon = config.theme.icon.menu or "material/menu" %}
+      {% include ".icons/" ~ icon ~ ".svg" %}
+    </label>
+"""
+GATED_HEADER_DRAWER_BUTTON = (
+    "    {% if not authifi_public_page %}\n"
+    + MATERIAL_HEADER_DRAWER_BUTTON
+    + "    {% endif %}\n"
+)
+
 MATERIAL_HEADER_SOURCE_CONDITION = "    {% if config.repo_url %}\n"
-SIGN_OUT_CONTROL = """    {% if not authifi_public_page %}
+SIGN_OUT_CONTROL = """    {% if authifi_public_page and page.meta.public %}
+      <a class="md-header__button md-header__signin" href="/_auth/login?next=/{{ page.url | urlencode }}" title="Sign in to browse the rest of the documentation">Sign in</a>
+    {% endif %}
+    {% if not authifi_public_page %}
       <form class="md-header__signout" method="post" action="/_auth/logout">
         <button class="md-header__button" type="submit">Sign out</button>
       </form>
@@ -935,6 +949,10 @@ def expected_vendored_header() -> str:
     gated = stock.replace(MATERIAL_HEADER_SEARCH_CONDITION, GATED_HEADER_SEARCH_CONDITION)
     assert gated != stock, "Material's header search condition changed shape"
 
+    drawerless = gated.replace(MATERIAL_HEADER_DRAWER_BUTTON, GATED_HEADER_DRAWER_BUTTON)
+    assert drawerless != gated, "Material's header drawer button changed shape"
+    gated = drawerless
+
     with_control = gated.replace(
         MATERIAL_HEADER_SOURCE_CONDITION, SIGN_OUT_CONTROL + MATERIAL_HEADER_SOURCE_CONDITION
     )
@@ -942,7 +960,7 @@ def expected_vendored_header() -> str:
     return with_control
 
 
-def test_the_vendored_header_is_materials_header_with_only_our_two_changes() -> None:
+def test_the_vendored_header_is_materials_header_with_only_our_changes() -> None:
     """A mkdocs-material upgrade that touches the header must fail here.
 
     ``overrides/partials/header.html`` shadows the theme's own partial, so it

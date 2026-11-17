@@ -11,6 +11,14 @@
  * schemes and Material's own `:focus-visible` outline, so there is no contrast
  * or focus styling here to drift out of step with the theme. */
 
+/* The "Sign in" link on a public page. It is an anchor, so it only needs to sit
+ * in the header row the way the sign-out form does. */
+.md-header__signin {
+  display: flex;
+  align-items: center;
+  text-decoration: none;
+}
+
 .md-header__signout {
   display: flex;
   align-items: center;

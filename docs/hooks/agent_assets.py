@@ -7,6 +7,12 @@ cannot drift apart from each other.
 A page opts out of the login gate with `public: true` in its frontmatter. The
 build records that page, and the images it embeds, in
 `.well-known/public-paths.json`. The server reads that file at startup.
+
+Anonymous readers get that page without the navigation, search box, or
+previous/next links, since those name guides that still require a login. A
+reader who signs in is served a second copy of the same page rendered with the
+full site chrome, kept under `SIGNED_IN_DIR`. The server picks between the two
+by session, so the reader's URL does not change.
 """
 
 import gzip
@@ -71,6 +77,11 @@ PUBLIC_PAGE_HIDDEN_CHROME = ("navigation", "search")
 # paths into the paths it serves anonymously.
 PUBLIC_CONTENT_MANIFEST = ".well-known/public-paths.json"
 
+# Where the full-chrome copy of each `public: true` page is written. It is not
+# a public path, so an anonymous request for it is sent to the login page, and
+# the server only ever answers a public page's own URL with it for a session.
+SIGNED_IN_DIR = "_signed-in"
+
 # Image embeds on a public page have to be fetchable too, or the page is broken
 # for the anonymous reader it was opened for. Scripts and stylesheets are left
 # out: a `src` that is not an image can point at the protected search worker.
@@ -80,6 +91,12 @@ IMG_SRC = re.compile(r"""(?i)\bsrc\s*=\s*["']([^"']+)["']""")
 # Pages whose frontmatter set `public: true`, keyed by source path so a rebuild
 # that renders a page twice does not list it twice. `on_pre_build` clears it.
 _public_content_pages: dict[str, object] = {}
+
+# What each public page's `hide` list was before the hook added the public
+# chrome to it, and the page rendered with that original list. Same keys and
+# lifetime as `_public_content_pages`.
+_original_hide: dict[str, list[str]] = {}
+_signed_in_html: dict[str, str] = {}
 
 # Gated HTML that MkDocs copies verbatim instead of rendering, so it gets none
 # of Material's chrome and no sign-out link from the header partial. These are
@@ -277,6 +294,8 @@ def _augment_copied_artifacts(site_dir: Path) -> None:
 def on_pre_build(config, **kwargs) -> None:
     """Drop pages remembered from an earlier build in this process."""
     _public_content_pages.clear()
+    _original_hide.clear()
+    _signed_in_html.clear()
 
 
 def _hide_protected_chrome(page) -> None:
@@ -374,6 +393,22 @@ def _write_public_content_manifest(site_dir: Path, site_url: str) -> tuple[str, 
     return tuple(sorted(set(page_paths)))
 
 
+def _write_signed_in_pages(site_dir: Path) -> None:
+    """Write the full-chrome copy of every public page under SIGNED_IN_DIR."""
+    for src_uri, page in _public_content_pages.items():
+        html = _signed_in_html.get(src_uri)
+        if html is None:
+            raise RuntimeError(
+                f"{src_uri} is marked public but has no signed-in copy; "
+                "on_page_context did not run for it."
+            )
+        target = _built_file(site_dir, f"/{SIGNED_IN_DIR}{_page_url_path(page)}")
+        if target is None:
+            raise RuntimeError(f"{src_uri} has no safe signed-in path")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(html, encoding="utf-8")
+
+
 def _extend_robots_allows(robots_text: str, paths: tuple[str, ...]) -> str:
     """Add Allow lines to every user-agent that already publishes some.
 
@@ -414,14 +449,35 @@ def _extend_robots_allows(robots_text: str, paths: tuple[str, ...]) -> str:
     return "\n".join(rewritten) + trailing
 
 
+def _render_signed_in_page(context, page, config) -> str:
+    """The page as a signed-in reader gets it: navigation, search, prev/next.
+
+    Rendered here, while MkDocs has the page active and the context built,
+    with the page's own `hide` list put back for the duration.
+    """
+    chrome_hide = page.meta.get("hide")
+    page.meta["hide"] = _original_hide.get(page.file.src_uri, [])
+    try:
+        template = config.theme.get_env().get_template(
+            page.meta.get("template", "main.html")
+        )
+        return template.render(dict(context))
+    finally:
+        page.meta["hide"] = chrome_hide
+
+
 def on_page_context(context, page, config, nav, **kwargs):
     """Drop the previous and next links on a public page.
 
     Those point at the neighboring entries in the nav, which are gated guides.
     The links are in the document head, so hiding the sidebar does not remove
     them, and a public page must not advertise a URL that still requires login.
+    The signed-in copy is rendered first, while those links are still set.
     """
     if page.meta.get("public") is True:
+        _signed_in_html[page.file.src_uri] = _render_signed_in_page(
+            context, page, config
+        )
         page.previous_page = None
         page.next_page = None
     return context
@@ -431,10 +487,11 @@ def on_page_markdown(markdown, page, config, files, **kwargs):
     """Hide protected chrome from pages that anonymous visitors can read."""
     # `public: true` is how a content page opts in. The fixed legal pages stay
     # listed in PUBLIC_PAGE_SOURCES because they predate that flag.
+    if page.meta.get("public") is True:
+        _original_hide[page.file.src_uri] = list(page.meta.get("hide") or [])
+        _public_content_pages[page.file.src_uri] = page
     if page.file.src_uri in PUBLIC_PAGE_SOURCES or page.meta.get("public") is True:
         _hide_protected_chrome(page)
-    if page.meta.get("public") is True:
-        _public_content_pages[page.file.src_uri] = page
     return markdown
 
 
@@ -446,6 +503,7 @@ def on_post_build(config, **kwargs) -> None:
     _copy_static_files(docs_dir, site_dir)
     _augment_copied_artifacts(site_dir)
     page_paths = _write_public_content_manifest(site_dir, site_url)
+    _write_signed_in_pages(site_dir)
     _write_sitemap(site_dir, site_url, page_paths)
     manifest = json.loads(
         (site_dir / PUBLIC_CONTENT_MANIFEST).read_text(encoding="utf-8")

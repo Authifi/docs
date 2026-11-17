@@ -1,6 +1,6 @@
 {#
   Vendored from mkdocs-material's `partials/header.html`, which this file
-  shadows. It is that template byte for byte apart from two changes, and
+  shadows. It is that template byte for byte apart from four changes, and
   `server/tests/test_public_boundary.py` re-derives both from the installed
   theme, so a theme upgrade that reshapes the header fails a test rather than
   drifting silently.
@@ -16,7 +16,14 @@
      `docs/stylesheets/authifi.css` is what makes the button look like the
      header's other controls instead of an OS push button.
 
-  Both hang off the same flag. `hide: search` is set on public pages by
+  3. The menu button opens the navigation drawer. A public page omits the
+     navigation, so the button would be clickable and do nothing.
+  4. A `public: true` page offers "Sign in" instead. Signing in returns the
+     reader to the same URL, where the server answers with the copy of the
+     page rendered with the navigation (see `docs/hooks/agent_assets.py`).
+     The fixed legal pages have no such copy, so they get no link.
+
+  All four hang off the same flag. `hide: search` is set on public pages by
   `docs/hooks/agent_assets.py`, which is the one place that knows which sources
   are served anonymously.
 #}
@@ -36,10 +43,12 @@
     <a href="{{ config.extra.homepage | d(nav.homepage.url, true) | url }}" title="{{ config.site_name | e }}" class="md-header__button md-logo" aria-label="{{ config.site_name }}" data-md-component="logo">
       {% include "partials/logo.html" %}
     </a>
+    {% if not authifi_public_page %}
     <label class="md-header__button md-icon" for="__drawer">
       {% set icon = config.theme.icon.menu or "material/menu" %}
       {% include ".icons/" ~ icon ~ ".svg" %}
     </label>
+    {% endif %}
     <div class="md-header__title" data-md-component="header-title">
       <div class="md-header__ellipsis">
         <div class="md-header__topic">
@@ -78,6 +87,9 @@
         </label>
         {% include "partials/search.html" %}
       {% endif %}
+    {% endif %}
+    {% if authifi_public_page and page.meta.public %}
+      <a class="md-header__button md-header__signin" href="/_auth/login?next=/{{ page.url | urlencode }}" title="Sign in to browse the rest of the documentation">Sign in</a>
     {% endif %}
     {% if not authifi_public_page %}
       <form class="md-header__signout" method="post" action="/_auth/logout">

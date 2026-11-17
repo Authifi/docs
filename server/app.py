@@ -43,6 +43,11 @@ PUBLIC_EXACT_PATHS = {
     "/auth.md",
 }
 PUBLIC_AUTH_PATHS = {"/_auth/login", "/_auth/callback", "/_auth/logout"}
+
+# Build output directory holding the full-navigation copy of each page named in
+# the public-content manifest. Not itself a public path. Keep in step with
+# `SIGNED_IN_DIR` in docs/hooks/agent_assets.py.
+SIGNED_IN_DIR = "_signed-in"
 PUBLIC_PREFIXES = ("/.well-known/", "/assets/", "/javascripts/", "/stylesheets/")
 # Built by the MkDocs hook from pages whose frontmatter sets `public: true`.
 # Missing means the site has no such pages, which is how the unit-test sites
@@ -908,6 +913,22 @@ async def site_endpoint(request: Request) -> Response:
         # the deploy that adds the file.
         set_cache_visibility(request, VISIBILITY_PROTECTED)
         return PlainTextResponse("Not Found", status_code=404)
+
+    if canonical_path in public_content_paths and canonical_path.endswith("/"):
+        # An opted-in page is served to everyone, but a signed-in reader gets
+        # the copy rendered with the navigation. The URL is the same, so the
+        # answer depends on the cookie: it must not land in a shared cache.
+        signed_in_copy = (
+            resolve_site_file(config.site_dir, f"/{SIGNED_IN_DIR}{canonical_path}")
+            if signed_in_user(request) is not None
+            else None
+        )
+        if signed_in_copy is not None:
+            set_cache_visibility(request, VISIBILITY_PROTECTED)
+            return FileResponse(
+                signed_in_copy,
+                media_type=resolve_content_type(canonical_path, signed_in_copy),
+            )
 
     response = FileResponse(
         resolved_file,
