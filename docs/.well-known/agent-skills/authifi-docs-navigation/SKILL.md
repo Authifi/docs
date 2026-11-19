@@ -27,6 +27,8 @@ These paths are fetchable without credentials:
 - `/javascripts/`
 - `/stylesheets/`
 
+Pages and images named in `/.well-known/public-paths.json` are also fetchable without credentials.
+
 Every product page listed further down requires an interactive browser login
 through Authifi OIDC. An anonymous request for one answers `307` to
 `/_auth/login`; that is the access boundary working, not an error to retry

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import json
 import logging
 import mimetypes
 import os
 import re
 import secrets
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -42,7 +43,17 @@ PUBLIC_EXACT_PATHS = {
     "/auth.md",
 }
 PUBLIC_AUTH_PATHS = {"/_auth/login", "/_auth/callback", "/_auth/logout"}
+
+# Build output directory holding the full-navigation copy of each page named in
+# the public-content manifest. Not itself a public path. Keep in step with
+# `SIGNED_IN_DIR` in docs/hooks/agent_assets.py.
+SIGNED_IN_DIR = "_signed-in"
 PUBLIC_PREFIXES = ("/.well-known/", "/assets/", "/javascripts/", "/stylesheets/")
+# Built by the MkDocs hook from pages whose frontmatter sets `public: true`.
+# Missing means the site has no such pages, which is how the unit-test sites
+# are built. `/.well-known/` is already public, so fetching the manifest itself
+# needs nothing added here.
+PUBLIC_CONTENT_MANIFEST = Path(".well-known") / "public-paths.json"
 EXTENSIONLESS_PAGE_FILES = {"/logged-off": "logged-off/index.html"}
 # POSIX `NAME_MAX`, in bytes. A longer path component cannot name anything on
 # the filesystems this is deployed on, so it is refused before it is probed.
@@ -340,6 +351,7 @@ def create_app(config: AppConfig, auth_client: object | None = None) -> Starlett
     validate_oidc_issuer(config.oidc_issuer)
     validate_public_base_url(config.public_base_url)
     validate_post_logout_path(config.post_logout_path)
+    public_content_paths = load_public_content_paths(config.site_dir)
 
     app = Starlette(
         routes=[
@@ -360,6 +372,7 @@ def create_app(config: AppConfig, auth_client: object | None = None) -> Starlett
     app.state.config = config
     app.state.auth_client = auth_client or create_auth_client(config)
     app.state.root_links = load_root_links(config.site_dir)
+    app.state.public_content_paths = public_content_paths
     # Added first so SessionMiddleware wraps it and supplies scope["session"].
     app.add_middleware(SlidingSessionMiddleware)
     app.add_middleware(
@@ -878,9 +891,10 @@ async def site_endpoint(request: Request) -> Response:
     # decided on.
     redirect_target = directory_redirect_target(config.site_dir, canonical_path)
     effective_path = redirect_target or canonical_path
-    set_cache_visibility(request, visibility_for(effective_path))
+    public_content_paths = request.app.state.public_content_paths
+    set_cache_visibility(request, visibility_for(effective_path, public_content_paths))
 
-    if not is_public_path(effective_path) and signed_in_user(request) is None:
+    if not is_public_path(effective_path, public_content_paths) and signed_in_user(request) is None:
         # Answer before redirecting. A 308 here would confirm that a protected
         # directory exists, while a missing path 404s, so the two must look the
         # same to an anonymous caller. `next` echoes the requested path rather
@@ -900,6 +914,22 @@ async def site_endpoint(request: Request) -> Response:
         set_cache_visibility(request, VISIBILITY_PROTECTED)
         return PlainTextResponse("Not Found", status_code=404)
 
+    if canonical_path in public_content_paths and canonical_path.endswith("/"):
+        # An opted-in page is served to everyone, but a signed-in reader gets
+        # the copy rendered with the navigation. The URL is the same, so the
+        # answer depends on the cookie: it must not land in a shared cache.
+        signed_in_copy = (
+            resolve_site_file(config.site_dir, f"/{SIGNED_IN_DIR}{canonical_path}")
+            if signed_in_user(request) is not None
+            else None
+        )
+        if signed_in_copy is not None:
+            set_cache_visibility(request, VISIBILITY_PROTECTED)
+            return FileResponse(
+                signed_in_copy,
+                media_type=resolve_content_type(canonical_path, signed_in_copy),
+            )
+
     response = FileResponse(
         resolved_file,
         media_type=resolve_content_type(canonical_path, resolved_file),
@@ -910,16 +940,71 @@ async def site_endpoint(request: Request) -> Response:
     return response
 
 
-def visibility_for(canonical_path: str) -> str:
-    return VISIBILITY_PUBLIC if is_public_path(canonical_path) else VISIBILITY_PROTECTED
+def visibility_for(canonical_path: str, extra: Collection[str] = ()) -> str:
+    return VISIBILITY_PUBLIC if is_public_path(canonical_path, extra) else VISIBILITY_PROTECTED
 
 
-def is_public_path(path: str) -> bool:
+def is_public_path(path: str, extra: Collection[str] = ()) -> bool:
     if path == "/health" or path in PUBLIC_AUTH_PATHS:
         return True
-    if path in PUBLIC_EXACT_PATHS:
+    if path in PUBLIC_EXACT_PATHS or path in extra:
         return True
     return any(path.startswith(prefix) for prefix in PUBLIC_PREFIXES)
+
+
+def load_public_content_paths(site_dir: Path) -> frozenset[str]:
+    """Paths a `public: true` page opened up, beyond the fixed allowlist.
+
+    A missing manifest is an empty set: the unit-test sites are built by hand
+    and have no content pages opted in. A manifest that names a path the build
+    does not contain, or a path that is not a single site file, refuses to
+    start. Serving it anyway would either 404 a page we had decided to publish
+    or trust a path that does not name one file.
+    """
+    manifest = site_dir / PUBLIC_CONTENT_MANIFEST
+    if not manifest.is_file():
+        return frozenset()
+
+    try:
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(
+            f"public content manifest {manifest} is not valid JSON"
+        ) from exc
+
+    paths = data.get("paths") if isinstance(data, dict) else None
+    if not isinstance(paths, list) or not all(isinstance(item, str) for item in paths):
+        raise RuntimeError(
+            f"public content manifest {manifest} must be an object with a "
+            "list of string paths"
+        )
+
+    checked: list[str] = []
+    for path in paths:
+        if not _is_exact_content_path(path):
+            raise RuntimeError(
+                f"public content manifest {manifest} lists {path!r}, which is "
+                "not a single site path"
+            )
+        if resolve_site_file(site_dir, path) is None:
+            raise RuntimeError(
+                f"public content manifest {manifest} lists {path}, which is not "
+                "in the built site"
+            )
+        checked.append(path)
+    return frozenset(checked)
+
+
+def _is_exact_content_path(path: str) -> bool:
+    """A site path that names one page or file, not a prefix or a traversal."""
+    if not path.startswith("/") or path.startswith("//") or path == "/":
+        return False
+    if any(character in path for character in "\\?#") or any(
+        character in CONTROL_CHARACTERS for character in path
+    ):
+        return False
+    segments = [segment for segment in path.split("/") if segment]
+    return bool(segments) and all(segment not in (".", "..") for segment in segments)
 
 
 def segment_is_nameable(segment: str) -> bool:

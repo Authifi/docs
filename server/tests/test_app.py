@@ -1,4 +1,5 @@
 import importlib
+import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -83,6 +84,89 @@ def test_logged_off_page_is_public_without_a_trailing_slash(site_dir: Path) -> N
     assert response.status_code == 200
     assert "You’ve been logged off" in response.text
     assert 'href="/_auth/login"' in response.text
+
+
+def test_a_page_named_in_the_public_content_manifest_is_served_anonymously(site_dir: Path) -> None:
+    guide = site_dir / "guides" / "two-factor-authentication" / "index.html"
+    guide.parent.mkdir(parents=True)
+    guide.write_text("<h1>Two-Factor Authentication</h1>", encoding="utf-8")
+    manifest = site_dir / ".well-known" / "public-paths.json"
+    manifest.write_text(
+        json.dumps({"paths": ["/guides/two-factor-authentication/"]}),
+        encoding="utf-8",
+    )
+
+    client = build_client(site_dir)
+    response = client.get("/guides/two-factor-authentication/", follow_redirects=False)
+
+    assert response.status_code == 200
+    assert "Two-Factor Authentication" in response.text
+    assert response.headers["cache-control"] == "public, max-age=300"
+
+    other = client.get("/guides/sso-integration-guide/", follow_redirects=False)
+    assert other.status_code == 307
+    assert other.headers["location"].startswith("/_auth/login?next=")
+
+
+def test_a_signed_in_reader_gets_the_copy_of_a_public_page_with_navigation(site_dir: Path) -> None:
+    guide = site_dir / "guides" / "two-factor-authentication" / "index.html"
+    guide.parent.mkdir(parents=True)
+    guide.write_text("<h1>Two-Factor Authentication</h1>", encoding="utf-8")
+    full = site_dir / "_signed-in" / "guides" / "two-factor-authentication" / "index.html"
+    full.parent.mkdir(parents=True)
+    full.write_text("<nav>All guides</nav><h1>Two-Factor Authentication</h1>", encoding="utf-8")
+    (site_dir / ".well-known" / "public-paths.json").write_text(
+        json.dumps({"paths": ["/guides/two-factor-authentication/"]}),
+        encoding="utf-8",
+    )
+
+    anonymous = build_client(site_dir).get("/guides/two-factor-authentication/", follow_redirects=False)
+    signed_in = authenticated_client(site_dir).get("/guides/two-factor-authentication/", follow_redirects=False)
+
+    assert "All guides" not in anonymous.text
+    assert anonymous.headers["cache-control"] == "public, max-age=300"
+    assert signed_in.status_code == 200
+    assert "All guides" in signed_in.text
+    # The same URL answers differently by cookie, so a shared cache must not keep it.
+    assert "public" not in signed_in.headers["cache-control"]
+    assert "Cookie" in signed_in.headers["vary"]
+
+
+def test_the_signed_in_copy_is_not_reachable_without_a_session(site_dir: Path) -> None:
+    full = site_dir / "_signed-in" / "guides" / "two-factor-authentication" / "index.html"
+    full.parent.mkdir(parents=True)
+    full.write_text("<nav>All guides</nav>", encoding="utf-8")
+
+    response = build_client(site_dir).get("/_signed-in/guides/two-factor-authentication/", follow_redirects=False)
+
+    assert response.status_code == 307
+    assert response.headers["location"].startswith("/_auth/login?next=")
+
+
+def test_a_signed_in_reader_of_a_page_not_in_the_manifest_is_not_given_a_copy(site_dir: Path) -> None:
+    full = site_dir / "_signed-in" / "privacy-policy" / "index.html"
+    full.parent.mkdir(parents=True)
+    full.write_text("<nav>All guides</nav>", encoding="utf-8")
+
+    response = authenticated_client(site_dir).get("/privacy-policy/", follow_redirects=False)
+
+    assert "All guides" not in response.text
+
+
+def test_startup_rejects_a_public_content_path_missing_from_the_site(site_dir: Path) -> None:
+    manifest = site_dir / ".well-known" / "public-paths.json"
+    manifest.write_text(json.dumps({"paths": ["/guides/missing/"]}), encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="public content manifest"):
+        build_app(site_dir)
+
+
+def test_startup_rejects_a_public_content_path_that_is_not_one_file(site_dir: Path) -> None:
+    manifest = site_dir / ".well-known" / "public-paths.json"
+    manifest.write_text(json.dumps({"paths": ["/guides/../privacy-policy/"]}), encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="not a single site path"):
+        build_app(site_dir)
 
 
 def test_redirects_private_search_index_without_session(site_dir: Path) -> None:

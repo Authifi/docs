@@ -71,10 +71,15 @@ def test_post_build_does_not_require_site_headers_file(tmp_path: Path) -> None:
         site_url="https://docs.authifi.io",
     )
 
+    agent_assets.on_pre_build(config)
     agent_assets.on_post_build(config)
 
     assert (site_dir / "sitemap.xml").exists()
     assert not (site_dir / "_headers").exists()
+    manifest = json.loads(
+        (site_dir / ".well-known" / "public-paths.json").read_text(encoding="utf-8")
+    )
+    assert manifest == {"paths": []}
 
 
 def test_write_sitemap_replaces_the_default_gzipped_sitemap(tmp_path: Path) -> None:
@@ -117,6 +122,165 @@ def test_public_page_hide_metadata_preserves_existing_values() -> None:
     agent_assets.on_page_markdown("# Body", page, config=None, files=None)
 
     assert page.meta["hide"] == ["toc", "navigation", "search"]
+
+
+def build_config(rendered: list[dict]) -> SimpleNamespace:
+    """A config whose theme template records what it was rendered with."""
+
+    def render(context: dict) -> str:
+        page = context["page"]
+        rendered.append(
+            {
+                "hide": list(page.meta.get("hide") or []),
+                "previous": page.previous_page,
+                "next": page.next_page,
+            }
+        )
+        return "<html>signed in</html>"
+
+    template = SimpleNamespace(render=render)
+    env = SimpleNamespace(get_template=lambda name: template)
+    return SimpleNamespace(theme=SimpleNamespace(get_env=lambda: env))
+
+
+def test_a_public_page_does_not_point_at_its_nav_neighbors() -> None:
+    page = build_page("guides/example.md", {"public": True})
+    page.previous_page = SimpleNamespace(url="guides/oidc-request-scopes/")
+    page.next_page = SimpleNamespace(url="guides/quickjs-scripts/authorization/")
+    context = {"page": page}
+
+    returned = agent_assets.on_page_context(context, page, build_config([]), nav=None)
+
+    assert returned is context
+    assert page.previous_page is None
+    assert page.next_page is None
+
+
+def test_a_public_page_also_gets_a_signed_in_copy_with_the_full_chrome() -> None:
+    agent_assets.on_pre_build(config=None)
+    page = build_page("guides/example.md", {"public": True, "hide": ["toc"]})
+    page.previous_page = SimpleNamespace(url="guides/oidc-request-scopes/")
+    page.next_page = SimpleNamespace(url="guides/quickjs-scripts/authorization/")
+    rendered: list[dict] = []
+
+    agent_assets.on_page_markdown("# Body", page, config=None, files=None)
+    agent_assets.on_page_context({"page": page}, page, build_config(rendered), nav=None)
+
+    # The copy is rendered with the author's own `hide` and the neighbors set,
+    # and the anonymous page is left with the chrome hidden and no neighbors.
+    assert rendered == [
+        {
+            "hide": ["toc"],
+            "previous": SimpleNamespace(url="guides/oidc-request-scopes/"),
+            "next": SimpleNamespace(url="guides/quickjs-scripts/authorization/"),
+        }
+    ]
+    assert page.meta["hide"] == ["toc", "navigation", "search"]
+    assert page.previous_page is None
+    assert agent_assets._signed_in_html["guides/example.md"] == "<html>signed in</html>"
+
+
+def test_a_protected_page_gets_no_signed_in_copy() -> None:
+    agent_assets.on_pre_build(config=None)
+    page = build_page("guides/sso-integration-guide.md")
+    rendered: list[dict] = []
+
+    agent_assets.on_page_context({"page": page}, page, build_config(rendered), nav=None)
+
+    assert rendered == []
+    assert agent_assets._signed_in_html == {}
+
+
+def test_the_signed_in_copy_is_written_outside_the_public_path(tmp_path: Path) -> None:
+    agent_assets.on_pre_build(config=None)
+    page = SimpleNamespace(
+        file=SimpleNamespace(src_uri="guides/example.md", url="guides/example/"),
+        meta={"public": True},
+    )
+    agent_assets._public_content_pages[page.file.src_uri] = page
+    agent_assets._signed_in_html[page.file.src_uri] = "<html>signed in</html>"
+
+    agent_assets._write_signed_in_pages(tmp_path)
+
+    written = tmp_path / agent_assets.SIGNED_IN_DIR / "guides" / "example" / "index.html"
+    assert written.read_text(encoding="utf-8") == "<html>signed in</html>"
+    agent_assets.on_pre_build(config=None)
+
+
+def test_a_public_page_without_a_signed_in_copy_fails_the_build(tmp_path: Path) -> None:
+    agent_assets.on_pre_build(config=None)
+    page = SimpleNamespace(
+        file=SimpleNamespace(src_uri="guides/example.md", url="guides/example/"),
+        meta={"public": True},
+    )
+    agent_assets._public_content_pages[page.file.src_uri] = page
+
+    with pytest.raises(RuntimeError, match="no signed-in copy"):
+        agent_assets._write_signed_in_pages(tmp_path)
+    agent_assets.on_pre_build(config=None)
+
+
+def test_a_protected_page_keeps_its_nav_neighbors() -> None:
+    page = build_page("guides/sso-integration-guide.md")
+    page.previous_page = SimpleNamespace(url="guides/example/")
+
+    agent_assets.on_page_context({"page": page}, page, config=None, nav=None)
+
+    assert page.previous_page.url == "guides/example/"
+
+
+def test_a_public_true_page_hides_protected_chrome() -> None:
+    page = build_page("guides/two-factor-authentication.md", {"public": True, "title": "2FA"})
+
+    agent_assets.on_page_markdown("# Body", page, config=None, files=None)
+
+    assert page.meta["hide"] == ["navigation", "search"]
+    assert agent_assets._public_content_pages["guides/two-factor-authentication.md"] is page
+
+
+def test_public_content_manifest_lists_the_page_and_its_images_but_not_linked_guides(
+    tmp_path: Path,
+) -> None:
+    site = tmp_path / "site"
+    page_dir = site / "guides" / "example"
+    page_dir.mkdir(parents=True)
+    image = site / "guides" / "images" / "shot.png"
+    image.parent.mkdir(parents=True)
+    image.write_bytes(b"png")
+    (page_dir / "index.html").write_text(
+        '<img src="../images/shot.png">'
+        '<a href="/guides/sso-integration-guide/">other</a>'
+        '<script src="/javascripts/app.js"></script>',
+        encoding="utf-8",
+    )
+    page = SimpleNamespace(
+        file=SimpleNamespace(
+            src_uri="guides/example.md",
+            url="guides/example/",
+            dest_path="guides/example/index.html",
+        ),
+        meta={"public": True},
+    )
+    agent_assets._public_content_pages.clear()
+    agent_assets._public_content_pages[page.file.src_uri] = page
+
+    page_paths = agent_assets._write_public_content_manifest(site, "https://docs.authifi.io")
+
+    manifest = json.loads((site / ".well-known" / "public-paths.json").read_text(encoding="utf-8"))
+    assert manifest["paths"] == ["/guides/example/", "/guides/images/shot.png"]
+    assert page_paths == ("/guides/example/",)
+    assert "/guides/sso-integration-guide/" not in manifest["paths"]
+    assert "/javascripts/app.js" not in manifest["paths"]
+
+
+def test_robots_allows_gain_public_content_paths_and_skip_blocked_crawlers() -> None:
+    robots = "User-agent: *\nDisallow: /\nAllow: /privacy-policy/\n\nUser-agent: Bytespider\nDisallow: /\n"
+
+    rewritten = agent_assets._extend_robots_allows(robots, ("/guides/example/", "/guides/images/shot.png"))
+
+    assert rewritten.count("Allow: /guides/example/") == 1
+    assert "User-agent: Bytespider\nDisallow: /\n" in rewritten
+    assert "Allow: /privacy-policy/\nAllow: /guides/example/" in rewritten
 
 
 @pytest.mark.parametrize("src_uri", ["index.md", "guides/sso-integration-guide.md", "security/README.md"])
@@ -273,6 +437,7 @@ def test_post_build_augments_the_artifact_in_the_site_directory(tmp_path: Path) 
 
     source = docs_dir / "feature-list.html"
     source.write_text(UPSTREAM_HEAD, encoding="utf-8")
+    agent_assets.on_pre_build(SimpleNamespace())
     (site_dir / "feature-list.html").write_text(UPSTREAM_HEAD, encoding="utf-8")
 
     agent_assets.on_post_build(

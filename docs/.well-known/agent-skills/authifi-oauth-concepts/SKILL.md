@@ -30,6 +30,8 @@ These paths are fetchable without credentials:
 - `/javascripts/`
 - `/stylesheets/`
 
+Pages and images named in `/.well-known/public-paths.json` are also fetchable without credentials.
+
 Every other page, including all of the documentation linked below, requires an interactive browser login through Authifi OIDC. An anonymous request for one answers `307` to `/_auth/login`; that is the access boundary working, not an error to retry around.
 
 In v1 there is no API token, service account, or agent credential that lets automated tooling fetch gated documentation. An agent can read those pages only by reusing a session obtained from the same interactive sign-in a human performs. Do not attempt to construct one.
