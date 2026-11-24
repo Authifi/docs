@@ -21,7 +21,10 @@
   4. A `public: true` page offers "Sign in" instead. Signing in returns the
      reader to the same URL, where the server answers with the copy of the
      page rendered with the navigation (see `docs/hooks/agent_assets.py`).
-     The fixed legal pages have no such copy, so they get no link.
+     The link itself is only the page path: a browser never sends the
+     fragment, so `docs/javascripts/signin-return.js` copies the current
+     heading id into `next` before the request. The fixed legal pages have
+     no signed-in copy, so they get no link.
 
   All four hang off the same flag. `hide: search` is set on public pages by
   `docs/hooks/agent_assets.py`, which is the one place that knows which sources

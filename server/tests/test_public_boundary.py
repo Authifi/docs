@@ -379,6 +379,7 @@ def test_anonymous_request_for_a_public_content_page_returns_it(built_site: Path
         assert response.headers["cache-control"] == "public, max-age=300"
         if path == "/guides/two-factor-authentication/":
             assert "Two-Factor Authentication" in response.text
+            assert "signin-return.js" in response.text
             bare = client.get(path.rstrip("/"), follow_redirects=False)
             assert bare.status_code == 308
             assert bare.headers["location"] == path

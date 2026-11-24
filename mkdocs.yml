@@ -17,6 +17,7 @@ extra_css:
 
 extra_javascript:
   - javascripts/webmcp.js
+  - javascripts/signin-return.js
 
 theme:
   name: material
