@@ -4,4 +4,4 @@
 # be repeated here as a range; the lock pins it, so the range only obscured it.
 
 -r requirements.txt
-pytest==8.4.2
+pytest==9.0.3
