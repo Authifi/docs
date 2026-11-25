@@ -8,6 +8,8 @@ title: API access-token claims scripts
 
 An API custom-claims script runs when Auth issues an access token for that API and a tenant user exists. Returned fields are merged into the token.
 
+To add the user's Resource Scoped grants without a script, set `includeRsRolesInAccessToken` on the API. Auth then adds `org.authifi.rs.roles` (resource ID to sorted role names) to user access tokens. A script cannot set or overwrite that claim.
+
 ## Function contract
 
 ```js
@@ -25,6 +27,7 @@ The following fields are always ignored:
 - `org.labshare.nhe.bootstrap_verified`
 - `org.labshare.nhe.delegation_verified`
 - `org.labshare.nhe.delegation_issuance_pending`
+- `org.authifi.rs.roles`
 
 For NHE delegation tokens, `scope` and `aud` are also ignored.
 
@@ -32,14 +35,16 @@ Access-token claims scripts have a three-second execution limit.
 
 ## Context
 
-| Member                                       | Description                                                               |
-| -------------------------------------------- | ------------------------------------------------------------------------- |
-| `ctx.secrets.user`                           | `{ id, email, familyName, givenName, middleName }` for the token subject. |
-| `ctx.secrets.claims`                         | An empty object. User fields are under `ctx.secrets.user`.                |
-| `ctx.tenantId`                               | Numeric tenant ID.                                                        |
-| `ctx.namespaceId`                            | API namespace ID or `null`.                                               |
-| `await ctx.getTenantVar(name, isSensitive?)` | Reads a tenant or namespace variable.                                     |
-| `await ctx.getUserSecret(name)`              | Reads the current user's secret and returns its plaintext value.          |
+| Member                                       | Description                                                                                                                                                                                                                                        |
+| -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ctx.secrets.user`                           | `{ id, email, familyName, givenName, middleName }` for the token subject.                                                                                                                                                                          |
+| `ctx.secrets.claims`                         | An empty object. User fields are under `ctx.secrets.user`.                                                                                                                                                                                         |
+| `ctx.tenantId`                               | Numeric tenant ID.                                                                                                                                                                                                                                 |
+| `ctx.namespaceId`                            | API namespace ID or `null`.                                                                                                                                                                                                                        |
+| `ctx.resourceServerId`                       | Numeric ID of the resource server the token is being issued for.                                                                                                                                                                                   |
+| `await ctx.getTenantVar(name, isSensitive?)` | Reads a tenant or namespace variable.                                                                                                                                                                                                              |
+| `await ctx.getUserSecret(name)`              | Reads the current user's secret and returns its plaintext value.                                                                                                                                                                                   |
+| `await ctx.getUmrsGrants()`                  | Active UMRS grants for the token user on this resource server. Each item is `{ roleName, resourceId, expiresAt (ISO or null), source }`. Expired grants, ended group memberships, other resource servers, and Auth-owned policy roles are omitted. |
 
 Job fields and helpers such as `ctx.job`, `ctx.getSecret`, `saveReport`, and key-manager maintenance functions are not available.
 
@@ -60,4 +65,9 @@ Job fields and helpers such as `ctx.job`, `ctx.getSecret`, `saveReport`, and key
 
 `fetch` and `axios` resolve to `{ status, statusText, data }`; use `response.data`, not `response.json()`. Non-2xx responses reject. Token scripts do not receive an automatic client-credentials token.
 
-The only supported module import is `ipaddr.js`. QuickJS has an 8 MB memory limit. Data copied to `ctx` is serialized: functions are omitted, dates become UTC strings, and buffers become base64 strings.
+- **Imports and evaluation:** only `ipaddr.js` can be imported. `eval` and `Function` constructors are disabled.
+- **Memory, stack, and source:** 8 MiB memory limit, 256 KiB stack limit, and 512 KiB script source limit.
+- **HTTP calls:** 200 total `fetch` and `axios` requests per run. Up to 10 requests run concurrently; additional concurrent requests queue up to 20 MiB of queued request data, and requests past either cap reject.
+- **Payload and result size:** each `ctx` property is limited to 2 MiB. Outgoing HTTP requests, HTTP responses, and the script result are each limited to 2 MiB.
+- **Logging:** 200 entries or 64 KiB total per run across `log`, `logger`, and `jobLog`. Extra log output is truncated with one warning.
+- **Context serialization:** data copied to `ctx` omits functions, converts dates to UTC strings, and encodes buffers as base64 strings.

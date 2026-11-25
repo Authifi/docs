@@ -39,6 +39,10 @@
       "source": "docs/auth-feature-list.html"
     },
     {
+      "dest": "guides/client-credentials-dpop.md",
+      "source": "packages/auth/docs/oidc/client-credentials-dpop.md"
+    },
+    {
       "dest": "guides/login-initiation.md",
       "source": "packages/auth/docs/login-initiation.md"
     },
@@ -77,6 +81,10 @@
     {
       "dest": "guides/quickjs-scripts/user-info.md",
       "source": "packages/ng-auth/src/assets/docs/quickjs-scripts/user-info.md"
+    },
+    {
+      "dest": "guides/tenant-transfer.md",
+      "source": "packages/auth/docs/tenant-transfer.md"
     },
     {
       "dest": "guides/two-factor-authentication.md",
