@@ -70,4 +70,9 @@ The sandbox supplies an in-memory `ctx.job`, but does not load the Auth applicat
 
 ## Runtime limits
 
-The only supported module import is `ipaddr.js`. QuickJS has an 8 MB memory limit. Data copied to `ctx` is serialized: functions are omitted, dates become UTC strings, and buffers become base64 strings.
+- **Imports and evaluation:** only `ipaddr.js` can be imported. `eval` and `Function` constructors are disabled.
+- **Memory, stack, and source:** 8 MiB memory limit, 256 KiB stack limit, and 512 KiB script source limit.
+- **HTTP calls:** 200 total `fetch` and `axios` requests per run. Up to 10 requests run concurrently; additional concurrent requests queue up to 20 MiB of queued request data, and requests past either cap reject.
+- **Payload and result size:** each `ctx` property is limited to 2 MiB. Outgoing HTTP requests, HTTP responses, and the script result are each limited to 2 MiB.
+- **Logging:** 200 entries or 64 KiB total per run across `log`, `logger`, and `jobLog`. Extra log output is truncated with one warning.
+- **Context serialization:** data copied to `ctx` omits functions, converts dates to UTC strings, and encodes buffers as base64 strings.

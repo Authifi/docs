@@ -37,19 +37,24 @@ Job fields and helpers such as `ctx.job`, `ctx.getSecret`, `saveReport`, and key
 
 ## Globals
 
-| Global                                              | Description                                                          |
-| --------------------------------------------------- | -------------------------------------------------------------------- |
-| `callback(error, result)`                           | Completes a two-parameter script.                                    |
-| `log(message, ...args)`                             | Writes to the server log with a QuickJS prefix.                      |
-| `logger.info\|warn\|error\|debug(message, ...args)` | Writes to the corresponding server log level.                        |
-| `await jobLog(message)`                             | Writes to the server log; it does not create a job-log row.          |
-| `await fetch(url, init?)`                           | HTTP client returning `{ status, statusText, data }`.                |
-| `axios.get\|post\|put\|patch\|delete(...)`          | Deprecated compatibility HTTP API. Prefer `fetch`.                   |
-| `await generateExcel(worksheets)`                   | Generates an xlsx workbook and returns its bytes as a base64 string. |
-| `btoa(text)` / `atob(encoded)`                      | Base64 encoding and decoding.                                        |
+| Global                                              | Description                                                                                     |
+| --------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `callback(error, result)`                           | Completes a two-parameter script.                                                               |
+| `log(message, ...args)`                             | Writes to the server log with a QuickJS prefix.                                                 |
+| `logger.info\|warn\|error\|debug(message, ...args)` | Writes to the corresponding server log level.                                                   |
+| `await jobLog(message)`                             | For compatibility with job scripts. Writes to the server log when used outside of a job script. |
+| `await fetch(url, init?)`                           | HTTP client returning `{ status, statusText, data }`.                                           |
+| `axios.get\|post\|put\|patch\|delete(...)`          | Deprecated compatibility HTTP API. Prefer `fetch`.                                              |
+| `await generateExcel(worksheets)`                   | Generates an xlsx workbook and returns its bytes as a base64 string.                            |
+| `btoa(text)` / `atob(encoded)`                      | Base64 encoding and decoding.                                                                   |
 
 ## HTTP and runtime behavior
 
 `fetch` and `axios` resolve to `{ status, statusText, data }`; use `response.data`, not `response.json()`. Non-2xx responses reject. Login scripts do not receive an automatic client-credentials token.
 
-The only supported module import is `ipaddr.js`. QuickJS has an 8 MB memory limit. Data copied to `ctx` is serialized: functions are omitted, dates become UTC strings, and buffers become base64 strings.
+- **Imports and evaluation:** only `ipaddr.js` can be imported. `eval` and `Function` constructors are disabled.
+- **Memory, stack, and source:** 8 MiB memory limit, 256 KiB stack limit, and 512 KiB script source limit.
+- **HTTP calls:** 200 total `fetch` and `axios` requests per run. Up to 10 requests run concurrently; additional concurrent requests queue up to 20 MiB of queued request data, and requests past either cap reject.
+- **Payload and result size:** each `ctx` property is limited to 2 MiB. Outgoing HTTP requests, HTTP responses, and the script result are each limited to 2 MiB.
+- **Logging:** 200 entries or 64 KiB total per run across `log`, `logger`, and `jobLog`. Extra log output is truncated with one warning.
+- **Context serialization:** data copied to `ctx` omits functions, converts dates to UTC strings, and encodes buffers as base64 strings.
