@@ -55,9 +55,11 @@ def test_a_held_install_matches_the_pin_in_the_other_lock() -> None:
     server_lock = (ROOT / "server" / "requirements.txt").read_text(encoding="utf-8")
     server_pins = module.pinned_from_text(server_lock)
 
+    site_header = (ROOT / "requirements.txt").read_text(encoding="utf-8").split("\n\n", 1)[0]
     for requirement in module.INSTALL_HOLDS["requirements.in"]:
         name, _, version = requirement.partition("==")
         assert server_pins[module.canonical(name)] == version
+        assert requirement in site_header, "the site lock's regeneration command must apply the hold"
 
 
 def test_identical_freeze_is_a_no_op() -> None:
