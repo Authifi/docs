@@ -49,6 +49,19 @@ def test_version_only_updates_keep_via_notes_and_lock_spelling() -> None:
     assert rewritten.splitlines()[0] == "# Generated file"
 
 
+def test_a_held_install_matches_the_pin_in_the_other_lock() -> None:
+    """The site install holds a transitive at the version the server lock pins."""
+    module = refresh_module()
+    server_lock = (ROOT / "server" / "requirements.txt").read_text(encoding="utf-8")
+    server_pins = module.pinned_from_text(server_lock)
+
+    site_header = (ROOT / "requirements.txt").read_text(encoding="utf-8").split("\n\n", 1)[0]
+    for requirement in module.INSTALL_HOLDS["requirements.in"]:
+        name, _, version = requirement.partition("==")
+        assert server_pins[module.canonical(name)] == version
+        assert requirement in site_header, "the site lock's regeneration command must apply the hold"
+
+
 def test_identical_freeze_is_a_no_op() -> None:
     apply_freeze_to_lock = refresh_module().apply_freeze_to_lock
     freeze = {
