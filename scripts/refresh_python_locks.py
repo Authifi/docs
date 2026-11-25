@@ -23,6 +23,13 @@ PIN_PATTERN = re.compile(
     r"^(?P<name>[A-Za-z0-9._-]+)==(?P<version>[A-Za-z0-9._+!-]+)(?P<rest>.*)$"
 )
 INSTALLER_PACKAGES = frozenset({"pip", "setuptools", "wheel", "distribute", "pkg-resources"})
+# Requirements installed alongside a direct file so a transitive is held at the
+# version the other lock holds it. Unconstrained, the site resolve takes
+# python-dateutil 4.x, which botocore (server lock) cannot install with. The
+# site build has no direct use of dateutil, so it stays out of requirements.in.
+INSTALL_HOLDS = {
+    "requirements.in": ("python-dateutil==2.9.0.post0",),
+}
 LOCK_PAIRS = (
     (REPO_ROOT / "requirements.in", REPO_ROOT / "requirements.txt"),
     (REPO_ROOT / "server" / "requirements.in", REPO_ROOT / "server" / "requirements.txt"),
@@ -282,7 +289,7 @@ def freeze_after_installing(direct: Path, image: str) -> Freeze:
             "sh",
             "-c",
             "python -m pip install --quiet --no-cache-dir --root-user-action=ignore "
-            f"-r /repo/{relative} >/dev/null && python -m pip freeze && "
+            f"-r /repo/{relative} {' '.join(INSTALL_HOLDS.get(relative, ()))} >/dev/null && python -m pip freeze && "
             "python -m pip install --quiet --no-cache-dir --root-user-action=ignore packaging "
             f">/dev/null && {dump}",
         ],
