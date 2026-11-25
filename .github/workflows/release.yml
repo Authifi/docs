@@ -21,10 +21,12 @@ jobs:
         with:
           fetch-depth: 0
 
+      # Changesets 3 calls enableCompileCache(), which Node 20 does not
+      # provide. The lockfile requires ^22.11 || ^24 || >=26.
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
 
       - name: Install Dependencies
         run: npm ci
