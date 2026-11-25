@@ -18,7 +18,6 @@
 mkdocs==1.6.1
 mkdocs-material==9.7.7
 mkdocs-awesome-nav==3.3.0
-python-dateutil==2.9.0.post0
 
 # Transitive, resolved above. The `via` notes are the edges that put each one
 # here; they are checked against the installed metadata by test_requirements.
@@ -47,6 +46,7 @@ pydantic==2.14.4  # via mkdocs-awesome-nav
 pydantic_core==2.50.5  # via pydantic
 Pygments==2.21.0  # via mkdocs-material -- code highlighting in built pages
 pymdown-extensions==13.1.2  # via mkdocs-material
+python-dateutil==2.9.0.post0  # via ghp-import
 PyYAML==6.0.4  # via mkdocs, mkdocs-get-deps, pymdown-extensions, pyyaml-env-tag
 pyyaml_env_tag==1.1  # via mkdocs
 requests==2.34.2  # via mkdocs-material
