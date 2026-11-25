@@ -630,6 +630,105 @@ def test_normalize_next_path_honours_custom_default() -> None:
     assert normalize_next_path("//evil.example", default="/privacy-policy/") == "/privacy-policy/"
 
 
+@pytest.mark.parametrize(
+    ("candidate", "expected"),
+    [
+        (
+            "/guides/two-factor-authentication/#set-up-2fa",
+            "/guides/two-factor-authentication/#set-up-2fa",
+        ),
+        (
+            "/guides/two-factor-authentication/#1-install-an-authenticator-app",
+            "/guides/two-factor-authentication/#1-install-an-authenticator-app",
+        ),
+        (
+            "/guides/two-factor-authentication/?highlight=mfa#set-up-2fa",
+            "/guides/two-factor-authentication/?highlight=mfa#set-up-2fa",
+        ),
+        ("/guides/two-factor-authentication/#", "/guides/two-factor-authentication/"),
+        ("/guides/two-factor-authentication/#<script>", "/guides/two-factor-authentication/"),
+        (
+            "/guides/two-factor-authentication/#set-up-2fa#extra",
+            "/guides/two-factor-authentication/",
+        ),
+        ("/guides/two-factor-authentication/#not an id", "/guides/two-factor-authentication/"),
+        ("//evil.example#set-up-2fa", "/"),
+        ("/\\evil.example#set-up-2fa", "/"),
+        ("/guides/\n#set-up-2fa", "/"),
+        ("/guides/two-factor-authentication/#set-up-2fa\n", "/"),
+    ],
+)
+def test_normalize_next_path_keeps_only_a_heading_fragment(candidate: str, expected: str) -> None:
+    assert normalize_next_path(candidate) == expected
+
+
+def test_a_fragment_that_pushes_next_over_the_cap_falls_back() -> None:
+    assert normalize_next_path(sized_next(MAX_NEXT_PATH_BYTES) + "#a") == "/"
+
+
+def test_login_keeps_a_heading_fragment_on_the_return_path(site_dir: Path) -> None:
+    """The fragment arrives percent-encoded, because a raw `#` never leaves the browser."""
+    auth_client = DummyAuthClient()
+    client = build_client(site_dir, auth_client=auth_client)
+    next_path = "/guides/two-factor-authentication/#set-up-2fa"
+
+    response = client.get(
+        "/_auth/login",
+        params={"next": next_path},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 307
+    session = decode_session_cookie(client.cookies["authifi-session"])
+    assert list(session["pending_logins"].values()) == [next_path]
+
+
+def test_login_drops_a_fragment_that_is_not_a_heading_and_keeps_the_page(site_dir: Path) -> None:
+    auth_client = DummyAuthClient()
+    client = build_client(site_dir, auth_client=auth_client)
+
+    response = client.get(
+        "/_auth/login",
+        params={"next": "/guides/two-factor-authentication/#<script>"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 307
+    session = decode_session_cookie(client.cookies["authifi-session"])
+    assert list(session["pending_logins"].values()) == ["/guides/two-factor-authentication/"]
+
+
+def test_callback_redirects_to_the_heading_with_a_raw_fragment(site_dir: Path) -> None:
+    """`%23` in Location would be part of the path, and the page would not scroll."""
+    auth_client = DummyAuthClient()
+    next_path = "/guides/two-factor-authentication/#set-up-2fa"
+    client = authenticated_client(
+        site_dir,
+        auth_client=auth_client,
+        session={"pending_logins": {"def": next_path}},
+    )
+
+    response = client.get("/_auth/callback?code=abc&state=def", follow_redirects=False)
+
+    assert response.status_code == 307
+    assert response.headers["location"] == next_path
+    assert "%23" not in response.headers["location"]
+
+
+def test_callback_drops_an_unsafe_fragment_and_keeps_the_page(site_dir: Path) -> None:
+    auth_client = DummyAuthClient()
+    client = authenticated_client(
+        site_dir,
+        auth_client=auth_client,
+        session={"pending_logins": {"def": "/guides/two-factor-authentication/#<script>"}},
+    )
+
+    response = client.get("/_auth/callback?code=abc&state=def", follow_redirects=False)
+
+    assert response.status_code == 307
+    assert response.headers["location"] == "/guides/two-factor-authentication/"
+
+
 def test_callback_stores_minimal_identity_and_redirects_to_next(site_dir: Path) -> None:
     auth_client = DummyAuthClient()
     client = authenticated_client(site_dir, auth_client=auth_client, session={"pending_logins": {"def": "/security/"}})

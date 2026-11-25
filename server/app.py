@@ -1058,7 +1058,21 @@ def safe_query_string(raw_query_string: bytes) -> str:
     return query
 
 
+# Heading ids MkDocs emits, and the only fragment `signin-return.js` copies
+# into `next`. `\Z` rather than `$`, because `$` matches before a trailing
+# newline and that newline must not reach the Location header.
+NEXT_HEADING_FRAGMENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*\Z")
+
+
 def normalize_next_path(candidate: str | None, default: str = "/") -> str:
+    """Return a same-site path to send the reader to after sign-in.
+
+    A heading fragment is kept, because Sign in copies the open section into
+    `next`. A backslash, a control character, or a value over the cookie cap
+    still falls back to ``default``, fragment or not. A fragment that is not a
+    heading id is dropped and the page path is kept: a bad section must not
+    send the reader to ``default``.
+    """
     if not isinstance(candidate, str) or not candidate:
         return default
     try:
@@ -1072,13 +1086,16 @@ def normalize_next_path(candidate: str | None, default: str = "/") -> str:
         return default
     if oversized:
         return default
-    if not candidate.startswith("/") or candidate.startswith("//"):
+    # Screened on the whole value. A newline or backslash hiding in the
+    # fragment is the same header injection as one hiding in the path.
+    if "\\" in candidate or any(character in CONTROL_CHARACTERS for character in candidate):
         return default
-    if "\\" in candidate:
+    path, separator, fragment = candidate.partition("#")
+    if not path.startswith("/") or path.startswith("//"):
         return default
-    if any(character in CONTROL_CHARACTERS for character in candidate):
-        return default
-    return candidate
+    if separator and NEXT_HEADING_FRAGMENT.fullmatch(fragment):
+        return f"{path}#{fragment}"
+    return path
 
 
 def site_relative_path(canonical_path: str) -> str:
