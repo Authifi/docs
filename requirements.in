@@ -9,3 +9,4 @@
 mkdocs==1.6.1  # site generator
 mkdocs-material==9.7.7  # theme, search index, and the header this repo overrides
 mkdocs-awesome-nav==3.3.0  # per-directory navigation ordering
+python-dateutil==2.9.0.post0  # held with server: botocore requires <3; unconstrained resolve picks 4.x + tzdata and breaks the dual-lock install
