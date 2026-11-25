@@ -1,5 +1,12 @@
 # authifi-docs
 
+## 2.0.3
+
+### Patch Changes
+
+- 359ed54: Sync public documentation from idbroker.
+- e12ad55: Signing in from a public page returns to the section that was open, instead of the top of the page.
+
 ## 2.0.2
 
 ### Patch Changes
