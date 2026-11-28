@@ -43,6 +43,10 @@
       "source": "packages/auth/docs/oidc/client-credentials-dpop.md"
     },
     {
+      "dest": "guides/client-public-keys.md",
+      "source": "packages/auth/docs/oidc/client-public-keys.md"
+    },
+    {
       "dest": "guides/login-initiation.md",
       "source": "packages/auth/docs/login-initiation.md"
     },
